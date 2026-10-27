@@ -13,7 +13,7 @@ publish = false
 hound = "=3.5.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
-sha2 = "=0.10.9"
+sha2 = "=0.11.1"
 rtrb = "=0.4.0"
 rubato = { version = "=5.0.1", default-features = false }
 socket2 = "=0.6.5"
