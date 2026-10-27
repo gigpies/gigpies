@@ -41,7 +41,12 @@ roles bind verified display/controller identities, not monitor order or ALSA por
 numbers. Duplicate monitor identities or identical controllers without reliable
 serials need explicit labelled assignment. A lighting reconnect/restart must not
 steal the audio display, replay old commands or forward notes/LED traffic to the
-audio desk/instruments. Keyboard operation remains complete without MIDI.
+audio desk/instruments. Computer-keyboard operation remains an optional fallback
+without MIDI. The intended live workflow must also be complete with the assigned
+MIDI controllers and no computer keyboard or mouse. Input adapters must dispatch
+the same semantic actions and preserve review, authority and recovery fences;
+controller operation must not depend on synthesizing computer keypresses.
+This is a product requirement, not a claim of current controller completeness.
 
 Lux must not compete for Lightdesk's assigned pad LEDs. Preserve Lux standalone
 operation, but its integrated engine adapter must have no claim on those outputs.
