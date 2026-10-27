@@ -19,6 +19,19 @@ controls; a complete live-show setup is not yet a finished product.
 | Preview music-following lighting | [Lux previews](https://github.com/gigpies/shr-lux/blob/main/docs/USING.md) |
 | Work on recorded multitracks | [Offline mixing](guides/README.md) |
 
+## Controls and computer keyboards
+
+The intended live desks use their assigned MIDI controllers: knobs, pads and
+piano keys for selection. A computer keyboard is an optional fallback, not a
+requirement for live operation. Shortcut lists describe the current software
+interface; they do not redefine that intended workflow.
+
+Both consoles provide labelled semantic menus and value entry without synthesizing
+computer keypresses. Physical MIDI acquisition and learned device mappings remain
+unfinished. Complete controller-only operation on the actual rig is an
+open [console acceptance requirement](development/MODULE_IMPLEMENTATION_PLAN.md#gp-h2--physical-dual-console-operation),
+not an already delivered capability.
+
 ## Before a session
 
 A configured live system needs its audio connections, output assignments and

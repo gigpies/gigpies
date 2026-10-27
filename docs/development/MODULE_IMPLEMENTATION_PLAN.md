@@ -62,7 +62,7 @@ it is historical, not a queue to execute. Later accepted work supersedes its lim
 | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | GigPies lead; SHR Desk consumer | PLANNED: needs trustworthy measurements and an explicit musical objective |
 | [GP-REC](#gp-rec--complete-integrated-recording-workflow) | GigPies lead; SHR REC provider, SHR Desk consumer | PLANNED: audit existing host lifecycle before defining missing operator actions |
 | [GP-H1](#gp-h1--physical-audio-qualification) | GigPies lead; PA/REC/FX owners as needed | PLANNED: separate physical session and observed rig required |
-| [GP-H2](#gp-h2--physical-dual-console-operation) | GigPies lead; Desk/Lightdesk contributors | PLANNED: actual displays/controllers and separate physical session required |
+| [GP-H2](#gp-h2--physical-dual-console-operation) | GigPies lead; Desk/Lightdesk contributors | Physical input/profile integration and actual display/controller acceptance; see card |
 | [GP-H3](#gp-h3--whole-show-qualification) | GigPies lead; all runtime owners | PLANNED: follows audio/console qualification and Lux LX-06 output |
 
 ## GP-METER — measured audio on the real Desk
@@ -504,8 +504,75 @@ hardware deadlines and acoustic protection; software profiles are not hardware p
 
 ## GP-H2 — physical dual-console operation
 
-State: PLANNED; requires a separate authorized physical session.
-Next: verify the two actual display/controller identities, separate input/LED
+State: IN PROGRESS; semantic menu software is implemented; physical acquisition
+and learned mappings are incomplete, and physical acceptance
+requires a separate authorized session.
+
+Required outcome: complete live operation from the two assigned MIDI controllers,
+without a computer keyboard or mouse. Computer shortcuts remain optional adapters
+to the same semantic actions, with identical authority/review/recovery checks.
+
+Software and hardware acceptance:
+- [x] Provide labelled semantic menus and bounded literal value entry for current
+  Desk/Lightdesk operations; keep unsupported owner capabilities unavailable.
+- [x] Replace Desk Channel's synthesized key events with typed actions; expose
+  grant/release, reconnect, review scrolling and display controls semantically.
+- [x] Route Lightdesk value entry, multi-selection, grants/modes, cue/palette
+  recording, GO, release masks, blackout release and scene management through
+  its existing Lux worker and material-review fences.
+- [x] Test stale generation/target, held/repeated pad messages, wrong endpoints,
+  missing role, exact entry and hidden-review refusal. Verify an actual Lux
+  null-output value/review/apply episode from bound pad messages.
+- [ ] Connect production OS MIDI acquisition/profile loading to the role-fenced
+  complete-message adapters; capture the actual devices' messages and encodings.
+- [ ] Qualify the intended direct sixteen-encoder Channel mapping, device identity,
+  pad banks, LEDs, disconnect/release recovery and simultaneous two-desk operation.
+
+Software change: both consoles now have labelled eight-pad semantic menus,
+printable character entry and explicit endpoint/channel/note bindings, with no
+assumed MiniLab preset. Desk's Channel targets now dispatch typed actions instead
+of synthesizing keyboard events. Its formerly key-only grant/release/reconnect,
+review-page and display controls have semantic commands. Lightdesk uses the same
+Lux worker for menu operations, including mixed/multi-selection value entry,
+reviewed master/checkpoint, release masks and scene grants/import/export.
+A completed controller action and its release share one Lightdesk queue item,
+so a release cannot erase the action's refusal. Menus cannot mark hidden reviews
+as presented. Generation, target and press/release fences remain required.
+
+Evidence and remaining boundaries: `shr-desk/src/controller_surface.rs`,
+`shr-desk/src/frontend/controller.rs`, `shr-lightdesk/src/controller_surface.rs`,
+and both owners' `docs/CONTROLLER.md#production-semantic-menu`. The adapter APIs
+accept complete messages; no production OS MIDI acquisition worker/profile loader
+or verified physical binding is claimed. The native compatibility window retains
+its old input adapter; the new menu presentation is integrated in the terminal.
+Provider-unadvertised actions (including palette recall/group capabilities) remain
+unavailable, not simulated. Do not close this card on menu or identity tests alone.
+
+Software verification (2026-10-27): both owners' default and `--features native`
+normal suites (Desk: 347 default / 350 native, 24 opt-ins ignored in each;
+Lightdesk: 138 default / 139 native, 6 / 7 opt-ins ignored), all-target
+warning-denied Clippy in both configurations, formatting, and focused
+controller/entry/role/review regressions. Menu scene previews were
+inspected at 1920×1080. Explicit actual-provider check:
+`cargo +1.97.1 test --locked --offline --test native_provider controller_menu_real_provider_value_and_material_review -- --ignored --nocapture`
+in Lightdesk, with absolute `GP_ROLE_BROKER` and `GP_LUX_PROVIDER` paths. It uses
+only owned synthetic/null-output children and private sockets; no physical MIDI,
+audio, DMX or window is opened. The tested broker SHA256 is
+`58d0a2d9fcea3b834209a1c6f72fdd3a32066927730e4ffbdfada30d10a68a4a`;
+the tested Lux service SHA256 is
+`9c861fb2f654fe1d0075ca502b48bf087552eb13fbfaf3a27463d60708af97e4`.
+Other historical/exhaustive/actual-provider campaigns and physical tests were
+intentionally not rerun. Console-local ignored `artifacts/controller-menu/`
+retains test logs and menu previews; this is software evidence, not hardware acceptance.
+
+Controller hookup is deferred at the operator's request (2026-10-27): reuse
+SHR DAW's Arturia MiniLab mkII learned mapping when the powered-off Raspberry Pi
+is available. The public DAW mkII profile intentionally contains no guessed
+notes/CCs; no learned file was found locally. No input-driver change was made
+during that follow-up investigation.
+
+Next: connect learned profiles through role-fenced input workers, then verify
+the two actual display/controller identities, separate input/LED
 ownership, focus/held-release, restart/reconnect and operator usability. Follow
 [roles](../reference/ROLE_BINDING.md) and each console's controller/native contract. Injected
 role descriptors and offscreen rendering do not qualify physical operation.
