@@ -15,10 +15,11 @@ concurrency:
 jobs:
   check:
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
         features: ["", "--features hardware-host"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
