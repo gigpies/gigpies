@@ -1,18 +1,29 @@
 name: Rust
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 env:
   CARGO_INCREMENTAL: 0
   CARGO_BUILD_JOBS: 1
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   check:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         features: ["", "--features hardware-host"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Check publication boundaries
         run: python3 scripts/check_publication.py
       - name: Install offline host build dependencies
@@ -21,9 +32,27 @@ jobs:
         run: |
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
           sudo install -d -m 0755 -o "$(id -un)" -g "$(id -gn)" /home/shome/p
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 fmt --all -- --check
       - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 check --locked -j1 ${{ matrix.features }}
       - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 clippy --locked -j1 ${{ matrix.features }} --all-targets -- -D warnings
       - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 test --locked -j1 ${{ matrix.features }} --all-targets
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 build --release --locked -j1 ${{ matrix.features }}
+  automation:
+    uses: gigpies/.github/.github/workflows/quality.yml@80d76c2b710d90e55f4f95ecea192c514f471fe6
+  gate:
+    name: Required CI
+    if: ${{ always() }}
+    needs: [check, automation]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require all build and contributor checks
+        env:
+          BUILD_RESULT: ${{ needs.check.result }}
+          AUTOMATION_RESULT: ${{ needs.automation.result }}
+        run: test "$BUILD_RESULT" = success && test "$AUTOMATION_RESULT" = success

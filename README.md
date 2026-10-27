@@ -1,15 +1,14 @@
 # GigPies
 
+![GigPies — audio and lighting terminal desks at a live-band stage](docs/assets/gigpies-hero.png)
+
+*Concept artwork of the intended setup.*
+
 **Mix the band. Run the lights. Keep control.**
 
-An experimental live-band system for Raspberry Pi, combining an audio desk,
-lighting desk, performer monitors, PA processing, effects and multitrack recording.
+**A terminal application (TUI) for live-band sound and lighting on Raspberry Pi.**
+Audio and lighting desks, performer monitors, PA processing, effects and multitrack recording.
 Manual operation comes first; assistance and automation are optional.
-
-[![SHR Desk Channel view: four-band EQ, compressor, meters and physical-style controls](docs/assets/panel-desk-channel.png)](docs/assets/panel-desk-channel.png)
-
-Actual SHR Desk terminal capture with deterministic software audio, approved
-October 20, 2026. Click for full resolution.
 
 [**Using GigPies**](docs/README.md) · [**What works today**](docs/STATUS.md) · [Engineering](docs/development/README.md)
 
@@ -32,6 +31,13 @@ bench are complete. Full multichannel hardware, physical controllers/displays
 and lighting output still need qualification. Recording controls are not yet
 available from Desk. [Current limits](docs/STATUS.md).
 
+## Channel view — running in a terminal
+
+[![SHR Desk Channel view: four-band EQ, compressor, meters and physical-style controls](docs/assets/panel-desk-channel.png)](docs/assets/panel-desk-channel.png)
+
+Actual SHR Desk terminal capture with deterministic software audio, approved
+October 20, 2026. Click for full resolution.
+
 ## Start here
 
 For the screens and controls, open [Using GigPies](docs/README.md).
@@ -48,3 +54,5 @@ Build from this checkout with its pinned Rust toolchain.
 [Build instructions](docs/development/DEVELOPMENT.md) · [Offline mixing](docs/guides/README.md)
 
 [Release notes](CHANGELOG.md) · [MIT license](LICENSE) · [Artwork and third-party notices](THIRD_PARTY.md)
+
+[Contribute](https://github.com/gigpies/.github/blob/main/CONTRIBUTING.md) · [Report a bug](https://github.com/gigpies/gigpies/issues/new/choose)

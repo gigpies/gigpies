@@ -1,0 +1,19 @@
+name: Draft source release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag with successful main CI
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: draft-release-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  draft:
+    uses: gigpies/.github/.github/workflows/source-release.yml@80d76c2b710d90e55f4f95ecea192c514f471fe6
+    with:
+      tag: ${{ inputs.tag }}

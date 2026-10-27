@@ -1,5 +1,8 @@
 # Contributing
 
+[Shared contributor workflow](https://github.com/gigpies/.github/blob/main/CONTRIBUTING.md)
+· [Security reporting](https://github.com/gigpies/.github/blob/main/SECURITY.md)
+
 GigPies is experimental and grows through small, reviewable steps. See the
 [current work](docs/STATUS.md) before proposing a feature.
 
