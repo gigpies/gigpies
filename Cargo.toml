@@ -12,17 +12,17 @@ publish = false
 [dependencies]
 hound = "=3.5.1"
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 sha2 = "=0.10.9"
 rtrb = "=0.4.0"
 rubato = { version = "=5.0.1", default-features = false }
 socket2 = "=0.6.5"
 alsa = { version = "=0.12.1", optional = true }
 libloading = { version = "=0.7.4", optional = true }
-libc = "=0.2.189"
+libc = "=0.2.191"
 quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
-rustls = { version = "=0.23.45", default-features = false, features = ["std", "ring"] }
-tokio = { version = "=1.53.2", features = ["rt", "macros", "time", "sync", "io-util"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "ring"] }
+tokio = { version = "=1.54.1", features = ["rt", "macros", "time", "sync", "io-util"] }
 bytes = "=1.12.1"
 
 [dev-dependencies]
