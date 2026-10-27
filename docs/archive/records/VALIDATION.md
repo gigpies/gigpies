@@ -3,7 +3,7 @@
 ## Integrated modules and native software — 2026-10-04
 
 The [current implementation checkpoint](../plans/MODULE_IMPLEMENTATION_MAP.md#execution-checkpoint--2026-10-04)
-and [integration evidence](../../guides/HEADLESS_INTEGRATION.md#evidence-and-remaining-work)
+and [integration evidence](../workflows/HEADLESS_INTEGRATION.md#evidence-and-remaining-work)
 record the complete owner test counts, actual-provider checks and combined recovery
 result for this source milestone. Core runtime owners ran their normal suites,
 matching native/device-free host feature checks, formatting, warnings-denied Clippy
@@ -223,7 +223,7 @@ Passed on the same pinned Rust toolchain:
   headroom. All 13 original WAVs compared byte-for-byte by hash against the archive.
 
 Private-media tests remain ignored in the normal suite and were run explicitly for
-this change. [On-demand commands](../../guides/AUTOMIX.md#tests-and-limits) are documented. No
+this change. [On-demand commands](../workflows/AUTOMIX.md#tests-and-limits) are documented. No
 historical/exhaustive benchmark suite was needed. Detailed measurements, source hashes,
 prepared settings and audio are ignored local artifacts, not publication content.
 Listening, hardware acceptance, true-peak validation and live-device tests remain
@@ -267,7 +267,7 @@ See [FX_PASS.md](../../guides/FX_PASS.md) for reproducing the automatic review a
 - Three older private-media tests were intentionally skipped: their historical
   matched comparisons/source variations do not describe this new workflow.
 
-Measurements do not establish listening acceptance. See [UNITY_PASS.md](../../guides/UNITY_PASS.md).
+Measurements do not establish listening acceptance. See [UNITY_PASS.md](../workflows/UNITY_PASS.md).
 
 ## Independent final output level correction
 

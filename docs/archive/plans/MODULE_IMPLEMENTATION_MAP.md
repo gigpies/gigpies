@@ -233,7 +233,7 @@ part of this milestone. Source publication preserves private evidence outside Gi
 The twelve owning plans and scoped prior-thread work are published in their owners.
 Desk and Lightdesk are public repositories. Optional/reference DAW, Drums, Synth,
 Sampler and Tone received planning/index changes only; no new runtime project was
-activated. [Local session instructions and evidence](../../guides/HEADLESS_INTEGRATION.md) give
+activated. [Local session instructions and evidence](../workflows/HEADLESS_INTEGRATION.md) give
 reproduction and the limits of these checks.
 
 

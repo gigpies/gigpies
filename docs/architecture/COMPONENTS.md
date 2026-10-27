@@ -9,12 +9,12 @@ for cross-module work and [the module map](../development/MODULE_IMPLEMENTATION_
 | Runtime owner | Responsibility and contract |
 |---|---|
 | GigPies | Stagebox devices/clock, channel DSP, mixer/buses, shared authority, transport, Brain duplex/ASRC and final composition; [architecture](ARCHITECTURE.md) |
-| SHR Desk | Brain audio console/controller presentation; [owning plan](https://github.com/PaolaShultz/shr-desk/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
-| SHR Lightdesk | Brain lighting console/controller presentation; [owning plan](https://github.com/PaolaShultz/shr-lightdesk/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
-| SHR PA | Speaker DSP, crossovers, weighted routing, output protection, measurement and alignment; [embedding v2](https://github.com/PaolaShultz/shr-pa/blob/main/docs/EMBEDDING_V2.md) |
-| SHR FX | Wet-effects algorithms and prepared embedding; [owning plan](https://github.com/PaolaShultz/shr-fx/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
-| SHR REC | Raw recording worker, progress, finalization and recovery; [raw contract](https://github.com/PaolaShultz/shr-rec/blob/main/docs/RAW_RECORDER.md) |
-| SHR Lux | Lighting analysis/authority, fixture capabilities, cue/effect timing and physical output; [owning plan](https://github.com/PaolaShultz/shr-lux/blob/main/docs/notes/0027-gigpies-implementation.md) |
+| SHR Desk | Brain audio console/controller presentation; [owning plan](https://github.com/gigpies/shr-desk/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
+| SHR Lightdesk | Brain lighting console/controller presentation; [owning plan](https://github.com/gigpies/shr-lightdesk/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
+| SHR PA | Speaker DSP, crossovers, weighted routing, output protection, measurement and alignment; [embedding v2](https://github.com/gigpies/shr-pa/blob/main/docs/EMBEDDING_V2.md) |
+| SHR FX | Wet-effects algorithms and prepared embedding; [owning plan](https://github.com/gigpies/shr-fx/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
+| SHR REC | Raw recording worker, progress, finalization and recovery; [raw contract](https://github.com/gigpies/shr-rec/blob/main/docs/RAW_RECORDER.md) |
+| SHR Lux | Lighting analysis/authority, fixture capabilities, cue/effect timing and physical output; [owning plan](https://github.com/gigpies/shr-lux/blob/main/docs/notes/0027-gigpies-implementation.md) |
 
 Implement owner algorithms in their repository, then consume a defined interface.
 GigPies must not grow another PA/FX/REC/Lux engine; a console must not become its
@@ -75,7 +75,7 @@ No media library or source clone is a build/CI download requirement.
 ## PA module and planned integration
 
 Current PA processing is integrated through C-PA v2. Measurement/phase/delay alignment
-has a distinct [owning task plan](https://github.com/PaolaShultz/shr-pa/blob/main/docs/PHASE_ALIGNMENT.md).
+has a distinct [owning task plan](https://github.com/gigpies/shr-pa/blob/main/docs/PHASE_ALIGNMENT.md).
 Develop the synchronized reference/mic analyzer and reviewable proposal there,
 then define its host integration. V2 independent output controls are implemented;
 the older standalone pair controls retain their own contract. Neither is proof of

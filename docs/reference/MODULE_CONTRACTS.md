@@ -344,7 +344,7 @@ explicitly cancels/freezes the transition before changing that destination.
 Manual/Assist transitions retain their existing continuity semantics; restart
 restores intended looks disarmed with no active automatic grant.
 
-The accepted owner [wire and output corpus](https://github.com/PaolaShultz/shr-lux/tree/main/tests/fixtures/lx05/v1)
+The accepted owner [wire and output corpus](https://github.com/gigpies/shr-lux/tree/main/tests/fixtures/lx05/v1)
 defines nullable analysis status and per-contribution source/window/calibration
 provenance. Retained contributions keep their original provenance when a new
 source attaches. Lightdesk consumes this schema read-only; calibration and AUTO
@@ -355,7 +355,7 @@ age after analysis and encoding. Capacity refusal freezes the readable prior
 contribution and revokes its grant.
 
 The accepted Lux provider source is
-[`1f0a5b4`](https://github.com/PaolaShultz/shr-lux/commit/1f0a5b40d660f31971b1c8666d4c45723f0aadde).
+[`1f0a5b4`](https://github.com/gigpies/shr-lux/commit/1f0a5b40d660f31971b1c8666d4c45723f0aadde).
 Its matching release passed actual named-source calibration, explicit AUTO,
 loss retention, human override and disarmed restart checks.
 
@@ -448,7 +448,7 @@ remains recovered-incomplete. Recording continues on Desk/Brain loss; its status
 becomes stale at the client. Start/Stop replies distinguish acceptance from completion.
 
 REC-01/02 software acceptance adds the owner's `shr_rec_v2_observer_*` ABI in
-[`shr_rec.h`](https://github.com/PaolaShultz/shr-rec/blob/main/include/shr_rec.h),
+[`shr_rec.h`](https://github.com/gigpies/shr-rec/blob/main/include/shr_rec.h),
 without changing raw v1 or any v1 signature. Create an observer while its producer
 is quiesced; create/retain/release occur off the callback. Each observer owns
 independent atomic state and remains queryable after consuming finish. A snapshot
@@ -608,9 +608,9 @@ read-only connection, so module health does not consume mixer replies or delay
 operator commands.
 
 Accepted owner source revisions for this integration are
-[REC `df93dc4`](https://github.com/PaolaShultz/shr-rec/commit/df93dc4f8ca487e52d6f7c26ee9aa75462e8856b),
-[FX `e501e09`](https://github.com/PaolaShultz/shr-fx/commit/e501e09b6721340a95516abc86da2c0480b6ddb4)
-and [PA `44a111f`](https://github.com/PaolaShultz/shr-pa/commit/44a111f0e2e2d640d3fff1378a7f6131b3df3151).
+[REC `df93dc4`](https://github.com/gigpies/shr-rec/commit/df93dc4f8ca487e52d6f7c26ee9aa75462e8856b),
+[FX `e501e09`](https://github.com/gigpies/shr-fx/commit/e501e09b6721340a95516abc86da2c0480b6ddb4)
+and [PA `44a111f`](https://github.com/gigpies/shr-pa/commit/44a111f0e2e2d640d3fff1378a7f6131b3df3151).
 Their headers and synthetic corpora belong to those repositories. Libraries are
 built independently and loaded by explicit paths and checked hashes; no copied
 provider algorithm or sibling path dependency belongs in GigPies or either desk.
@@ -650,7 +650,7 @@ and refuse timed preview; when present, the complete existing release structure
 must validate. Durable checkpoint capability remains separately validated.
 Legacy LX03/LX04 required fields stay exact. `--durable` already enables timing
 and must not be combined with `--timed`. The owner corpus includes the actual
-[untimed inventory](https://github.com/PaolaShultz/shr-lux/blob/main/tests/fixtures/lx05/v1/untimed-absent.json).
+[untimed inventory](https://github.com/gigpies/shr-lux/blob/main/tests/fixtures/lx05/v1/untimed-absent.json).
 
 ## Configurable composition contracts (2026-10-05)
 

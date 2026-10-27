@@ -1,7 +1,7 @@
 # Intended architecture
 
 Status: live node boundaries remain design direction. Offline soundcheck/rendering
-is implemented in `src/automix/`; see [the automixer](../guides/AUTOMIX.md).
+is implemented in `src/automix/`; see [the automixer](workflows/AUTOMIX.md).
 The [component map](../architecture/COMPONENTS.md) records module ownership across the `../shr-*`
 projects and their intended integration into GigPies.
 

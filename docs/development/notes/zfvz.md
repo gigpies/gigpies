@@ -1,8 +1,14 @@
-# Product documentation and historical evidence
+# Documentation for musicians and engineers
 
-Historical experiment settings can contradict later contracts. Preserve the
-original study in `docs/archive/` and extract reusable behavior into the owning
-product guide or reference. Current docs describe behavior and limits; exact task
-revisions and receipts belong in the private coordination ledger. Qualification
-records retain failed trials and measured scope without treating tested profiles
-as capacity limits.
+The [main README](../../../README.md) shows the product and its best current
+screenshot. [Using GigPies](../../README.md) routes by task, not repository or
+protocol. Assume musical knowledge; explain product-specific actions and limits.
+
+Keep operating pages short: action, visible result, important failure/recovery
+behavior. Put protocols, timing budgets, test counts, source hashes and lab
+procedures behind [Engineering](../README.md). Maintain one detailed owner for
+each contract; link to it rather than copying it into every guide.
+
+Completed experiments and superseded instructions belong in the archive with
+their original scope. Do not append work logs to READMEs or operating guides.
+New features should update the relevant task guide, not grow the landing page.

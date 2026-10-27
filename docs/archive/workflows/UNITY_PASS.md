@@ -1,14 +1,18 @@
 # Unity-source comparison without loudness matching
 
+Historical workflow retained for reproduction. For current use, start at
+[Using GigPies](../../README.md) and [current status](../../STATUS.md).
+
+
 **Historical explicit experiment.** `unity-pass` still runs the processing and
 compensation described below. For an unchanged source and ensemble, use
-[source preservation](SOURCE_PRESERVATION.md); 90/40 Hz HPFs are no longer a universal
+[source preservation](../../guides/SOURCE_PRESERVATION.md); 90/40 Hz HPFs are no longer a universal
 offline review requirement.
 
-The new [manufacturer-reference experiment](../archive/studies/PRESET_EXPERIMENT.md) separates published
+The new [manufacturer-reference experiment](../studies/PRESET_EXPERIMENT.md) separates published
 parameters, DSP adaptations, processing evidence and static fader changes.
 
-For the next source/group balance experiment, see [BALANCE_PASS.md](BALANCE_PASS.md).
+For the next source/group balance experiment, see [BALANCE_PASS.md](../../guides/BALANCE_PASS.md).
 This unity baseline and its previous renders remain unchanged.
 
 This revision follows the listening feedback on the first mixes. It removes the

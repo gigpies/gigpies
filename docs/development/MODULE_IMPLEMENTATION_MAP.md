@@ -7,12 +7,12 @@ Module-only tasks are planned and updated in their owning document below.
 | Runtime owner | Responsibility | Owning plan |
 |---|---|---|
 | GigPies | Stagebox mixer, audio clocks/devices, shared authority/transport and final integration | [Integration plan](MODULE_IMPLEMENTATION_PLAN.md) |
-| SHR Desk | Audio console and controller presentation | [Desk plan](https://github.com/PaolaShultz/shr-desk/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
-| SHR Lightdesk | Lighting console and controller presentation | [Lightdesk plan](https://github.com/PaolaShultz/shr-lightdesk/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
-| SHR PA | Speaker DSP, measurement and alignment | [PA plan](https://github.com/PaolaShultz/shr-pa/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
-| SHR FX | Wet-effects DSP and prepared embedding | [FX plan](https://github.com/PaolaShultz/shr-fx/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
-| SHR REC | Raw writer, progress, finalization and recovery | [REC plan](https://github.com/PaolaShultz/shr-rec/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
-| SHR Lux | Lighting authority, cue/effect execution, analysis and physical output | [Lux plan](https://github.com/PaolaShultz/shr-lux/blob/main/docs/notes/0027-gigpies-implementation.md) |
+| SHR Desk | Audio console and controller presentation | [Desk plan](https://github.com/gigpies/shr-desk/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
+| SHR Lightdesk | Lighting console and controller presentation | [Lightdesk plan](https://github.com/gigpies/shr-lightdesk/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
+| SHR PA | Speaker DSP, measurement and alignment | [PA plan](https://github.com/gigpies/shr-pa/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
+| SHR FX | Wet-effects DSP and prepared embedding | [FX plan](https://github.com/gigpies/shr-fx/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
+| SHR REC | Raw writer, progress, finalization and recovery | [REC plan](https://github.com/gigpies/shr-rec/blob/main/docs/GIGPIES_IMPLEMENTATION.md) |
+| SHR Lux | Lighting authority, cue/effect execution, analysis and physical output | [Lux plan](https://github.com/gigpies/shr-lux/blob/main/docs/notes/0027-gigpies-implementation.md) |
 
 SHR-DAW/Player, Drums, Synth, Sampler, Tone Over 9000 and Skills are reference/code
 sources, not GigPies runtime dependencies or incomplete modules. Earlier speculative

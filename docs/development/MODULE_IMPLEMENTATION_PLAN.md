@@ -463,7 +463,7 @@ when needed and run /home/shome/Documents/knowledge/.zk/validate.sh.
 
 State: PLANNED. Outcome: real prepared wet-effects edits and readback from Desk
 through GigPies into SHR FX, preserving independent dry/protected/recorded paths.
-Provider design and DSP belong to [SHR FX's plan](https://github.com/PaolaShultz/shr-fx/blob/main/docs/GIGPIES_IMPLEMENTATION.md).
+Provider design and DSP belong to [SHR FX's plan](https://github.com/gigpies/shr-fx/blob/main/docs/GIGPIES_IMPLEMENTATION.md).
 Next: resolve FX-02/03 units, f64 preparation/publication/retirement, bounds and
 fault/tail semantics before specifying the host and Desk adapter. Acceptance must
 check actual wet samples and failed edits, not just ACKs or standalone rack tests.
@@ -782,7 +782,7 @@ pads. The `hot` example mode is software-only; normal `tones`/`sequence` are
 unchanged. Helpers remove private runtime state; only two final PNGs are retained.
 The preceding iteration’s cleanup removed 47 disposable files (3,528,265,386 bytes).
 
-CI investigation: [GigPies run 39404031575](https://github.com/PaolaShultz/gigpies/actions/runs/39404031575)
+CI investigation: [GigPies run 39404031575](https://github.com/gigpies/gigpies/actions/runs/39404031575)
 failed `tests/gp06.rs:231`, expecting zero clients after one nonblocking tick on a
 malformed header. The harness now waits for actual EOF/reset under a one-second
 wall-clock deadline, holding provider time at zero so incomplete-frame timeout
@@ -1292,7 +1292,7 @@ No rebuild followed that initial cleanup. Source edits were preserved for the
 subsequently authorized publication.
 
 Owning usage/contract: [selected-channel spectrum](../reference/INSTRUMENT_PANEL.md#selected-channel-spectrum-contract)
-and [Desk fullscreen usage](../../../shr-desk/docs/TERMINAL.md#fullscreen-eq--rta).
+and [Desk fullscreen usage](../../../shr-desk/docs/reference/TERMINAL.md#fullscreen-eq--rta).
 Repeat actual local acceptance with `GP_SPECTRUM_SOURCE` set to the canonical
 `target/debug/examples/spectrum-source` and Desk's ignored
 `actual_provider_spectrum_recovery` test; optional `GP_SPECTRUM_RENDER` exports

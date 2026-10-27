@@ -38,7 +38,7 @@ MIT licence and are not included in Git, tests, CI, packages or releases.
 `src/automix/dsp.rs` adapts normalized transposed-direct-form biquads, HPF/bell
 coefficient equations and soft-knee compression from:
 
-- [SHR PA](https://github.com/PaolaShultz/shr-pa), `src/dsp.rs`, inspected commit
+- [SHR PA](https://github.com/gigpies/shr-pa), `src/dsp.rs`, inspected commit
   `ccc816a97f1957549a2a515d94a672dc78c59012`.
   [Preserved MIT licence](licenses/shr-pa-MIT.txt).
 - [SHR DAW](https://github.com/PaolaShultz/shr-daw), `src/effects/compressor.rs`,
@@ -57,7 +57,7 @@ configuration and local type paths replace host controls; unused reset paths are
 The new delay, routing, wet-return calibration and deterministic spectral review are
 GigPies implementations; no sibling checkout is changed or linked.
 The gain estimator, routing, file workflow and preset choices are GigPies work.
-Manufacturer guidance and the loudness standard are linked in [AUTOMIX](docs/guides/AUTOMIX.md).
+Manufacturer guidance and the loudness standard are linked in [AUTOMIX](docs/archive/workflows/AUTOMIX.md).
 
 ## Offline true-peak measurement
 

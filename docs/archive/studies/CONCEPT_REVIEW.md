@@ -34,7 +34,7 @@ is preserved; the technical system diagram and engine ownership are unchanged.
 
 Both surfaces now have optional native frontends and real local provider clients.
 Lux implements manual fixture control with null output; see
-[local integration](../../guides/HEADLESS_INTEGRATION.md) for software acceptance. Physical
+[local integration](../workflows/HEADLESS_INTEGRATION.md) for software acceptance. Physical
 lighting and combined display/controller/load acceptance remain pending.
 The stereo audio bench has its own qualified evidence in [AUDIO_HARDWARE.md](../../acceptance/AUDIO_HARDWARE.md).
 

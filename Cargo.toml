@@ -6,7 +6,7 @@ edition = "2024"
 rust-version = "1.97.1"
 description = "Experimental live-band audio and lighting system"
 license = "MIT"
-repository = "https://github.com/PaolaShultz/gigpies"
+repository = "https://github.com/gigpies/gigpies"
 publish = false
 
 [dependencies]

@@ -1,11 +1,15 @@
 # Local audio and lighting integration
 
+Historical workflow retained for reproduction. For current use, start at
+[Using GigPies](../../README.md) and [current status](../../STATUS.md).
+
+
 This 2026-10-04 milestone connects the real eight-input GigPies mixer, independent
 Desk/Lightdesk clients, Lux null-output authority, named analysis and actual owner
 REC/FX/PA libraries. Native frontends are software-validated with offscreen CPU
 rendering. No physical audio, MIDI, DMX or operator display is opened by the checks
-below. The [current implementation map](../archive/plans/MODULE_IMPLEMENTATION_MAP.md#execution-checkpoint--2026-10-04)
-records current acceptance; the [prior client-only milestone](../archive/headless-integration-before-modules-2026-10-04.md)
+below. The [current implementation map](../plans/MODULE_IMPLEMENTATION_MAP.md#execution-checkpoint--2026-10-04)
+records current acceptance; the [prior client-only milestone](../headless-integration-before-modules-2026-10-04.md)
 is preserved.
 
 | Owner | Implemented path | Boundary |
@@ -26,7 +30,7 @@ identity; a reconnected client does not replay uncertain commands as new writes.
 
 ## Channel processing
 
-[GP07-processing:2](../reference/CHANNEL_PROCESSING.md) adds atomic four-band fully parametric EQ and compressor
+[GP07-processing:2](../../reference/CHANNEL_PROCESSING.md) adds atomic four-band fully parametric EQ and compressor
 configuration on the existing audio socket. It shares the FOH lease, revision and
 request history with GP03; transport delivery is not application. At 48 kHz, a
 prepared edit applies at the next 48-frame boundary and crossfades for 240 frames.
@@ -43,7 +47,7 @@ PA/FX controls.
 ## Run an explicit local session
 
 Build each owning repository independently with Rust 1.97.1 and its Cargo.lock.
-Follow the [one-build-per-host procedure](../archive/plans/PARALLEL_WORK_PLAN.md#one-build-slot-per-host)
+Follow the [one-build-per-host procedure](../plans/PARALLEL_WORK_PLAN.md#one-build-slot-per-host)
 before Cargo; use `CARGO_INCREMENTAL=0`, `CARGO_BUILD_JOBS=1` and `-j 1`.
 The relevant release binaries are `gigpies-headless`, `shr-desk`, `lux-service`
 and `shr-lightdesk`. No sibling path dependency or provider source copy is needed.
@@ -86,7 +90,7 @@ shr-desk --audio-local /absolute/private/audio/audio.sock \
 The fader unit is integer milli-dB. A `monitor1` or `monitor2` writer can only
 edit its named monitor send. Mode changes and release previews require explicit
 confirmation. See [Desk provider instructions](https://github.com/PaolaShultz/shr-desk/blob/main/docs/PROVIDER_CLIENT.md)
-for the full bounded script vocabulary and [audio service rules](../reference/AUDIO_LOCAL_SERVICE.md)
+for the full bounded script vocabulary and [audio service rules](../../reference/AUDIO_LOCAL_SERVICE.md)
 for lifetime, framing, restart and failure behavior.
 
 A lighting batch can contain:
@@ -128,7 +132,7 @@ and [Lux owning plan](https://github.com/PaolaShultz/shr-lux/blob/main/docs/note
 
 The preceding default audio service keeps optional module health unavailable.
 For the full synthetic graph, build `gigpies-headless` with `hardware-host` and
-activate explicitly accepted libraries using [MODULE_GRAPH.md](../reference/MODULE_GRAPH.md).
+activate explicitly accepted libraries using [MODULE_GRAPH.md](../../reference/MODULE_GRAPH.md).
 That feature build does not open a device. Build each library in its owning
 repository, review its header/corpus and pin exact library/header/manifest hashes;
 private release binaries are not distributed with this source.
@@ -148,7 +152,7 @@ raw pre-fader kick/bass/guitar-1/guitar-2 from inputs 01..04 of the same eight-i
 source. Analysis attachment does not change source samples. Whole windows carry
 oldest acquisition time; age above 100 ms, loss or changed identities requires fresh
 attachment/calibration. Audio and recording never wait for an analysis consumer.
-See [the exact stream](../reference/ANALYSIS_STREAM.md) and [Lux's accepted wire](https://github.com/PaolaShultz/shr-lux/blob/main/tests/fixtures/lx05/v1/WIRE.md).
+See [the exact stream](../../reference/ANALYSIS_STREAM.md) and [Lux's accepted wire](https://github.com/PaolaShultz/shr-lux/blob/main/tests/fixtures/lx05/v1/WIRE.md).
 
 REC start/stop uses the GP05 envelope under the connection's current FOH lease.
 The provider chooses create-new private take paths and keeps eight exact raw
@@ -167,7 +171,7 @@ that information without implementing another analyzer or arbitration engine.
 ## Native frontend boundary
 
 Each console's optional `native` feature uses its existing scenes/font/actions,
-real provider client and the [GP09 process-held role protocol](../reference/ROLE_BINDING.md).
+real provider client and the [GP09 process-held role protocol](../../reference/ROLE_BINDING.md).
 Live lease verification fences stale input/output authority; injected inventories
 remain assertions, not actual controller/display discovery. See the owning
 [Desk native instructions](https://github.com/PaolaShultz/shr-desk/blob/main/docs/NATIVE_FRONTEND.md)

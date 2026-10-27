@@ -1,45 +1,34 @@
-# Product status
+# What works today
 
-GigPies is experimental. The offline mixer and configurable live-engine software
-are implemented; full-system physical and acoustic qualification remains open.
-This page summarizes capabilities. Detailed contracts define behavior, and
-[acceptance records](acceptance/README.md) define the scope of validation.
+[Using GigPies](README.md) · [Engineering evidence](acceptance/README.md)
 
-| Area | Implemented and validated scope | Remaining qualification or planned behavior |
+**Experimental software, not yet a fully qualified live-show system.**
+
+| Area | Available | Still unfinished or unverified |
 |---|---|---|
-| Configurable engine | Channel EQ/compression, buses, monitor sends, owner-native PA, raw recording and source-clock FX; software coverage at 16/32/48 inputs and a 17-input regression | Physical UMC1820 + ADA8200 socket mapping, shared ADAT clock lock and sustained deadlines |
-| Channel and monitor control | Four-band parametric EQ, compression, authenticated control; independent raw post-mute, processed pre-fader and processed post-fader sends | Physical routing and listening acceptance |
-| Metering | GP-METER source-window peak/RMS/clip observations and dedicated Desk readback; legacy snapshots remain unchanged | Combined owner-artifact acceptance and physical qualification remain separate |
-| Brain audio | One local duplex owner, independent talkback and operator-monitor ASRC crossings, PTT expiry and safe recovery; integrated two-Pi software validation | Actual duplex device mapping, clock drift, acoustic delay and feedback/protection checks |
-| PA control | Reviewed whole-configuration/output transactions and narrowly scoped live stereo master EQ | Acoustic protection and physical output acceptance; owner DSP remains in SHR PA |
-| Measurement | Bounded raw reference/microphone-slot capture, owner analysis, multi-position proposals and exact candidate validation; Desk software integration | Actual microphone capture and acoustic alignment |
-| Remote FX | Actual Brain stereo owner, prepare/permit/applied/settled states, tail-preserving bypass and history reset; Desk software integration | Physical listening and sustained hardware deadlines |
-| Analysis and lighting | Named raw analysis, configured source binding, Lux authority and Lightdesk consumption with freshness checks; opt-in chord/key/Camelot, harmonic movement, recurring-section estimates and authored scene selection with real Lightdesk editing/preview | Musical estimates have synthetic software evidence, not rehearsal accuracy qualification; physical configured publication awaits capture-age qualification; fixture/DMX output is unqualified |
-| Operator consoles | Separate Desk and Lightdesk native frontends with real provider clients and CPU-headless rendering validation | Actual two-display/controller identity, LEDs and combined hardware load |
-| Stereo USB bench | Bounded AudioBox USB 96 run with real PA/FX/REC; working-channel electrical delay 5.19–5.23 ms under the recorded H8 conditions | Two one-frame offset changes remain unresolved; weak right return prevents stereo physical acceptance |
-| Offline mixing | Soundcheck/freeze/render, source preservation, bounded balance/tone/FX proposals, EQ matching and true-peak delivery | Musical preference requires listening; numerical eligibility does not establish a better mix |
-| Performer review | Proposed station preferences, collective readiness and shared previews | Planned; not an implemented performer workflow |
+| Audio desk | Channel EQ/compression, fader/pan, meters, monitor sends and spectrum | Physical display/controller setup and listening acceptance |
+| PA | Configurable routing, output controls and master EQ | Speaker protection and acoustic alignment in a real system |
+| Effects | Integrated stereo effects, tail-preserving bypass and panic | Listening and sustained target-hardware performance |
+| Recording | Aligned raw tracks in the engine | Desk Record/Stop controls and standalone recorder playback |
+| Talkback and listening | Brain audio routing and software recovery | Physical duplex device setup, delay and feedback checks |
+| Lighting | Manual looks, cues, scene editing and optional music-following estimates | Physical DMX output and rehearsal accuracy of musical estimates |
+| Measurement | Software capture/analysis and reviewed alignment proposals | Actual microphone/acoustic acceptance |
+| Offline mixing | Multitrack inspection, prepared renders, optional balance/tone/FX changes and export checks | Musical judgement remains with the listener |
+| Performer stations | Design proposal | Not implemented |
 
-## Capacity and clocks
+## Hardware scope
 
-The reference UMC1820 + ADA8200 system targets **16 analog inputs and 18 analog
-outputs at 48 kHz**. Sixteen inputs is the minimum product target; tested 32/48-input
-profiles are growth examples, not ceilings or physical qualification. Runtime
-counts come from validated configuration and advertised capabilities. PA and
-monitor output allocation remains flexible.
+The reference rig targets **16 analog inputs and 18 outputs at 48 kHz**.
+Larger software configurations have been tested; those are not hardware capacity
+promises. Full UMC1820/ADA8200 mapping, clock lock and sustained operation still
+need qualification.
 
-Stagebox and its ADAT expansion share the processing reference. DSP, PA, raw REC,
-FX and source analysis follow Stagebox frames. Brain's local duplex device has a
-separate clock and crosses through two bounded ASRC paths.
+A limited stereo USB bench has run PA, FX and recording. Its right return and
+small timing discontinuities remain unresolved, so it does not establish full
+stereo or multichannel acceptance. Details stay in the
+[hardware evidence](acceptance/AUDIO_HARDWARE.md).
 
-## Product documentation
+## Development
 
-- [Architecture and ownership](architecture/README.md)
-- [Processing and protocol reference](reference/README.md)
-- [Operating guides](guides/README.md)
-- [Software and hardware acceptance](acceptance/README.md)
-- [Planned performer review](architecture/PERFORMER_REVIEW.md)
-
-Release changes belong in [CHANGELOG.md](../CHANGELOG.md). Historical execution
-records and studies are retained in the [archive](archive/README.md); their old
-instructions and measured scopes do not define current product behavior.
+[Current integration work](development/MODULE_IMPLEMENTATION_PLAN.md) ·
+[Architecture](architecture/README.md) · [Acceptance records](acceptance/README.md)

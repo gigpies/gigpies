@@ -42,7 +42,7 @@ Exact inspected paths/hashes and return evidence are in
 ## Historical effects experiment
 
 For the current DI-only comparison with unity source gains, 90/40 Hz low cuts and
-**no loudness matching**, use [UNITY_PASS.md](../../guides/UNITY_PASS.md). The settings and
+**no loudness matching**, use [UNITY_PASS.md](../workflows/UNITY_PASS.md). The settings and
 matching commands below describe the earlier experiments.
 
 

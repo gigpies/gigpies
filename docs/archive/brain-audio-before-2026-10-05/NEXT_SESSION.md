@@ -14,7 +14,7 @@ Pis. Historical launch cards do not reopen that completed assignment.
 The current task0012 increment adds [FOH channel processing](../../reference/CHANNEL_PROCESSING.md);
 its implementation and acceptance are tracked separately from physical gates.
 
-Read the [local integration instructions](../../guides/HEADLESS_INTEGRATION.md),
+Read the [local integration instructions](../workflows/HEADLESS_INTEGRATION.md),
 [implementation map](../plans/MODULE_IMPLEMENTATION_MAP.md), [Brain plan](BRAIN_CONSOLE_PLAN.md),
 [architecture](ARCHITECTURE.md) and [ownership map](COMPONENTS.md). The intended
 Brain hosts two 1920×1080 monitors and two independently assigned MIDI controllers:

@@ -55,7 +55,7 @@ Channel-1 electrical delay and reliability are measured separately in the hardwa
 record; acoustic acceptance remains open.
 
 Status: live node boundaries remain design direction. Offline soundcheck/rendering
-is implemented in `src/automix/`; see [the automixer](../../guides/AUTOMIX.md).
+is implemented in `src/automix/`; see [the automixer](../workflows/AUTOMIX.md).
 The [component map](COMPONENTS.md) records module ownership across the `../shr-*`
 projects and their intended integration into GigPies.
 The [Brain console integration plan](BRAIN_CONSOLE_PLAN.md) records the developing
@@ -66,7 +66,7 @@ interfaces; GigPies owns integration/contracts and SHR Lux owns lighting authori
 Both surfaces now have optional native frontends and actual local provider
 clients. The eight-input mixer, independent monitor sends, REC/FX/PA graph, named
 analysis and null-output Lux authority are implemented and software-validated.
-See [local integration](../../guides/HEADLESS_INTEGRATION.md) for the contracts and evidence.
+See [local integration](../workflows/HEADLESS_INTEGRATION.md) for the contracts and evidence.
 Physical console integration and production remote authentication remain pending.
 The [preceding architecture draft](../architecture-before-brain-console-2026-10-03.md)
 is preserved for context. The remaining sections describe the intended complete

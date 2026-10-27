@@ -117,7 +117,7 @@ actual Git blobs, private directory boundaries and the reviewed script list.
 
 ## Offline automixer
 
-See [AUTOMIX.md](../../guides/AUTOMIX.md) for commands and explicit private-media test opt-ins.
+See [AUTOMIX.md](../workflows/AUTOMIX.md) for commands and explicit private-media test opt-ins.
 `src/automix/config.rs` owns editable settings and validation, `dsp.rs` owns signal
 processing, and `render.rs` owns offline files/timeline/reports. Production tests
 remain hardware-free. Failed render directories are partial and must not be published.

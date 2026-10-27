@@ -467,7 +467,7 @@ The worker checkpoints above retain their original handoff scope. The final
 coordinator pass accepted both native software frontends, read-only module and
 analysis compatibility, and the combined actual-process demonstration. Current
 counts, reproduction and remaining physical/remote gates are in
-[HEADLESS_INTEGRATION.md](../../guides/HEADLESS_INTEGRATION.md) and the
+[HEADLESS_INTEGRATION.md](../workflows/HEADLESS_INTEGRATION.md) and the
 [execution checkpoint](MODULE_IMPLEMENTATION_MAP.md#execution-checkpoint--2026-10-04).
 The complete Python suite now passes 39 checks, including the publication-guard
 Rust-attribute regression; runtime source and accepted release hashes are unchanged.

@@ -25,7 +25,7 @@ See [Brain audio integration](../reference/BRAIN_AUDIO.md); the earlier console 
 
 ## Current software checkpoint
 
-The [local integrated milestone](../guides/HEADLESS_INTEGRATION.md) established the initial
+The [local integrated milestone](../archive/workflows/HEADLESS_INTEGRATION.md) established the initial
 eight-input mixer, owner-library graph, named analysis, Lux null-output authority
 and both provider-backed native frontends. The later
 [modular engine acceptance](../acceptance/MODULAR_ENGINE_ACCEPTANCE.md) covers configurable

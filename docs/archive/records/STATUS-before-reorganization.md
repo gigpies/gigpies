@@ -209,7 +209,7 @@ qualification and optional instruments are subsequent increments. No version bum
 tag, binary release or deployment accompanies this source milestone.
 
 See the [current implementation map](../plans/MODULE_IMPLEMENTATION_MAP.md#execution-checkpoint--2026-10-04)
-and [local integration instructions](../../guides/HEADLESS_INTEGRATION.md) for accepted checks,
+and [local integration instructions](../workflows/HEADLESS_INTEGRATION.md) for accepted checks,
 reproduction and remaining gates. Dated entries below retain their original scope.
 
 ## Previous local-engine checkpoint — 2026-10-04
@@ -221,7 +221,7 @@ passed, including continued audio control while Lux restarts and restores its
 checkpoint disarmed. Reviewed source is saved in all four owning repositories.
 Follow the
 [current implementation map](../plans/MODULE_IMPLEMENTATION_MAP.md#execution-checkpoint--2026-10-04)
-and [explicit local session instructions](../../guides/HEADLESS_INTEGRATION.md).
+and [explicit local session instructions](../workflows/HEADLESS_INTEGRATION.md).
 
 Audio has eight mono inputs, stereo FOH, two post-mute pre-fader monitor sends,
 48-frame command boundaries and 240-frame coefficient ramps. Lux owns actual
@@ -575,7 +575,7 @@ Implemented:
 
 The first full-band experiment has been rendered and its file/measurement contracts
 checked. Listening is the next evaluation; tests do not establish musical quality.
-See [workflow, presets and limitations](../../guides/AUTOMIX.md).
+See [workflow, presets and limitations](../workflows/AUTOMIX.md).
 
 Not implemented: live audio or device transport, networking, web/TUI/controller,
 recording, lighting integration, gates or true-peak limiting.
@@ -602,7 +602,7 @@ Implemented and offline-validated: DI-only bass, unity input trims and faders,
 90 Hz channel HPFs except kick/bass, 40 Hz processed master HPF, measured compressor
 thresholds and loss compensation, independent final PCM output leveling to −0.01 dBFS, preserved
 float sums, and code-generated envelope/spectral reports. No loudness matching in
-this workflow. [Commands and limits](../../guides/UNITY_PASS.md). Listening acceptance remains open.
+this workflow. [Commands and limits](../workflows/UNITY_PASS.md). Listening acceptance remains open.
 
 ## Musical balance pass
 

@@ -1,17 +1,26 @@
-# Development
+# Engineering
 
-Build, test, contribution and lab procedures. These documents describe development operations, separate from product behavior.
+[Using GigPies](../README.md) · [Product status](../STATUS.md)
 
-[Documentation](../README.md) · [Product status](../STATUS.md)
+## System setup
 
-- [CI failure and recovery alerts](CI_ALERTS.md)
-- [Development](DEVELOPMENT.md)
-- [Shared local media](LOCAL_MEDIA.md)
-- [Two-Pi development lab](NODE_LAB.md)
-- [Publication boundaries](PUBLICATION.md)
+- [Build and validate](DEVELOPMENT.md)
+- [Configured processing and recording](../reference/MODULAR_PROCESSING.md)
+- [Authenticated node connections](../reference/REMOTE_PROCESSING.md)
+- [Brain talkback and operator listening](../reference/BRAIN_AUDIO.md)
+- [Console terminal and rendering setup](../reference/INSTRUMENT_PANEL.md)
+- [Lab configuration](NODE_LAB.md) and [shared build coordination](PARALLEL_WORK_PLAN.md)
 
-Project knowledge: [Product documentation and historical evidence](notes/zfvz.md).
+## Design and interfaces
 
-- [Integration task owner](MODULE_IMPLEMENTATION_PLAN.md)
-- [Module task routing](MODULE_IMPLEMENTATION_MAP.md)
-- [Shared build coordination](PARALLEL_WORK_PLAN.md)
+- [Architecture and module ownership](../architecture/README.md)
+- [Signal paths, protocols and recovery contracts](../reference/README.md)
+- [Software and hardware evidence](../acceptance/README.md)
+- [Offline processing command references](OFFLINE_TOOLS.md)
+
+## Maintenance
+
+- [Active integration tasks](MODULE_IMPLEMENTATION_PLAN.md) and [owner routing](MODULE_IMPLEMENTATION_MAP.md)
+- [Publication checks](PUBLICATION.md), [CI incidents](CI_ALERTS.md) and [local media](LOCAL_MEDIA.md)
+- [Historical plans, studies and experiments](../archive/README.md)
+- [Documentation rules](notes/zfvz.md)

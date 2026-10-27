@@ -1,14 +1,18 @@
 # First offline automixer
 
+Historical workflow retained for reproduction. For current use, start at
+[Using GigPies](../../README.md) and [current status](../../STATUS.md).
+
+
 For explicit delivery controls, true-peak export and production stage observations,
-see [summing and delivery](SUMMING_DELIVERY.md). The legacy `render` behavior below
+see [summing and delivery](../../guides/SUMMING_DELIVERY.md). The legacy `render` behavior below
 remains available for exact replay of frozen sessions.
 
-For current offline source decisions, see [source preservation](SOURCE_PRESERVATION.md).
+For current offline source decisions, see [source preservation](../../guides/SOURCE_PRESERVATION.md).
 The preset, calibration and matching workflow below is the historical first experiment;
 new sources do not require those processors.
 
-The new [manufacturer-reference experiment](../archive/studies/PRESET_EXPERIMENT.md) separates published
+The new [manufacturer-reference experiment](../studies/PRESET_EXPERIMENT.md) separates published
 parameters, DSP adaptations, processing evidence and static fader changes.
 
 For the current DI-only comparison with unity source gains, 90/40 Hz low cuts and
@@ -17,7 +21,7 @@ matching commands below describe the earlier experiments.
 
 
 This documents the first pass. For optional FX and code-driven spectral corrections,
-see [the effects/review pass](FX_PASS.md).
+see [the effects/review pass](../../guides/FX_PASS.md).
 
 Implemented and offline-validated; listening acceptance is pending. No live device,
 network, service or host-audio code is involved. Rust 1.97.1, no sibling dependency.

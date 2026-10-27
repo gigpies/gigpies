@@ -14,7 +14,7 @@ Pi4 sessions, build limits and explicit final commit/push instructions.
 
 ## First: continue from the accepted local integration
 
-Read the [local integration instructions and evidence](../guides/HEADLESS_INTEGRATION.md),
+Read the [local integration instructions and evidence](workflows/HEADLESS_INTEGRATION.md),
 [implementation map](plans/MODULE_IMPLEMENTATION_MAP.md), [Brain integration](../architecture/BRAIN_CONSOLES.md), [architecture](../architecture/ARCHITECTURE.md)
 and [module ownership](../architecture/COMPONENTS.md). The intended Brain hosts **two 1920×1080
 monitors and two independently assigned MIDI keyboard controllers**: SHR Desk

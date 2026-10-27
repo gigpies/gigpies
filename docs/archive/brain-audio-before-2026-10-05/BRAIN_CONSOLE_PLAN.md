@@ -13,7 +13,7 @@ The preceding single-surface integration draft is preserved
 
 ## Current software checkpoint
 
-The subsequent [integrated milestone](../../guides/HEADLESS_INTEGRATION.md) implements the
+The subsequent [integrated milestone](../workflows/HEADLESS_INTEGRATION.md) implements the
 eight-input local mixer, actual owner-library graph, named analysis, Lux null-output
 authority and both provider-backed native frontends. Process-held role leases use
 injected descriptors. Physical displays/controllers, fixture output and combined

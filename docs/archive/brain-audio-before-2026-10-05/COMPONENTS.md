@@ -123,7 +123,7 @@ fixture/cue/effect execution and output. Missing Lux work is recorded in the
 integration backlog, not duplicated in Lightdesk.
 The surface projects now use optional `winit` + `wgpu` native frontends;
 their renderers also export offline SVG drafts. These are not GigPies dependencies.
-See the [current software checkpoint](../../guides/HEADLESS_INTEGRATION.md) for validation and
+See the [current software checkpoint](../workflows/HEADLESS_INTEGRATION.md) for validation and
 physical acceptance limits. PA DSP, FX, recorder and lighting
 algorithms retain their owners. The Stagebox/PA node's mixer graph is distinct
 from the `shr-pa` speaker processor; a future mixer-core extraction is a separate

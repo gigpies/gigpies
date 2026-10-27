@@ -71,7 +71,7 @@ record; acoustic acceptance remains open.
 
 Status: the software node boundaries are implemented; full physical integration
 remains unqualified. Offline soundcheck/rendering is implemented in `src/automix/`;
-see [the automixer](../guides/AUTOMIX.md).
+see [the automixer](../archive/workflows/AUTOMIX.md).
 The [component map](COMPONENTS.md) records module ownership across the `../shr-*`
 projects and their intended integration into GigPies.
 The [Brain console integration plan](BRAIN_CONSOLES.md) records the developing
@@ -84,7 +84,7 @@ clients. The configurable mixer, independent monitor sends, REC/FX/PA graph, nam
 analysis and null-output Lux authority are implemented and software-validated.
 The authenticated QUIC path and source-clock FX/analysis have
 [16/32/48-input software acceptance](../acceptance/MODULAR_ENGINE_ACCEPTANCE.md).
-[Local integration](../guides/HEADLESS_INTEGRATION.md) retains the earlier foundation evidence.
+[Local integration](../archive/workflows/HEADLESS_INTEGRATION.md) retains the earlier foundation evidence.
 Physical console integration and the separate [Brain duplex acceptance](../acceptance/BRAIN_AUDIO_ACCEPTANCE.md)
 remain distinct gates; production remote authentication is implemented.
 The [preceding architecture draft](../archive/architecture-before-brain-console-2026-10-03.md)

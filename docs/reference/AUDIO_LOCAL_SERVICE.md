@@ -5,7 +5,7 @@ renderer/authority. Existing default CLI remains unchanged. No devices, playback
 TCP listeners, host services or GPC1/GPA1 changes. This document describes the
 base GP06 mode. Optional [named analysis](ANALYSIS_STREAM.md) and
 [owner-library integration](MODULE_GRAPH.md) extend it only when explicitly
-activated; [local integration](../guides/HEADLESS_INTEGRATION.md) documents real console
+activated; [local integration](../archive/workflows/HEADLESS_INTEGRATION.md) documents real console
 clients.
 This is offline and unprotected, with no deadline or physical safety acceptance.
 

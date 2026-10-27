@@ -21,7 +21,7 @@ measurements, release/failure behavior, and acoustic/output-path qualification.
 Do not infer physical clock lock or safe feedback behavior from fake PCM.
 The prior handoff is [archived](../brain-audio-before-2026-10-05/NEXT_SESSION.md).
 
-Read the [local integration instructions](../../guides/HEADLESS_INTEGRATION.md),
+Read the [local integration instructions](../workflows/HEADLESS_INTEGRATION.md),
 [implementation map](MODULE_IMPLEMENTATION_MAP.md), [Brain plan](../../architecture/BRAIN_CONSOLES.md),
 [architecture](../../architecture/ARCHITECTURE.md) and [ownership map](../../architecture/COMPONENTS.md). The intended
 Brain hosts two 1920×1080 monitors and two independently assigned MIDI controllers:

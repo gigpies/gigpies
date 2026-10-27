@@ -74,3 +74,10 @@ GigPies, linked from contributor plans. STATUS, maps, handoffs and knowledge not
 route to task owners or preserve dated evidence; never mirror current task state.
 Archive closed cards once; keep the active queue limited to open work. Reference
 projects do not become GigPies runtime modules merely because code is reused.
+
+## Reader-facing documentation
+
+Keep README short and visual. Route musicians through the operating guide;
+assume musical knowledge. Put protocols, implementation detail, validation and
+work logs in engineering references or archives. Update the existing owning
+guide instead of appending feature histories to the README.
