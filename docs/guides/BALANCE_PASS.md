@@ -34,6 +34,60 @@ editable and avoid adding compressor compensation a second time. Render B with
 hypothesis can be rejected without changing A. Neither command adds master notches,
 channel normalization, matched listening copies, time alignment or polarity flips.
 
+## Kick-led LUFS hierarchy
+
+An explicit alternative to the band-ratio search is `loudness-pass`:
+
+```sh
+target/release/gigpies loudness-policy new-loudness-policy.json
+target/release/gigpies loudness-pass baseline-settings.json source-dir new-loudness-pass new-loudness-policy.json
+```
+
+The default musical intent is **kick 2 LU above bass; all other individual
+sources at least 1 LU below bass**. The policy contains `kick_to_bass_lu: 2`,
+`bass_to_others_lu: 1` and `max_fader_change_db: 6`; all are editable. This is
+an artistic choice, not a broadcasting standard or a universal mix rule.
+The command keeps kick fixed, moves bass toward its offset, and only lowers
+other sources that exceed their ceiling. Already quieter sources stay quieter.
+It never equalizes all sources or uses the summed ensemble as the competitor.
+
+The existing prepared DI-only unity-trim baseline contract above applies.
+Exactly one kick and one DI bass are required; multiple microphones need an
+explicit combined-source policy first. FX configurations are currently rejected,
+so excitation or returns cannot silently escape measurement. The pass measures
+native-rate production channel EQ/compression and fader/pan on the common BWF
+timeline, before master processing and export. It uses the existing K-weighted
+400 ms integrated meter, with absolute and relative gating independently for
+each source. These are whole-recording contribution measurements, not
+simultaneous playing-window comparisons, transient rankings or guarantees in
+every section. Sparse sources and bleed still require contextual review.
+
+`settings.json` contains the bounded candidate; `baseline.json` preserves the
+input. `report.json` records before/after LUFS, exact desired levels, fader changes
+and `policy_targets_met` from actual remeasurement (0.1 LU tolerance).
+`status.json` is written last. A change-budget or fader limit can prevent the
+requested hierarchy: the unmet target remains visible, and the candidate is
+not labelled compliant. Missing kick/bass loudness produces no changes;
+other silent/too-short sources remain unchanged and unresolved, so full
+compliance stays false. The command saves settings and evidence without
+rendering or playback. Render the selected settings with the existing command.
+Without this explicit command, existing balance and render behavior is unchanged.
+
+LUFS discounts very low frequencies but cannot determine whether bass notes are
+clear against the other instruments. A sub-heavy bass may still consume headroom
+or trigger broadband compression while lacking definition. Use the
+[bass diagnosis and correction pass](BASS_KICK.md) to inspect low-band energy,
+100–400 Hz body, 400–1600 Hz definition, fundamentals, crest loss and compressor
+reduction before selecting tone changes; then remeasure the LUFS hierarchy.
+Do not compensate for weak definition by blindly increasing the whole bass.
+The current bass rule is an optional bounded EQ proposal with held-out guards,
+not an automatic perceptual masking model or a guarantee of audible articulation.
+
+Validation: `cargo test --locked --test loudness_hierarchy` covers source ordering,
+retained quieter sources, gain-offset invariance, missing anchors, change bounds,
+actual DSP remeasurement, non-overwrite, unresolved silence and K-weighting's
+low-frequency attenuation. Musical acceptance requires auditioning actual material.
+
 ## Measurements and confidence
 
 Analysis runs the production channel strips, excitation, fader/pan routing, FX and

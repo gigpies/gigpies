@@ -1,6 +1,6 @@
 # GigPies integration: plan and implementation
 
-Updated 2026-10-11. This document owns cross-module integration tasks from planning
+Updated 2026-10-28. This document owns cross-module integration tasks from planning
 through implementation and acceptance. Module-only work stays in the
 [owning module plan](MODULE_IMPLEMENTATION_MAP.md). The same task must not have a
 second status table in an index, handoff, capability matrix or knowledge note.
@@ -59,6 +59,9 @@ it is historical, not a queue to execute. Later accepted work supersedes its lim
 | [GP-METER](#gp-meter--measured-audio-on-the-real-desk) | GigPies lead; SHR Desk consumer | IMPLEMENTED / software-validated; owner-artifact P4 BLOCKED: supply reviewed manifest |
 | [GP-FX](#gp-fx--writable-owner-effects-in-the-console) | GigPies lead; SHR FX provider, SHR Desk consumer | PLANNED: depends on owner FX-02/03 prepared writable contract |
 | [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) | GigPies lead; SHR Desk consumer | PLANNED: define scene contents, safes and reviewed recall before implementation |
+| [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | GigPies | IN PROGRESS: E0–E3 software validated; E4–E7 remain open |
+| [GP-AUTO-BASS-LOW](#gp-auto-bass-low--observed-low-energy-and-definition) | GigPies | IMPLEMENTED / software-validated: independent low-energy objective and source-stage guards; musical acceptance pending |
+| [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: kick/bass/other source policy; musical acceptance pending |
 | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | GigPies lead; SHR Desk consumer | PLANNED: needs trustworthy measurements and an explicit musical objective |
 | [GP-REC](#gp-rec--complete-integrated-recording-workflow) | GigPies lead; SHR REC provider, SHR Desk consumer | PLANNED: audit existing host lifecycle before defining missing operator actions |
 | [GP-H1](#gp-h1--physical-audio-qualification) | GigPies lead; PA/REC/FX owners as needed | PLANNED: separate physical session and observed rig required |
@@ -481,6 +484,8 @@ interrupted recall, reconnect and recovery against actual providers.
 State: PLANNED. Outcome: use real measured sources to propose useful bounded mix
 changes while preserving human control. Next: after GP-METER, select one defined
 soundcheck/assistance behavior and connect existing offline logic where applicable.
+Offline rule development is owned by [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing);
+its results require a separate bounded live-integration contract here.
 Scope authority machinery already exists; do not recreate it. Require held-out
 engineering evidence and separate human listening before musical acceptance.
 
@@ -1389,3 +1394,589 @@ The original GP-UI-COMPARE record and contributor changes remain preserved.
 
 Next: complete the page-level physical controls and outstanding acceptance above. Keep this card open while
 those requirements remain; do not archive it as a completed migration.
+
+## GP-AUTO-LUFS — offline kick-led source hierarchy
+
+State: **IMPLEMENTED / software-validated; musical acceptance pending**.
+Owner: GigPies. Scope authorized 2026-10-28: offline automixer rules, kick 2 LU
+above bass and all other individual sources at least 1 LU below bass.
+
+Implementation and usage: [owning balance guide](../guides/BALANCE_PASS.md#kick-led-lufs-hierarchy),
+`src/automix/hierarchy.rs`. Reuse production channel DSP/routing and integrated
+K-weighting; hold kick fixed, target bass offset, cap other sources, preserve
+quieter sources. Bounded fader moves, actual remeasurement and explicit unmet
+objectives. No hidden tonal processing or change to existing no-policy behavior.
+Bass energy/definition diagnosis remains owned by
+[the existing bass pass](../guides/BASS_KICK.md).
+
+Acceptance:
+- [x] Explicit editable 2 LU / 1 LU policy and CLI entry points.
+- [x] Reject ambiguous anchors/unsupported FX; preserve missing measurements.
+- [x] Retain baseline and candidate; expose bounded failures rather than claim success.
+- [x] Focused regressions and normal production suite pass (449 passed, 20 opt-in ignored);
+  Python production checks: 50 passed. CLI defaults/non-overwrite, formatting and
+  all-target Clippy with warnings denied pass. Private renders, auditions and
+  hardware qualification were intentionally not run.
+- [ ] Musical acceptance on selected material, including bass definition, kick impact
+  and vocals below bass; no listener verdict inferred from LUFS.
+
+Next action: audition a selected recording with the explicit policy and review
+bass tone before final loudness placement; physical activation and live automation are separate from this offline rule.
+
+## GP-AUTO-BASS-LOW — observed low energy and definition
+
+State: **IMPLEMENTED / software-validated; musical acceptance pending**.
+Owner: GigPies. Authorized 2026-10-28 to improve automixer decisions from
+observations and account for bass energy below 100 Hz. Scope is offline software.
+
+Owning contract and commands: [bass low-frequency intent](../guides/BASS_KICK.md#explicit-low-frequency-intent).
+Implementation: `src/automix/bass.rs`. Observation: the existing objective only
+compared definition with 100–400 Hz body; the retained study separately showed
+low-note filtering, weak definition and modest compressor action. Its raw media
+and local evidence folder were unavailable here; no new song outcome is claimed.
+
+- [x] Measure below-25 and 25–100 Hz energy at every stage; preserve nine-band output.
+- [x] Optional independent low/definition intent; historical policies remain body-only.
+- [x] Conditional bounded low shelves; protect fundamentals and attack, prevent
+  increased pre-compressor low load, and preserve training/held-out separation.
+- [x] Distinguish accepted partial improvement from reaching median tone targets.
+- [x] Focused controlled-signal regressions and complete normal suite pass:
+  453 Rust tests passed, 20 historical/opt-in tests skipped; 50 Python tests passed.
+  Formatting, all-target Clippy with warnings denied, publication index and
+  knowledge validation pass.
+- [ ] Listening on actual material, then remeasure the GP-AUTO-LUFS 2 LU / 1 LU hierarchy.
+
+Next action: obtain an available selected source for musical acceptance, with
+explicit tonal intent; no automatic source normalization,
+compression retuning, playback or physical activation is part of this change.
+
+## GP-AUTO-ENSEMBLE — observation-led whole-band automixing
+
+State: **IN PROGRESS; E0–E6 offline software validated; E7 recording/listening
+qualification pending on Raspberry Pi, 2026-10-28**. Final software evidence is
+recorded in this card; implementation does not imply musical acceptance.
+Owner: GigPies. This card alone owns the implementation sequence, acceptance,
+evidence and next action. [Research record](../archive/studies/AUTOMIX_ROLE_RESEARCH_2026-10-28.md)
+contains sources R1–R9 and access limitations, not another backlog.
+
+### Outcome and authorization
+
+Extend observation-led assistance across kick, bass, snare, toms, overheads/rooms,
+electric/acoustic guitars, lead/backing vocals and explicitly identified remaining
+instruments. Preserve useful tone and playing while reducing demonstrated problems
+in energy distribution, dynamics and simultaneous competition. Every role must
+produce useful evidence, an applicability decision, and either a bounded supported
+proposal or an actionable abstention; a universal EQ curve is not the objective.
+
+The 2026-10-28 request authorizes **research, documentation and this plan now**;
+implementation is for a new thread invoking this card. Once invoked for execution,
+E0–E7 below are the offline implementation scope, including necessary production
+DSP additions, synthetic tests and private offline validation on available inputs.
+Complete independent software work when recordings are unavailable; preserve the
+real-source/listening gate explicitly. No per-phase permission is required within
+that scope. Publication, hardware/playback activation and sibling changes remain
+subject to the repository's existing authorization rules. Do not infer a live
+rollout from successful offline work; [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance)
+owns later live integration, with PA behavior in SHR PA and wet DSP in SHR FX.
+
+The user's accepted balance intent remains **kick 2 LU above bass; every other
+individual source at least 1 LU below bass**. This includes snare and vocals; do
+not silently impose a conventional vocal-first mix. It is a contribution-level
+musical policy, not a transient, peak or whole-ensemble dominance guarantee.
+If intelligibility or a technical guard conflicts with that policy, report the
+conflict and retain a safe candidate rather than rewrite the musical objective.
+
+### Repository audit and reuse
+
+The following describes inspected code on the planning date, not new acceptance.
+Read these owners before edits; preserve the preceding thread's bass and hierarchy
+work wherever it currently resides in Git. Recheck live files rather than assume
+an old release binary contains those changes.
+
+| Existing owner | Actual reusable behavior | Gap this task addresses |
+|---|---|---|
+| `src/automix/bass.rs`, [bass guide](../guides/BASS_KICK.md) | Note support, staged energy, optional definition/low intent, bounded EQ and actual-DSP guards; below-25/25–100 Hz accounting | Role-specific logic is not a generic audibility model; low target is optional, note support can be uncertain, and baseline identity/repeated-run protection need consolidation |
+| `src/automix/drums.rs`, [drum guide](../guides/DRUMS.md) | 10 ms envelopes, clustered events, attack/body/recovery, joint dynamics validation | Current EQ probes only reduce two existing boosts; general explicit kick/snare tone objectives are absent; reported FFT bands start at 25 Hz and stop at 8 kHz |
+| `tone.rs`, `expert.rs`, [source rules](../guides/SOURCE_RULES.md) | Explicit electric/acoustic guitar profiles; coherent primary/secondary capture; body/presence and compression-relief rules; decay guards | One broad tone ratio misses lows, harshness, register changes and ensemble conflicts; expert families currently cover guitars only |
+| `matching.rs`, `matching/{model,measure,fit,check}.rs`, [matching guide](../guides/EQ_MATCHING.md) | Frozen identities, supplied maps, supported bands, amount/reset, explicit passages; contexts include guitar, DI bass and voice | Voice map applicability is not a vocal fault detector; matching is not automatic source diagnosis; reuse the state/identity pattern rather than invent another incompatible format |
+| `bleed.rs`, `bleed_reference.rs`, [bleed guide](../guides/SNARE_BLEED.md) | Coincidence/conditional-reference evidence, ambiguous events, protected trials | No validated general-purpose bleed remover; ghost notes and unisons must remain protected |
+| `balance.rs`, [balance guide](../guides/BALANCE_PASS.md) | Simultaneous-window band covariance, activity and bounded relationship search | Overlapping filter bands are proxies; several role-specific stages and final bundle interactions remain separate |
+| `hierarchy.rs`, [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | Explicit 2 LU / 1 LU defaults, bounded faders, actual source-LUFS remeasurement | Single kick/DI bass, unity trim/no FX baseline; independent whole-song gates can conceal section failures; target failure is reported but candidate is still written |
+| `observation.rs`, `render.rs`, `dsp.rs`, `true_peak.rs`, `delivery.rs` | Production-stage taps, signed sums, mono observations, linked strips, LUFS and finalized-file checks | Unify observations with correction passes; avoid a parallel renderer or calling a pre-export meter a finished-file result |
+| `ambience.rs`, `effects.rs` and their guides | Explicit offline FX policies, returns and existing source identities | Include fixed existing FX in verification before proposing new wet changes; room microphone, printed FX and generated return are distinct |
+
+The 453 Rust / 50 Python successes recorded for the preceding bass revision are
+baseline software evidence only, not completion of any phase below. The documented
+`../waves` library and old `artifacts/automix/bass-kick-v1/` evidence were unavailable
+in that thread. Verify availability in E0; do not reconstruct recordings from an
+archived report or let missing media prevent synthetic/software progress.
+
+### Shared measurement and decision contract
+
+1. **Identity and intent.** Bind channel IDs/files/hashes, BWF offsets, native rate,
+   stereo routing, instrument/performance identity, related microphones and capture
+   assumptions. A filename or `Role` alone cannot prove two paths are independent
+   instruments. Retain unknown identity. Profile fields name measurable objectives,
+   supported registers, confidence requirements and allowed controls; null means
+   disabled, not a hidden style preset. Existing body-only policies stay compatible.
+2. **Energy and time.** Record raw, post-filter/pre-compressor, post-compressor before
+   and after makeup, routed contribution, coherent group, direct+FX, master and final
+   export observations. Expose DC separately where possible, below-25 Hz energy,
+   the existing low bands, body/definition/high bands and total 0–Nyquist accounting.
+   State Hann normalization/bin resolution, include DC/Nyquist correctly, and mark
+   bands beyond native Nyquist unsupported. Do not silently resample or double-count
+   overlapping filters as disjoint power. Longer spectral windows and shorter event
+   envelopes serve different purposes; retain tails and all-sample peak guards.
+3. **Loudness is distinct.** Keep standard integrated, momentary and short-term LUFS
+   quantities defined by R1/R2. Also report common-window energy comparisons, active
+   occupancy and per-section distributions. A hit or masked subset shorter than the
+   standard window is an event energy metric, not a new kind of LUFS. Preserve the
+   user's whole-source hierarchy while exposing its section/activity limitations.
+4. **Context.** Use fixed raw/baseline activity/event masks, quiet/strong strata,
+   attacks/sustains/fades, supported pitch/register and simultaneous competitors.
+   Compare coherent source groups and the actual remaining mix, including signed
+   interaction/mono compatibility. Do not sum independent dB values or call a source
+   soloed through nonlinear master processing its additive mix contribution.
+5. **Intervention evidence.** Separate measured deviation from a proposed cause.
+   Before blaming sub-driven compression, compare controlled EQ-only or detector-only
+   alternatives through actual DSP with other controls frozen. Likewise distinguish
+   strong high-frequency bleed from wanted attack. High energy, correlation, a narrow
+   spectral peak or a changed crest factor alone is not a defect classification.
+6. **Freeze and validate.** Reuse matching identities for baseline/source/policy/
+   algorithm versions. Select on training only, with a no-change candidate. Freeze
+   the entire proposed bundle before its final held-out measurement. Prefer training
+   passages before held-out passages to avoid later training inheriting held-out DSP
+   history; do not reset processing at arbitrary crop boundaries. Legacy alternating
+   splits are historical development evidence, not independently clean validation.
+   Held-out failure cannot select a runner-up or retune a threshold. Reused validation
+   becomes development evidence; reserve unseen material for final qualification.
+7. **Bounded, recoverable decisions.** Enforce per-control and cumulative budgets
+   against the immutable baseline, not just the previous pass. Do not append EQ or
+   repeat makeup indefinitely. Identical baseline+policy+source reproduces the same
+   result; reset restores original settings. Report support, candidate/applied deltas,
+   target coverage, regressions, unresolved objectives and rejection reasons separately.
+   A partial improvement may be saved as a candidate, but cannot be marked all-targets
+   compliant. Missing evidence is not zero energy or a successful target.
+8. **Actual composition.** Tone, compression, fader, excitation, sends and master
+   processing interact. Validate the final combination through production processing
+   and finalized PCM. Common export attenuation does not repair tonal imbalance,
+   clipped input or destructive microphone cancellation. True-peak checks, level
+   budgets and musical preference remain separate outcomes.
+
+### Role-by-role work specification
+
+The frequency regions below are **initial analysis hypotheses**, not boost/cut
+prescriptions, musical target ranges or standards. Keep full-band observations;
+adapt supported regions to known tuning/register and sample rate, and make profile
+values explicit. No role automatically acquires bass's numeric ratio or a default
+high-pass cutoff. R5 motivates capture-dependent interpretation; the choices below
+are ours and must survive the indicated tests.
+
+| Role / source grouping | Required observations and likely failure cases | Candidate actions and mandatory preservation checks |
+|---|---|---|
+| Kick, including explicitly grouped inside/outside paths | Below-25 headroom; roughly 25–120 weight, 120–400 body, 2–5 kHz attack; event duration, double hits, sustain, bass overlap; excessive EQ versus naturally deep kick | Bounded broad EQ/HPF trials only with intent; existing threshold relief; later detector filtering/dynamic bands if justified. Preserve early impact, useful fundamental/weight, double hits and coherent mic sum; never raise sustained sub just to reach LUFS |
+| Bass DI / declared amp group | Existing low/body/definition measurements, repeated notes, attack/sustain, low-note support, kick overlap and pre-compressor load | Reuse GP-AUTO-BASS-LOW. Admit amp paths only after group identity and preserved coherent-sum validation replace current DI-only restrictions; do not silently mute or normalize them. Harmonic generation remains separately enabled, bounded and distortion-tested |
+| Snare, including top/bottom paths | Roughly 100–350 body, 1–6 kHz attack, 4–12 kHz wires/brightness, ring decay, kick/hat bleed; ghost notes, rolls and flams | Add explicit body/attack/tail objectives and broad EQ candidates. Preserve ghost notes and expressive decay; distinguish desired ring from persistent unwanted resonance. No automatic gate/subtraction/polarity flip from energy or correlation alone |
+| Toms and tuned percussion | Per-hit/register body and attack, decay to the next hit, sympathetic ringing and snare/kick coincidence | Reuse event framework with per-tom identity; preserve fills and low fundamentals. Static tone/dynamics first; expansion only for validated isolated-hit evidence with protected quiet events |
+| Overheads, hi-hat/cymbals | Whole-kit capture, stereo coherence/mono loss, roughly 3–12 kHz activity and upper-band sustain, snare impact, room contribution | Treat overheads as kit microphones, not isolated cymbals. Broad or later dynamic harshness relief must retain cymbal texture, snare contribution and stereo image. Hi-hat needs explicit identity under current `Other` metadata until a justified schema extension |
+| Drum room / vocal room / acoustic ambience | Direct/room relationship, late energy, stereo/mono behavior, sustained bleed and decay | Preserve intended space; use bounded tonal/level proposals with direct-source context. No dereverberation or extra FX inferred from a name; no per-room equal-loudness normalization |
+| Electric rhythm / lead guitar | Low contamination versus register support; existing 100–400 body / 800–3200 presence; 2–6 kHz emphasis; chords, sustained notes, palm-muted events, fades, vocal/bass overlap | Extend `expert`/`tone`, retain multi-path identity and existing decay protection. Broad static relief, explicit dynamics relief and later time-selective cuts. Protect low-register body, pick definition and distortion character; no exact technique claims from sparse features |
+| Acoustic guitar | Low-body versus handling/proximity energy, 1–5 kHz articulation, upper string noise, stereo/pickup/mic relationship, quiet fingerstyle/strums | Preserve resonance, quiet articulation and natural decay; distinguish intermittent noise from sustained tone before HPF, EQ or dynamic candidates. Do not use electric-guitar settings by default |
+| Lead / backing vocals | Phrase activity, low/plosive events, body, roughly 1–4 kHz articulation, 4–10 kHz sibilance, breaths, quiet words and competing guitars/returns | Explicit tone/compression policies; event-sensitive de-essing later. Protect vowels, consonants, breath and quiet phrases; cymbal bleed must not become a sibilance detector. Resolve competition within the user's hierarchy; report conflicts instead of raising vocals above bass silently |
+| Keys, synths, piano, strings, winds and other declared sources | Register, attack/sustain, stereo content, broad-band support, intentional bass/bright voicing and competing roles | Current `Other` needs an explicit family/capture/profile binding. Generic measurements always available; add supported family rules with fixtures, starting from representative available material. Unknown or unsupported sources preserve sound and report which evidence/profile is missing |
+| Generated returns / printed effects | Send-linked timing, wet/dry level, spectral/tail competition, processing already printed into source | Observe existing generated FX in composition. Reuse the owning FX APIs for allowed changes. Never count a return as a second independent instrument or silently double-process a printed effect |
+
+### Execution phases and gates
+
+Implement in the order below. A gate describes required evidence, not a request for
+another approval. Update the evidence and next-action fields in this card after
+material changes. Do not leave an implemented detector inaccessible from the
+normal offline preparation workflow.
+
+**E0 — freeze the starting point and measurement truth.**
+Audit the preceding bass/LUFS changes, their output semantics and tests. Verify local
+source availability and retain notices. Use matching's identity and preservation
+contracts to define a versioned analysis request/result shared by the new workflow.
+Set a configurable finite analysis budget derived from admitted channel counts and
+sample rates; retain at least the 16-input product target. Existing 8-instrument,
+4-secondary or fixture limits must not become a universal product ceiling. Check
+FFT total-energy accounting, LUFS reference cases, silence/short clips, native-rate
+window boundaries, BWF offsets and DC/Nyquist. Record unresolved disagreements.
+Gate: reproducible baseline and independent meter/renderer checks; no new correction.
+
+**E1 — shared observations, profiles and one offline entry point.**
+Extract reusable measurement/feature contracts from the existing passes, keeping
+legacy output readers/commands compatible or explicitly versioned. Define profile
+fields for role/group identity, optional band ratios/relative directions, transient
+and dynamics budgets, supported content, allowed actions and evidence minimums.
+Provide analysis-only and prepare-candidate modes through one CLI workflow, with
+machine-readable results and a short human report. Reuse/refactor `source-analyze`
+and `source-pass` where suitable; choose exact CLI syntax here before implementing,
+then document it in the existing source-rules guide. No-policy means observation
+and unchanged settings. Gate: fixtures for every role route correctly, unsupported
+profiles abstain explicitly, baseline hashes and reset/re-run semantics work.
+
+**E2 — kick, bass and snare as the first complete slice.**
+Add explicit drum tone objectives, sub/body/attack/tail measurements and the bounded
+candidate families from the role table. Keep baseline event masks and note support;
+validate quiet hits, overlapping hits and low-end competition in the same mix.
+Use controlled EQ-versus-compressor comparisons to explain proposed processing.
+Expose the existing bass low objective through the shared request without silently
+enabling it in legacy policies. Integrate the user's 2 LU / 1 LU hierarchy after
+processing; retain separate processing-only and level-only evidence.
+Gate: end-to-end synthetic band example detects and improves a known fault while
+preserving a matched no-fault example, ghosts/fundamentals and all technical budgets.
+
+**E3 — guitars and vocals.**
+Extend guitar source rules with low/high/phrase-context features and explicit
+competition observations. Add actual vocal profiles and event evidence instead of
+assuming that voice EQ-map support is a vocal rule. First ship useful static
+proposals and dynamics evidence; report event-only issues requiring E6 distinctly.
+Gate: vocal consonants/quiet phrases, guitar fades/register/body and grouped paths
+survive injected and clean cases; one role's improvement cannot mask another role's
+protected feature. Commands expose both candidates and abstentions.
+
+**E4 — toms, overheads, rooms and the remaining families.**
+Apply the common contracts to every row above. Keep mixed microphones coherent and
+validate bleed ambiguity explicitly. Add explicit family bindings for known `Other`
+inputs; implement supported rules rather than pretending an unknown preset covers
+all instruments. Complete acoustic-guitar and backing-vocal checks separately from
+electric/lead fixtures. Gate: each current `Role` and each admitted extra family has
+an automated applicability, correction/no-change and protection test; uncovered
+families remain visible as unsupported, not marked done by generic analysis alone.
+
+**E5 — whole-band coordinator and fixed FX verification.**
+Select source candidates on training evidence, then evaluate the assembled mix.
+First enforce protected constraints and the user hierarchy, then improve declared
+tone/competition objectives, then prefer smaller changes. Do not let one weighted
+aggregate cancel a failed hard constraint or a regression on another role. Diagnose
+whether a conflict calls for source tone, competing-source relief or fader change.
+Retain simultaneous source/rest-of-mix spectral overlap as a labelled proxy; do not
+claim a psychoacoustic audibility model. No automatic panning, time shifts or source
+removal. Generalize hierarchy measurements to declared instrument groups and
+existing FX with explicit meter-stage semantics; preserve the original per-channel
+mode and its results. Multi-mic grouping must not silently change what the user's
+hierarchy means. If mapping is ambiguous, require identity resolution before moves.
+
+Include a bounded auditory-model feasibility experiment using R9: compare the
+simple overlap proxy with an auditory-filter/partial-loudness approach on controlled
+target-plus-masker signals. Read the complete method before implementing; record
+source/code licensing, presentation assumptions, required level calibration and
+runtime. Check frequency-separated/overlapping maskers, low-frequency masking and
+temporal cases independently of the optimizer. Without calibrated playback or
+sufficiently isolated inputs, retain an explicitly relative competition estimate.
+Promote the model only if it adds validated discrimination; record a concrete
+reason if it remains experimental. Musical preference still needs E7, and an
+uncalibrated model cannot report a listener's absolute audible/inaudible threshold.
+
+Start with at most 128 cheap spectral proposals and four actual-DSP training
+finalists per instrument, and at most two bounded ensemble refinement rounds.
+These are editable per-run search budgets, not product channel caps or a quality
+claim. Record runtime/evaluation counts and unmet objectives on exhaustion. Freeze
+one final bundle before validation; no held-out fallback. Repeated runs operate
+from the same baseline. Gate: final actual processing, FX and export pass all
+protected checks; section violations and impossible target combinations are exposed.
+
+**E6 — time-selective correction where static candidates are inadequate.**
+Retain controlled static-vs-dynamic evidence first. Implement bounded dynamic EQ /
+frequency-selective detector processing for supported transient resonance/low-load
+cases and a vocal de-essing path with event confidence and stereo linking. If
+cross-source sidechaining is needed, bind the source identity and detector band,
+cap depth and duration, and verify release into pauses. Gate/expander, transient
+shaping and harmonic generation are further candidates only when their distinct
+source evidence and guards exist; do not enable all processors by role name.
+
+New processors must live in the production processing owner, with offline renderer
+parity; do not simulate the effect only in an analyzer. Version schemas, preserve
+old-session defaults, freeze explicit makeup and support exact bypass/reset. Define
+latency, lookahead, state transitions, resource bounds and common-timeline behavior.
+Test pumping, zipper noise, tail/recovery, stereo movement, distortion/aliasing,
+nonfinite recovery and sample/block partition invariance. Any path used in a live
+callback must retain bounded work without allocation/locks/I/O. No live activation
+or new FX-engine fork follows from this phase. Gate: evidence of benefit over the
+best admitted static candidate on targeted cases, with protected clean cases and
+reported artifacts/limitations; otherwise retain the static result and explain why.
+
+**E7 — representative recordings and musical qualification.**
+When sources are available, choose a small varied corpus with identity, notices,
+source hashes and known capture limitations. Include clean and problematic examples,
+quiet/strong passages, fills, simultaneous kick/bass, vocals with guitars and room
+bleed. Do not claim broad support from one song or synthetic tones. Initially use
+three independent sessions where available; report actual per-role coverage and
+leave absent techniques/families unqualified. Freeze development choices before a
+new session/listening set; do not tune repeatedly against the qualification set.
+
+Prepare aligned baseline/candidate excerpts and full-song checks in ignored local
+storage. Keep the original delivery levels and, separately, labelled whole-mix
+loudness-matched listening copies when needed to test a level-bias hypothesis;
+never normalize individual stems or overwrite accepted exports. Verify PCM, timing,
+true peaks, routing and exact processing deltas before listening. Compare unchanged,
+static and admitted dynamic alternatives in randomized order, allowing no preference
+and free comments on impact, definition, harshness, naturalness and intelligibility.
+Record the user's verdict separately from metric success. A small personal listening
+test is not a standards-compliant perceptual study. Missing media/listening leaves
+this gate open while completed software remains reviewable.
+
+### Validation and completion checklist
+
+- [x] Repository audit and dated primary-source research linked; no new audio/DSP
+  implementation performed as part of the planning turn.
+- [x] E0: independent meter, spectral accounting, source identity and baseline checks.
+- [x] E1: shared workflow, explicit intent, compatibility, deterministic re-run/reset.
+- [x] E2: kick/bass/snare decisions and required loudness ordering work together.
+- [x] E3: guitar and lead-vocal static rules preserve tested synthetic quiet/attack content; real-source qualification remains E7.
+- [x] E4: all role-table rows have supported rules or specific remaining evidence gaps;
+  unsupported status does not imply musical acceptance.
+- [x] E5: assembled mix and fixed FX offline-validated; conflicts and coverage failures explicit; auditory experiment retained outside production.
+- [x] E6: justified dynamic processing has renderer parity and its own protection tests;
+  each deferred mechanism has evidence-based disposition, not an untested quality claim.
+- [ ] E7: real-source coverage and listener judgments recorded separately from software.
+
+Required regression matrix: DC/sub energy, independent FFT power sums, minimum/odd
+sample rates, silence/short/tail windows, absent harmonics, 16/32/48-channel configured
+fixtures, mono/stereo phase cancellation, multi-mic grouping, clipped PCM versus
+valid float headroom, BWF offsets, whole-group gain invariance where applicable,
+no-change/unknown intent, insufficient confidence, sparse drums, ghost notes/flams,
+held-out veto, compressor memory across split boundaries, source mutation after
+planning, stale policy/baseline, repeated-run budget bypass, EQ capacity, near-gate
+LUFS changes, incompatible objectives, missing anchors, FX tails and final-file peaks.
+Use analytic/synthetic truth and manually labelled events in addition to the
+optimizer's own metric; include deliberately failed candidates and clean signals.
+
+During implementation run focused tests for the touched owners. Before completing
+shared schema/rendering/DSP phases, run the complete normal Rust suite and required
+feature checks, Clippy, formatting and relevant script tests under the documented
+build lock. Historical media matrices/long benchmarks remain opt-in; record run and
+skipped classes. Reuse `tests/{bass,drums,expert,tone,balance,preservation,matching,
+loudness_hierarchy}.rs` where applicable; confirm exact filenames before editing.
+Performance tests must state input count/rate, CPU/memory, analysis duration and
+hardware; development-machine success is not Raspberry Pi or live acoustic proof.
+
+### Evidence and next action
+
+Planning evidence: source/guide inspection above; research R1–R9 with explicit
+retrieval limits. No new real-audio measurement, listening, hardware work, dependency
+change or implementation test run was claimed for this documentation-only turn. Local
+plan/research links and anchors, whitespace, publication-index and knowledge
+validation passed; runtime tests were intentionally not rerun for planning prose.
+Keep implementation measurements and exact verification commands in this card as
+phases execute; private signal files and source identities stay in ignored artifacts.
+
+Execution evidence, 2026-10-28:
+
+- User invoked offline E0–E7; no per-phase approval is needed. Pre-existing
+  bass/hierarchy/research edits are preserved. The documented `../waves` and
+  `artifacts/automix/bass-kick-v1` paths are absent; no replacement media acquired.
+- E0 adds `src/automix/ensemble/`: versioned request/frozen identities reuse the
+  matching SHA-256 contract, bind session/request/capture declarations, native WAV
+  channels and BWF offsets, and admit timeline work/source bytes before processing.
+  Configurable budgets include BWF silence and fixed FX tails; defaults admit the
+  existing offline Session limit of 64 channels, including 16/32/48 fixtures. This
+  is an offline format limit, not a product ceiling. Unknown identity stays unknown.
+- The new disjoint spectrum includes DC/Nyquist and below-25 Hz; symmetric-Hann
+  normalization is the actual window square sum. Partial windows retain their
+  actual length; zero padding changes bin spacing, not underlying resolution.
+  Unsupported bands return null. Total power is window-weighted Parseval power,
+  distinct from unwindowed RMS. Legacy relative spectral readers remain unchanged.
+- Fixed a shared loudness timing defect: integer-floor 100 ms hops accumulated
+  drift at odd native rates. Rational native-frame boundaries and sample-weighted
+  windows now preserve timing within one frame; added ungated momentary maximum.
+  Source: R2, sections 2.2–2.3, directly inspected again. Existing 997 Hz reference
+  tests and independent DFT/Parseval tests constrain measurement truth.
+- Baseline focused command: `flock -xn /home/shome/p/.gigpies-build.lock env
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 cargo test --locked --test bass
+  --test loudness_hierarchy --test preservation`: 12 passed. A first new capacity
+  fixture used the example's 44.1 kHz session with 48 kHz files; admission correctly
+  rejected it. Fixture corrected to 48 kHz, with no relaxed production validation.
+- Audit disagreement retained: legacy bass/drum passes use alternating 12 s
+  development partitions and different spectral summaries. They cannot supply
+  independently clean qualification for the new workflow. E1/E2 must use explicit
+  training-before-held-out spans and continuous production DSP history. Legacy
+  command/report semantics remain compatible; no historical result is relabelled.
+- E0 normal suite: `cargo test --locked --all-targets --features hardware-host`
+  under the build lock/environment above: **542 passed, 47 opt-in ignored**.
+  Warning-denied Clippy with the same targets/feature passed. Python script suite:
+  **50 passed**. Publication index guard and knowledge validation passed. Historical
+  media, owner-artifact, network and physical tests stayed opt-in; no playback.
+- E1 CLI contract selected before implementation: `ensemble-analyze <baseline.json>
+  <source-dir> <new-output-dir> <request.json>` freezes inputs; `ensemble-prepare
+  <state.json> <source-dir> <new-output-dir>` always uses that immutable baseline;
+  `ensemble-reset <state.json> <new-output-dir>` restores it. Old commands stay
+  compatible. E1: nine focused tests passed; the complete default suite passed;
+  feature-enabled warning-denied Clippy passed. Profiles without validated rules
+  explicitly abstain. Stage data includes FFT/window normalization, all-sample
+  peaks, separate DC mean/bin power, and integer-contact versus float-headroom
+  counts. These observations do not imply a final composed-mix result.
+
+E2 implementation evidence:
+
+- `ensemble/correct.rs` adds at most three bounded broad EQ trials and one
+  compressor-only intervention per supported single-source profile. Original
+  controls/makeup stay fixed; the compressor comparison is not an enabled action.
+  Candidate selection uses explicit training only, with baseline activity and
+  exactly paired windows. Per-passage objective errors cannot cancel each other.
+- Bass reuses the existing 16384-sample note estimator and retains a separate
+  fundamental guard. The common spectral window now uses that same length;
+  feature admission derives its count from the owning constant. A test exposed
+  the estimator's incompatible initial 8192-sample input; corrected by reusing
+  its required length, without weakening its note confidence test.
+- All-sample event energy/peak and protected spectral loss/rise are hard checks.
+  One frozen bundle receives held-out validation; failure restores baseline
+  settings with a reviewable `candidate.json`, never a held-out runner-up.
+- The existing hierarchy is proposed from training after processing, with separate
+  level-only evidence and final whole-source compliance. Missing/ambiguous
+  performance identities or FX abstain. Fixed FX/grouped semantics remain E5 work.
+  The production renderer and finalized-delivery checker verify accepted output.
+- Eleven focused tests passed, including known kick fault/clean/held-out-veto
+  cases and jointly corrected bass/snare with ghost-event/fundamental guards.
+  The initial hierarchy fixture exposed an unreachable >6 dB move and correctly
+  reported failure; the reachable counterpart and full feature suite passed.
+  Correction-specific temporal/role coverage remains subject to the phase gate.
+
+- E2 full normal feature suite passed, including all 11 ensemble tests. Final
+  review moved whole-file PCM contact into the final safety veto so held-out
+  contacts cannot influence training selection. Settings are now installed only
+  after finalized export/source verification; rejected proposals remain separate.
+
+E3 implementation evidence:
+
+- Electric rhythm/lead guitar and lead-vocal profiles use explicit static intent,
+  registered pitch-region protection, quiet/attack/fade event budgets and
+  per-passage checks. No role name chooses a curve. Cases needing selective
+  processing explicitly retain static/baseline results pending event evidence.
+- Simultaneous source/rest spectra and signed cross-power use actual routed
+  channel samples; an independent anti-phase fixture verifies cancellation.
+  The overlap fraction is labelled a spectral proxy, not calibrated audibility.
+  This remains before excitation/FX/master; E5 owns the complete composition.
+- Fourteen focused ensemble tests passed, including paired fault/clean synthetic
+  guitar fades and vocal quiet phrases/consonant bursts, and exact preservation
+  when related microphones cannot yet be validated as a coherent group. Amp
+  paths likewise abstain pending DI/amp group validation. No real speech/song
+  or physical playback qualification is claimed.
+- E3 normal feature suite: **551 passed, 47 opt-in ignored** under the documented
+  lock/environment. Final warning-denied feature Clippy passed; after tightening
+  unsupported-profile compliance reporting, all **14 ensemble regressions passed**
+  again (29.00 s). Final Python suite: **50 passed**. Formatting, whitespace,
+  publication and knowledge validation passed. Publication checked both the actual
+  complete index and a temporary complete index including the new files (760
+  entries); the actual index was preserved. No commit or push was performed.
+- Tests used synthetic 48 kHz mono/stereo sources, including 2 s / 2–3-channel
+  correction fixtures and 16/32/48-channel admission fixtures. Host: AMD Ryzen
+  5 5600G, 12 logical CPUs, 62 GiB RAM; serialized compilation, normal test runner.
+  These timings are regression execution evidence, not a resource benchmark or Pi
+  performance qualification. No historical media matrix, owner-artifact, socket,
+  hardware or audible-playback test was activated.
+- **Prior invocation stopped here: E4–E7 were unfinished.** Remaining software is
+  acoustic/backing/tom/kit/room/other-family qualification, coherent group/FX
+  coordination, section hierarchy, the R9 feasibility experiment and justified
+  production time-selective processing with its artifact/parity checks. The R9
+  author review is reachable; no auditory model or experiment was implemented.
+  Missing recordings/listener input affects E7, not authorization for E4–E6.
+
+### Continuation evidence, 2026-10-28
+
+- Preserved the incoming uncommitted E0–E3, bass and hierarchy changes in place.
+- E4 extends explicit static tone trials to toms, acoustic guitar, backing vocals,
+  overheads/rooms, hi-hat, piano, keys, synth, strings and winds. These are bounded
+  declared-band interventions, not automatic instrument fault diagnoses. Mixed
+  microphone profiles require reviewed `isolated_ensemble_capture` identity;
+  ambiguous bleed and printed effects abstain with specific evidence requests.
+  Distinct register/envelope/stereo synthetic cases exercise correction, clean
+  preservation and quiet decay. The 12-family paired regression passed (119.04 s);
+  an initial tom fixture exposed leakage into its declared low band and was
+  revised as development evidence, not held-out qualification. Musical/technique
+  coverage still requires E7.
+
+- E5 adds coherent profile spectra and event sums, shared bounded EQ, explicit
+  `grouped_hierarchy`, direct-plus-dedicated-return LUFS and per-section LUFS with
+  continuous K-filter history. Selection gates complete blocks from declared training
+  passages only, without joining gaps or admitting held-out levels. Shared/unknown
+  return attribution abstains.
+  Whole-source compliance cannot conceal a section conflict. Original independent
+  channel hierarchy remains available. Composition verifies every production
+  stage and common 100 ms window through the **same explicit delivery limiter
+  policy as export**, plus mono compatibility and final PCM. Abrupt-source release
+  tails caused a real veto; the corresponding tapered-source case passes.
+  Search remains one bounded source round (no ensemble refinement), at most three
+  static trials or two static plus one dynamic trial, plus one compressor-only
+  comparison. `budget.max_static_trials` permits smaller runs; every rejection,
+  evaluation count, elapsed selection time and unmet objective is explicit.
+- E5 auditory feasibility: eight controlled spectral cases plus unmasked controls
+  were executed using separately compiled GPL reference kernels, with the complete
+  executed kernel source inspected. The [research follow-up](../archive/studies/AUTOMIX_ROLE_RESEARCH_2026-10-28.md#bounded-auditory-feasibility-follow-up)
+  records source pin, licensing, assumptions, ratios and 0.487462 s runtime.
+  No code/dependency entered production. Frequency discrimination improves over
+  the coarse proxy on these cases, but waveform temporal validation, calibrated
+  presentation and source isolation remain insufficient: **not promoted**.
+- E6 adds one optional versioned production `Channel.dynamic_eq` band: fixed
+  bell-cut path, band detector, smoothed stereo-linked crossfade, 0–6 dB depth,
+  no makeup/lookahead/sample delay, bounded allocation-free sample processing.
+  Existing sessions omit it and retain exact defaults. Reviewed isolated vocal,
+  transient-resonance or low-load evidence and disjoint problem/protection passages
+  are frozen in request v2. At most four actual-DSP finalists are evaluated per
+  profile. Dynamic correction must beat the best admissible static result;
+  held-out evidence only vetoes. Standalone tests cover native rates, 50 ms bursts,
+  quiet recovery, linked stereo, exact bypass/reset/partitioning, nonfinite reset
+  and steady-state agreement with the linear cut (no additional steady harmonics).
+  End-to-end high-band and low-load fixtures beat static cuts that would attenuate
+  protected quiet passages. This does not classify real sibilants or prove freedom
+  from modulation artifacts. Brief events still need adequate declared spectral
+  passage coverage; missing evidence abstains. No live integration was activated.
+- E6 deferred mechanisms: cross-source sidechains, gates/expanders, transient
+  shapers and new harmonic generation have no demonstrated independent need in
+  these reviewed cases. Shared-microphone ambiguity, quiet events and existing
+  static/dynamic solutions argue against enabling them by role. Existing FX is
+  fixed, not forked. No untested musical benefit is claimed for deferred controls.
+- E7 independent tooling: `ensemble-listen-pack` verifies the state/candidate,
+  rechecks finalized deliveries, renders the baseline under the same delivery
+  policy and writes randomized, exact PCM A/B excerpts from held-out passages.
+  It measures excerpt peaks (including boundary effects), retains original levels,
+  rejects overwrite and records blank preference/comments plus a separate key.
+  No playback occurs. Loudness-matched comparisons and a separate admitted static
+  alternative can follow a concrete level-bias/listening need; no stem normalization.
+- E7 source boundary: the user confirmed recordings are **on the Raspberry Pi**
+  and will continue source testing there. No real sessions or listening verdicts
+  were available here: real-source coverage **0 sessions**, musical acceptance
+  **pending**. No replacement recordings were downloaded. Request/state v2 requires
+  fresh analysis from original settings; legacy Session defaults remain compatible.
+- The full
+  12-family matrix was exercised before being made opt-in as a recorded exhaustive
+  study; the normal suite retains tom/acoustic/backing/overhead correction and
+  clean/protection cases, all-role routing, mixed-capture refusals and shared guards.
+  On demand: `cargo +1.97.1 test --locked --test ensemble
+  all_remaining_family_register_envelope_matrix -- --ignored --exact` under the
+  documented build lock/environment.
+
+Final validation uses Rust 1.97.1 and `Cargo.lock`, serialized with
+`flock -xn /home/shome/p/.gigpies-build.lock env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1`:
+
+- `cargo +1.97.1 test --locked`: **480 passed, 0 failed, 21 ignored**.
+- `cargo +1.97.1 test --locked --features hardware-host`: **564 passed, 0 failed,
+  48 ignored**; no physical device activation.
+- `python3 -m unittest discover -s scripts -p 'test_*.py'`: **50 passed**.
+- `cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings`
+  and `cargo +1.97.1 fmt --all -- --check`: passed.
+- Whitespace, complete temporary publication index (**768 entries**, preserving
+  the actual staging area), actual index (**752 entries**) and knowledge links
+  (**19 projects, 94 notes, 0 broken links**) passed. Versioned hooks remain enabled.
+- Final review added exact limiter-policy parity, unique profile names, excerpt
+  boundary peaks, short dynamic bursts and training-passage-only hierarchy
+  regressions. The parity fixture was corrected to explicitly select matched
+  output so it actually exercises the legacy limiter difference.
+- Local logs and auditory probe evidence live in ignored
+  `artifacts/automix/ensemble-validation-20261028/`; generated audio and the
+  external GPL reference source are not publication inputs.
+- Intentionally skipped: opt-in hardware/playback/physical synchronization,
+  historical media auditions, long clock stress/benchmarks and fixture generators.
+  The exhaustive family matrix has the separate recorded run above. No Pi
+  runtime/resource or acoustic qualification is claimed by workstation tests.
+
+**Next action: E7 recording and listening qualification on the Raspberry Pi.**
+Use [the whole-band workflow](../guides/SOURCE_RULES.md#whole-band-observation-workflow)
+with the Pi's original recordings/notices and fresh v2 requests. Prefer three
+independent sessions when available; record actual per-role coverage and source
+hashes. Freeze the intent before qualification, inspect candidate/report/export
+checks, then generate listening packs and record the user's judgments separately.
+Keep absent families and the experimental auditory model unqualified. No new
+permission is needed for the already authorized offline scope; publication and
+physical activation remain outside this invocation.

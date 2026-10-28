@@ -50,6 +50,8 @@ pub enum Role {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Channel {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_eq: Option<super::dynamic_eq::Config>,
     pub file: PathBuf,
     pub role: Role,
     pub group: String,
@@ -152,6 +154,9 @@ impl Session {
         }
         let mut files = BTreeSet::new();
         for ch in &self.channels {
+            if let Some(dynamic) = &ch.dynamic_eq {
+                dynamic.validate(self.sample_rate)?;
+            }
             let p = &ch.compressor;
             if !names.contains(&ch.group)
                 || !files.insert(&ch.file)
@@ -287,6 +292,7 @@ impl Channel {
                     db,
                 })
                 .collect(),
+            dynamic_eq: None,
             compressor: Compressor {
                 threshold_db: threshold,
                 ratio,

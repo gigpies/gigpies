@@ -47,6 +47,10 @@ pub struct Policy {
     pub kick_file: PathBuf,
     /// Explicit intent: definition (400–1600) relative to body (100–400).
     pub definition_body_db: [f64; 2],
+    /// Optional independent intent: 400–1600 Hz definition / all energy below 100 Hz.
+    /// Omission preserves historical policies; no universal bass spectrum is inferred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_low_db: Option<[f64; 2]>,
     pub max_eq_db: f64,
     pub max_output_rise_db: f64,
     pub max_note_spread_db: f64,
@@ -72,6 +76,11 @@ impl Policy {
                 .iter()
                 .all(|v| v.is_finite() && (-40. ..=20.).contains(v))
             || self.definition_body_db[0] >= self.definition_body_db[1]
+            || self.definition_low_db.is_some_and(|r| {
+                r.iter()
+                    .any(|v| !v.is_finite() || !(-60. ..=20.).contains(v))
+                    || r[0] >= r[1]
+            })
             || ![
                 (self.max_eq_db, 6.),
                 (self.max_output_rise_db, 6.),
@@ -114,7 +123,10 @@ pub(super) fn spectrum(x: &[[f64; 2]]) -> Vec<f64> {
             .collect::<Vec<_>>();
         fft(&mut a);
         for (k, v) in p.iter_mut().enumerate() {
-            *v += (a[k][0].powi(2) + a[k][1].powi(2)) * (2. / (n * n) as f64 / 0.375) / 2.;
+            // One-sided power doubles only bins with a negative-frequency partner.
+            // DC and Nyquist must not be doubled, especially in the sub-energy report.
+            let weight = if k == 0 || k == n / 2 { 1. } else { 2. };
+            *v += (a[k][0].powi(2) + a[k][1].powi(2)) * (weight / (n * n) as f64 / 0.375) / 2.;
         }
     }
     p
@@ -193,11 +205,32 @@ pub fn estimate_note(x: &[[f64; 2]], rate: u32) -> Option<Note> {
         harmonic_fraction: harmonics,
     })
 }
+/// Unweighted spectral power: no claim that a strong fundamental is unwanted rumble.
+#[derive(Clone, Serialize)]
+pub struct LowEnergy {
+    pub below_25_dbfs: f64,
+    pub from_25_to_100_dbfs: f64,
+    pub below_100_fraction: Option<f64>,
+    pub definition_low_db: Option<f64>,
+}
+pub fn low_energy(sp: &[f64], rate: u32) -> LowEnergy {
+    let total = sp.iter().sum::<f64>();
+    let low = band(sp, rate, 0., 100.);
+    let definition = band(sp, rate, 400., 1600.);
+    LowEnergy {
+        below_25_dbfs: power_db(band(sp, rate, 0., 25.)),
+        from_25_to_100_dbfs: power_db(band(sp, rate, 25., 100.)),
+        below_100_fraction: (total > 1e-20).then_some(low / total.max(1e-30)),
+        definition_low_db: (low > 1e-20 && definition > 1e-20)
+            .then_some(power_db(definition) - power_db(low)),
+    }
+}
 #[derive(Clone, Serialize)]
 pub struct Stage {
     pub rms_dbfs: f64,
     pub peak_dbfs: f64,
     pub bands_dbfs: [f64; 9],
+    pub low_energy: LowEnergy,
     pub fundamental_dbfs: Option<f64>,
 }
 #[derive(Clone, Serialize)]
@@ -373,6 +406,7 @@ pub fn measure(
                     .iter()
                     .zip(&spectra)
                     .map(|(b, sp)| Stage {
+                        low_energy: low_energy(sp, s.sample_rate),
                         fundamental_dbfs: note.as_ref().map(|n| fundamental(sp, s.sample_rate, n)),
                         rms_dbfs: power_db(
                             b.iter().flat_map(|x| x.iter()).map(|v| v * v).sum::<f64>()
@@ -421,7 +455,11 @@ pub fn analyze(s: Session, root: &Path, out: &Path, p: Policy, start: f64, end: 
     std::fs::create_dir(out)?;
     write_json(&out.join("settings.json"), &s)?;
     write_json(&out.join("policy.json"), &p)?;
-    write_json(&out.join("measurement.json"), &m)
+    write_json(&out.join("measurement.json"), &m)?;
+    write_json(
+        &out.join("diagnosis.json"),
+        &diagnose(&m.windows, s.sample_rate, &p),
+    )
 }
 
 fn quantile(values: impl Iterator<Item = f64>, q: f64) -> Option<f64> {
@@ -435,6 +473,22 @@ fn quantile(values: impl Iterator<Item = f64>, q: f64) -> Option<f64> {
 }
 fn definition(sp: &[f64], rate: u32) -> f64 {
     power_db(band(sp, rate, 400., 1600.)) - power_db(band(sp, rate, 100., 400.))
+}
+fn definition_low(sp: &[f64], rate: u32) -> f64 {
+    power_db(band(sp, rate, 400., 1600.)) - power_db(band(sp, rate, 0., 100.))
+}
+fn tone_cost(sp: &[f64], rate: u32, p: &Policy) -> f64 {
+    violation(definition(sp, rate), p.definition_body_db).powi(2)
+        + p.definition_low_db
+            .map_or(0., |r| violation(definition_low(sp, rate), r).powi(2))
+}
+fn tone_regresses(before: &[f64], after: &[f64], rate: u32, p: &Policy) -> bool {
+    violation(definition(after, rate), p.definition_body_db)
+        > violation(definition(before, rate), p.definition_body_db) + 1.
+        || p.definition_low_db.is_some_and(|r| {
+            violation(definition_low(after, rate), r)
+                > violation(definition_low(before, rate), r) + 1.
+        })
 }
 fn violation(x: f64, range: [f64; 2]) -> f64 {
     (range[0] - x).max(x - range[1]).max(0.)
@@ -452,6 +506,9 @@ pub struct Diagnosis {
     pub training_notes: usize,
     pub held_out_notes: usize,
     pub training_definition_body_db: Option<f64>,
+    pub training_definition_low_db: Option<f64>,
+    pub training_below_100_fraction: Option<f64>,
+    pub fraction_below_low_intent: Option<f64>,
     pub fraction_below_intent: Option<f64>,
     pub confidence: String,
     pub interpretation: Vec<String>,
@@ -495,14 +552,27 @@ pub fn diagnose(w: &[Window], rate: u32, p: &Policy) -> Diagnosis {
             .count() as f64
             / sets[0].len() as f64
     });
+    let low_fraction = p.definition_low_db.and_then(|r| {
+        (!sets[0].is_empty()).then(|| {
+            sets[0]
+                .iter()
+                .filter(|x| definition_low(&x.bass_spectrum, rate) < r[0])
+                .count() as f64
+                / sets[0].len() as f64
+        })
+    });
     let confidence = if sets[0].len() >= 12 && counts[0] >= 3 {
         "adequate training note coverage; heuristic, not probability"
     } else {
         "insufficient training note coverage; abstain"
     }
     .to_string();
-    Diagnosis{activity_floor_dbfs:floor,eligible:mask.clone(),training_windows:sets[0].len(),held_out_windows:sets[1].len(),training_notes:counts[0],held_out_notes:counts[1],training_definition_body_db:median,fraction_below_intent:fraction,confidence,interpretation:vec![
+    Diagnosis{activity_floor_dbfs:floor,eligible:mask.clone(),training_windows:sets[0].len(),held_out_windows:sets[1].len(),training_notes:counts[0],held_out_notes:counts[1],training_definition_body_db:median,
+        training_definition_low_db:quantile(sets[0].iter().map(|x| definition_low(&x.bass_spectrum, rate)), 0.5),
+        training_below_100_fraction:quantile(sets[0].iter().filter_map(|x| low_energy(&x.bass_spectrum, rate).below_100_fraction), 0.5),
+        fraction_below_low_intent:low_fraction, fraction_below_intent:fraction,confidence,interpretation:vec![
         "Band imbalance is relative to explicit intent; fundamentals are musical content, never notch detections.".into(),
+        "Below-100 Hz includes below-25 Hz energy and musical fundamentals. Strong low-band share alone never authorizes cuts; the independent definition/low target must be explicit.".into(),
         "Guitar/vocal band overlap is a masking risk, not a perceptual masking measurement or proof of audibility.".into(),
         "DI identity does not establish pickup, pedal, preamp or amp routing; spectrum does not establish a capture defect.".into(),
         "Pitch-changing, low-confidence and pause windows cannot vote for spectral correction; they retain level and dynamics guards.".into()]}
@@ -577,11 +647,12 @@ pub fn propose(w: &[Window], rate: u32, p: &Policy, available_eq: usize) -> Prop
     };
     if q.diagnosis.training_windows < 12
         || q.diagnosis.training_notes < 3
-        || q.diagnosis.fraction_below_intent.unwrap_or(0.) < 0.7
+        || (q.diagnosis.fraction_below_intent.unwrap_or(0.) < 0.7
+            && q.diagnosis.fraction_below_low_intent.unwrap_or(0.) < 0.7)
     {
         return q;
     }
-    // Fixed 54-member grid. No frequencies are fitted to spectral peaks/notes.
+    // Historical 54-member grid. No frequencies are fitted to spectral peaks/notes.
     let mut grid = vec![vec![]];
     for mid in [700., 1000.] {
         for boost in [2., 4.] {
@@ -614,13 +685,32 @@ pub fn propose(w: &[Window], rate: u32, p: &Policy, available_eq: usize) -> Prop
             },
         ]);
     }
+    // Only observed low-intent deficiency enables low relief. Fixed broad shelves,
+    // never notches fitted to a played fundamental; note support guards still apply.
+    let low_deficient = q.diagnosis.fraction_below_low_intent.unwrap_or(0.) >= 0.7;
+    if low_deficient {
+        for hz in [35., 60., 90.] {
+            for cut in [-1., -2., -4.] {
+                let shelf = EqBand {
+                    kind: EqKind::LowShelf,
+                    hz,
+                    q: FRAC_1_SQRT_2,
+                    db: cut,
+                };
+                grid.push(vec![shelf.clone()]);
+                for mid in [700., 1000.] {
+                    for boost in [2., 4.] {
+                        grid.push(vec![shelf.clone(), bell(mid, boost, 0.7)]);
+                    }
+                }
+            }
+        }
+    }
     let baseline_cost = quantile(
         w.iter()
             .zip(&q.diagnosis.eligible)
             .filter(|(x, m)| **m && !x.held_out)
-            .map(|(x, _)| {
-                violation(definition(&x.bass_spectrum, rate), p.definition_body_db).powi(2)
-            }),
+            .map(|(x, _)| tone_cost(&x.bass_spectrum, rate, p)),
         0.5,
     )
     .unwrap();
@@ -673,7 +763,7 @@ pub fn propose(w: &[Window], rate: u32, p: &Policy, available_eq: usize) -> Prop
                 .zip(&predicted)
                 .zip(&q.diagnosis.eligible)
                 .filter(|((x, _), m)| **m && !x.held_out)
-                .map(|((_, sp), _)| violation(definition(sp, rate), p.definition_body_db).powi(2)),
+                .map(|((_, sp), _)| tone_cost(sp, rate, p)),
             0.5,
         )
         .unwrap()
@@ -684,8 +774,10 @@ pub fn propose(w: &[Window], rate: u32, p: &Policy, available_eq: usize) -> Prop
                 && !x.held_out
                 && (power_db(sp.iter().sum()) - power_db(x.bass_spectrum.iter().sum())
                     > p.max_output_rise_db
-                    || violation(definition(sp, rate), p.definition_body_db)
-                        > violation(definition(&x.bass_spectrum, rate), p.definition_body_db) + 1.)
+                    || tone_regresses(&x.bass_spectrum, sp, rate, p)
+                    || (low_deficient
+                        && power_db(band(sp, rate, 0., 100.))
+                            > power_db(band(&x.bass_spectrum, rate, 0., 100.)) + 0.1))
             {
                 c.rejection
                     .push("training output or tone regression".into());
@@ -712,6 +804,9 @@ pub struct Outcome {
     pub failures: Vec<String>,
     pub definition_body_before: [Option<f64>; 2],
     pub definition_body_after: [Option<f64>; 2],
+    pub definition_low_before: [Option<f64>; 2],
+    pub definition_low_after: [Option<f64>; 2],
+    pub median_targets_met: bool,
     pub max_added_reduction_db: f64,
     pub max_mix_peak_rise_db: f64,
     pub pcm_contact_windows: usize,
@@ -730,6 +825,9 @@ pub fn validate(
         failures: vec![],
         definition_body_before: [None; 2],
         definition_body_after: [None; 2],
+        definition_low_before: [None; 2],
+        definition_low_after: [None; 2],
+        median_targets_met: true,
         max_added_reduction_db: 0.,
         max_mix_peak_rise_db: 0.,
         pcm_contact_windows: before
@@ -748,6 +846,7 @@ pub fn validate(
             .zip(&after.windows)
             .any(|(a, b)| a.seconds != b.seconds)
     {
+        o.median_targets_met = false;
         o.failures.push("timeline mismatch".into());
         return o;
     }
@@ -790,8 +889,28 @@ pub fn validate(
         );
         o.definition_body_before[split] = a;
         o.definition_body_after[split] = b;
-        if !a.zip(b).is_some_and(|(a, b)| {
-            violation(a, p.definition_body_db) - violation(b, p.definition_body_db) >= 0.25
+        let low_median = |m: &Measurement| {
+            quantile(
+                m.windows
+                    .iter()
+                    .zip(mask)
+                    .filter(|(x, yes)| **yes && x.held_out == *held)
+                    .map(|(x, _)| definition_low(&x.bass_spectrum, rate)),
+                0.5,
+            )
+        };
+        let (la, lb) = (low_median(before), low_median(after));
+        o.definition_low_before[split] = la;
+        o.definition_low_after[split] = lb;
+        o.median_targets_met &= b.is_some_and(|b| violation(b, p.definition_body_db) <= 0.1)
+            && p.definition_low_db
+                .is_none_or(|r| lb.is_some_and(|b| violation(b, r) <= 0.1));
+        let low_improvement = p.definition_low_db.map_or(Some(0.), |r| {
+            la.zip(lb).map(|(a, b)| violation(a, r) - violation(b, r))
+        });
+        if !a.zip(b).zip(low_improvement).is_some_and(|((a, b), low)| {
+            let body = violation(a, p.definition_body_db) - violation(b, p.definition_body_db);
+            body >= -0.1 && low >= -0.1 && body + low >= 0.25
         }) {
             o.failures
                 .push(format!("split {split}: inadequate tone improvement"));
@@ -817,9 +936,16 @@ pub fn validate(
                 o.failures
                     .push(format!("window {i}: pause/noise amplification"));
             }
+            if q.diagnosis.fraction_below_low_intent.unwrap_or(0.) >= 0.7
+                && b.stages[1].low_energy.below_100_fraction.is_some()
+                && low_power(&b.stages[1]) > low_power(&a.stages[1]) + 0.1
+            {
+                o.failures.push(format!(
+                    "window {i}: added pre-compressor low energy despite low-intent deficiency"
+                ));
+            }
             if q.diagnosis.eligible[i]
-                && violation(definition(&b.bass_spectrum, rate), p.definition_body_db)
-                    > violation(definition(&a.bass_spectrum, rate), p.definition_body_db) + 1.
+                && tone_regresses(&a.bass_spectrum, &b.bass_spectrum, rate, p)
             {
                 o.failures.push(format!("window {i}: tone regression"));
             }
@@ -846,7 +972,14 @@ pub fn validate(
             .push("mix peak consumes >1 dB additional export headroom".into());
     }
     o.accepted = o.failures.is_empty();
+    o.median_targets_met &= o.accepted;
     o
+}
+fn low_power(stage: &Stage) -> f64 {
+    power_db(
+        gain(stage.low_energy.below_25_dbfs).powi(2)
+            + gain(stage.low_energy.from_25_to_100_dbfs).powi(2),
+    )
 }
 /// Search once from training; held-out only accepts/rejects, never retunes.
 pub fn run(s: Session, root: &Path, out: &Path, p: Policy, start: f64, end: f64) -> Result<()> {
@@ -934,4 +1067,31 @@ pub fn run(s: Session, root: &Path, out: &Path, p: Policy, start: f64, end: f64)
         )?;
     }
     write_json(&out.join("settings.json"), &applied)
+}
+
+#[cfg(test)]
+mod spectral_tests {
+    use super::*;
+    #[test]
+    fn dc_sub_and_nyquist_power_are_not_double_counted() {
+        for hz in [0., 16., 50., 16384.] {
+            let x = (0..SIZE)
+                .map(|i| {
+                    let value = 0.1 * (std::f64::consts::TAU * hz * i as f64 / 32768.).cos();
+                    [value, value]
+                })
+                .collect::<Vec<_>>();
+            let sp = spectrum(&x);
+            let expected = if hz == 0. || hz == 16384. {
+                0.01
+            } else {
+                0.005
+            };
+            assert!((sp.iter().sum::<f64>() - expected).abs() < 1e-10);
+            let low = low_energy(&sp, 32768);
+            if hz < 25. {
+                assert!((gain(low.below_25_dbfs).powi(2) - expected).abs() < 1e-10);
+            }
+        }
+    }
 }

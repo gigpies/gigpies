@@ -6,7 +6,7 @@ mod identity;
 mod observation;
 mod render;
 pub mod true_peak;
-pub use render::{compare, observe, run, run_policy, write_json};
+pub use render::{compare, observe, observe_policy, run, run_policy, write_json};
 
 pub mod ambience;
 pub mod effects;
@@ -20,6 +20,9 @@ pub mod unity;
 pub mod preservation;
 
 pub mod balance;
+
+/// Explicit kick > bass > other-source loudness policy.
+pub mod hierarchy;
 
 /// Intent-conditioned offline guitar tone preparation.
 pub mod tone;
@@ -61,3 +64,8 @@ fn training_precedes_held_out(training: &[[f64; 2]], held_out: &[[f64; 2]]) -> b
             .fold(f64::NEG_INFINITY, f64::max)
             <= held_out.iter().map(|s| s[0]).fold(f64::INFINITY, f64::min)
 }
+
+/// Frozen whole-band observation and preparation contracts.
+pub mod ensemble;
+
+pub mod dynamic_eq;

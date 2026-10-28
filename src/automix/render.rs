@@ -182,6 +182,20 @@ pub fn observe(session: Session, root: &Path, out: &Path, until_seconds: f64) ->
     }
     run_inner(session, root, out, None, None, Some(until_seconds))
 }
+/// Observe the exact processing selected by an explicit delivery policy, without PCM export.
+pub fn observe_policy(
+    session: Session,
+    root: &Path,
+    out: &Path,
+    until_seconds: f64,
+    policy: super::delivery::Policy,
+) -> Result<()> {
+    policy.validate()?;
+    if !until_seconds.is_finite() || until_seconds <= 0. {
+        return Err("invalid observation end".into());
+    }
+    run_inner(session, root, out, None, Some(&policy), Some(until_seconds))
+}
 fn run_inner(
     mut session: Session,
     root: &Path,
@@ -593,7 +607,7 @@ fn run_inner(
                 std::fs::rename(input, out.join(format!("{stem}-unity-float.wav")))?;
             }
         }
-    } else if policy.is_some() {
+    } else if policy.is_some() && observe_until.is_none() {
         for stem in ["bypass", "processed"] {
             std::fs::rename(
                 out.join(format!("{stem}-bus.tmp.wav")),

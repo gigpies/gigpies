@@ -15,3 +15,6 @@
 - [Offline summing observations and delivery](../guides/SUMMING_DELIVERY.md)
 - [Guitar correction when the ending fades](../guides/TONE_DECAY.md)
 - [Instrument tone preparation](../guides/TONE_PASS.md)
+
+Implementation and qualification: [observation-led whole-band automixing](MODULE_IMPLEMENTATION_PLAN.md#gp-auto-ensemble--observation-led-whole-band-automixing).
+Commands and current limits: [whole-band observation workflow](../guides/SOURCE_RULES.md#whole-band-observation-workflow).

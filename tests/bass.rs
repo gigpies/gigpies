@@ -54,7 +54,12 @@ impl Drop for Fixture {
     }
 }
 fn fixture() -> Fixture {
-    let root = std::env::temp_dir().join(format!("gigpies-bass-{}", std::process::id()));
+    fixture_with_low_balance(false)
+}
+fn fixture_with_low_balance(sub_heavy: bool) -> Fixture {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("gigpies-bass-{}-{id}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
     let mut s = config::example();
     s.channels.truncate(2);
@@ -95,8 +100,17 @@ fn fixture() -> Fixture {
             };
             let kick = 0.3 * (-(t % 0.5) * 35.).exp() * (std::f64::consts::TAU * 60. * t).sin();
             let x = if ch == 0 {
-                env * (0.1 * phase.sin() + 0.1 * (phase * 3.).sin() + 0.004 * (phase * 10.).sin())
-                    + kick * 0.0001
+                if sub_heavy {
+                    // Body/definition already balanced, but fundamental dwarfs both.
+                    env * (0.25 * phase.sin()
+                        + 0.05 * (phase * 3.).sin()
+                        + 0.02 * (phase * 10.).sin())
+                } else {
+                    env * (0.1 * phase.sin()
+                        + 0.1 * (phase * 3.).sin()
+                        + 0.004 * (phase * 10.).sin())
+                        + kick * 0.0001
+                }
             } else {
                 kick
             };
@@ -110,6 +124,7 @@ fn fixture() -> Fixture {
         kick: 1,
         kick_file: "1.wav".into(),
         definition_body_db: [-12., -4.],
+        definition_low_db: None,
         max_eq_db: 4.,
         max_output_rise_db: 3.,
         max_note_spread_db: 2.,
@@ -214,4 +229,93 @@ fn actual_dsp_guards_split_independence_and_routing_contract() {
     let out = f.root.join("report");
     bass::analyze(f.s.clone(), &f.root, &out, f.p.clone(), 0., 4.).unwrap();
     assert!(bass::analyze(f.s.clone(), &f.root, &out, f.p.clone(), 0., 4.).is_err());
+}
+
+#[test]
+fn below_25_energy_is_visible_and_silence_has_no_ratio() {
+    let rate = 32768;
+    let mut spectrum = vec![0.; SIZE / 2 + 1];
+    spectrum[8] = 4.; // 16 Hz
+    spectrum[25] = 3.; // 50 Hz
+    spectrum[100] = 2.; // 200 Hz
+    spectrum[400] = 1.; // 800 Hz
+    let e = bass::low_energy(&spectrum, rate);
+    assert!((e.below_100_fraction.unwrap() - 0.7).abs() < 1e-12);
+    assert!((e.below_25_dbfs - 10. * 4_f64.log10()).abs() < 1e-10);
+    assert!((e.from_25_to_100_dbfs - 10. * 3_f64.log10()).abs() < 1e-10);
+    assert!((e.definition_low_db.unwrap() + 10. * 7_f64.log10()).abs() < 1e-10);
+    spectrum.fill(0.);
+    let e = bass::low_energy(&spectrum, rate);
+    assert!(e.definition_low_db.is_none() && e.below_100_fraction.is_none());
+}
+#[test]
+fn sub_heavy_bass_can_trigger_without_a_body_fault_and_keeps_note_guards() {
+    let mut f = fixture_with_low_balance(true);
+    // Isolate spectral balance from compression for a controlled known fault.
+    f.s.channels[0].compressor.ratio = 1.;
+    f.s.channels[0].hpf_hz = 0.;
+    f.s.master_hpf_hz = 0.;
+    f.p.definition_body_db = [-12., 0.];
+    let m = bass::measure(&f.s, &f.root, &f.p, 0., 24.).unwrap();
+    let old = bass::propose(&m.windows, 32000, &f.p, 8);
+    assert!(
+        old.chosen.is_none(),
+        "body-only intent should not invent a low target"
+    );
+    f.p.definition_low_db = Some([-18., -6.]);
+    let q = bass::propose(&m.windows, 32000, &f.p, 8);
+    assert!(q.diagnosis.fraction_below_intent.unwrap() < 0.7);
+    assert!(q.diagnosis.fraction_below_low_intent.unwrap() >= 0.7);
+    assert!(q.diagnosis.training_below_100_fraction.unwrap() > 0.8);
+    assert!(q.chosen.is_some());
+    assert_eq!(q.candidates.len(), 99);
+    assert!(q.candidates.iter().any(|c| {
+        c.eq.iter()
+            .any(|e| matches!(e.kind, config::EqKind::LowShelf) && e.db < 0.)
+    }));
+    assert!(
+        q.candidates
+            .iter()
+            .any(|c| c.rejection.iter().any(|r| r.contains("fundamental")))
+    );
+    let mut changed = m.windows.clone();
+    for w in &mut changed {
+        if w.held_out {
+            w.bass_spectrum.fill(1.);
+        }
+    }
+    assert_eq!(bass::propose(&changed, 32000, &f.p, 8).chosen, q.chosen);
+    let mut s = f.s.clone();
+    s.channels[0]
+        .eq
+        .extend(q.candidates[q.chosen.unwrap()].eq.clone());
+    let after = bass::measure(&s, &f.root, &f.p, 0., 24.).unwrap();
+    let o = bass::validate(&m, &after, &q, 32000, &f.p);
+    assert!(o.accepted, "{:?}", o.failures);
+    for split in 0..2 {
+        assert!(
+            o.definition_low_after[split].unwrap() > o.definition_low_before[split].unwrap() + 0.25
+        );
+    }
+    // A master-filtered result must not hide increased pre-compressor sub load.
+    let mut bad = after;
+    for w in &mut bad.windows {
+        w.stages[1].low_energy.from_25_to_100_dbfs += 6.;
+    }
+    let o = bass::validate(&m, &bad, &q, 32000, &f.p);
+    assert!(
+        o.failures
+            .iter()
+            .any(|r| r.contains("pre-compressor low energy"))
+    );
+    f.p.definition_low_db = Some([f64::NAN, 0.]);
+    assert!(f.p.validate(&f.s).is_err());
+}
+#[test]
+fn legacy_policy_does_not_acquire_an_unrequested_low_target() {
+    let f = fixture();
+    let mut value = serde_json::to_value(&f.p).unwrap();
+    value.as_object_mut().unwrap().remove("definition_low_db");
+    let restored: Policy = serde_json::from_value(value).unwrap();
+    assert!(restored.definition_low_db.is_none());
 }

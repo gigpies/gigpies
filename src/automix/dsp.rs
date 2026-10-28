@@ -106,6 +106,7 @@ pub fn compression_db(level: f64, p: &Compressor) -> f64 {
     }
 }
 pub struct Strip {
+    dynamic: Option<super::dynamic_eq::Processor>,
     filters: Vec<[Biquad; 2]>,
     p: Compressor,
     attack: f64,
@@ -121,6 +122,10 @@ impl Strip {
         }
         filters.extend(ch.eq.iter().map(|e| [Biquad::equalizer(e, rate); 2]));
         Self {
+            dynamic: ch
+                .dynamic_eq
+                .as_ref()
+                .map(|c| super::dynamic_eq::Processor::new(c, rate)),
             filters,
             p: ch.compressor.clone(),
             attack: (-1. / (ch.compressor.attack_ms * 0.001 * rate as f64)).exp(),
@@ -143,6 +148,9 @@ impl Strip {
             for i in 0..2 {
                 x[i] = f[i].tick(x[i]);
             }
+        }
+        if let Some(dynamic) = &mut self.dynamic {
+            x = dynamic.tick(x);
         }
         let eq_output = x;
         let target = compression_db(db(x[0].abs().max(x[1].abs())), &self.p);
@@ -270,13 +278,15 @@ impl Meter {
 /// Filter coefficients use the bilinear form of the BS.1770 reference filters.
 pub struct Loudness {
     filters: [[Biquad; 2]; 2],
-    hop: usize,
+    rate: u32,
+    phase: u32,
     count: usize,
     power: f64,
-    quarters: std::collections::VecDeque<f64>,
+    quarters: std::collections::VecDeque<(f64, usize)>,
     blocks: Vec<f64>,
-    short_quarters: std::collections::VecDeque<f64>,
+    short_quarters: std::collections::VecDeque<(f64, usize)>,
     short_max: Option<f64>,
+    momentary_max: Option<f64>,
 }
 impl Loudness {
     pub fn new(rate: u32) -> Self {
@@ -301,45 +311,74 @@ impl Loudness {
         );
         Self {
             filters: [[shelf, hp]; 2],
-            hop: rate as usize / 10,
+            rate,
+            phase: 0,
             count: 0,
             power: 0.,
             quarters: Default::default(),
             blocks: Vec::new(),
             short_quarters: Default::default(),
             short_max: None,
+            momentary_max: None,
         }
     }
     pub fn add(&mut self, x: [f64; 2]) {
+        self.add_selected(x, true);
+    }
+    /// Keep K-filter history continuous while measuring a single selected passage.
+    /// Only admitted frames enter 400 ms blocks; call with one contiguous span.
+    pub fn add_selected(&mut self, x: [f64; 2], included: bool) {
+        let mut power = 0.;
         for (f, v) in self.filters.iter_mut().zip(x) {
             let v = f[0].tick(v);
-            self.power += f[1].tick(v).powi(2);
+            power += f[1].tick(v).powi(2);
         }
+        if !included {
+            return;
+        }
+        self.power += power;
         self.count += 1;
-        if self.count == self.hop {
-            self.short_quarters.push_back(self.power / self.hop as f64);
+        self.phase += 10;
+        if self.phase >= self.rate {
+            self.phase -= self.rate;
+            let quarter = (self.power, self.count);
+            self.short_quarters.push_back(quarter);
             if self.short_quarters.len() == 30 {
-                let power = self.short_quarters.iter().sum::<f64>() / 30.;
+                let power = window_mean(&self.short_quarters);
                 if power > 0. {
                     let level = -0.691 + 10. * power.log10();
                     self.short_max = Some(self.short_max.map_or(level, |v| v.max(level)));
                 }
                 self.short_quarters.pop_front();
             }
-            self.quarters.push_back(self.power / self.hop as f64);
+            self.quarters.push_back(quarter);
             self.power = 0.;
             self.count = 0;
             if self.quarters.len() == 4 {
-                self.blocks.push(self.quarters.iter().sum::<f64>() / 4.);
+                let power = window_mean(&self.quarters);
+                self.blocks.push(power);
+                if power > 0. {
+                    let level = -0.691 + 10. * power.log10();
+                    self.momentary_max = Some(self.momentary_max.map_or(level, |v| v.max(level)));
+                }
                 self.quarters.pop_front();
             }
         }
     }
+    /// Maximum ungated 400 ms loudness on the native sample timeline.
+    pub fn momentary_max(&self) -> Option<f64> {
+        self.momentary_max
+    }
+
     pub fn integrated(&self) -> Option<f64> {
-        let abs: Vec<_> = self
-            .blocks
-            .iter()
-            .copied()
+        Self::integrated_values(self.blocks.iter().copied())
+    }
+    /// Gate complete blocks from separate passages, never bridging their gaps.
+    pub fn integrated_parts(parts: &[&Self]) -> Option<f64> {
+        Self::integrated_values(parts.iter().flat_map(|m| m.blocks.iter().copied()))
+    }
+    fn integrated_values(values: impl Iterator<Item = f64>) -> Option<f64> {
+        let abs: Vec<_> = values
             .filter(|p| -0.691 + 10. * p.max(1e-30).log10() > -70.)
             .collect();
         if abs.is_empty() {
@@ -353,4 +392,8 @@ impl Loudness {
     pub fn short_term_max(&self) -> Option<f64> {
         self.short_max
     }
+}
+
+fn window_mean(window: &std::collections::VecDeque<(f64, usize)>) -> f64 {
+    window.iter().map(|x| x.0).sum::<f64>() / window.iter().map(|x| x.1).sum::<usize>() as f64
 }

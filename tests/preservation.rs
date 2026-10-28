@@ -113,6 +113,7 @@ fn analysis_uses_configured_master_filter_including_bypass() {
         kick: 0,
         kick_file: "0.wav".into(),
         definition_body_db: [-12., -4.],
+        definition_low_db: None,
         max_eq_db: 4.,
         max_output_rise_db: 3.,
         max_note_spread_db: 2.,

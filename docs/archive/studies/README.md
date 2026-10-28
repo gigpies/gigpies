@@ -3,6 +3,7 @@
 Historical context only. [Current documentation](../../README.md) · [Archive](../README.md)
 
 - [Expert selection of artistic effects](ARTISTIC_FX.md)
+- [Automixer role expansion: primary-source research, 2026-10-28](AUTOMIX_ROLE_RESEARCH_2026-10-28.md)
 - [Offline musical balance experiment](BALANCE_PASS.md)
 - [DI bass definition and kick interaction](BASS_KICK.md)
 - [Brain consoles: SHR Desk and SHR Lightdesk](BRAIN_CONSOLE_PLAN.md)

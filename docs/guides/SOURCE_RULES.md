@@ -249,8 +249,9 @@ static-EQ sensitivity, recovery-conditioned relief and the musician's processed-
 rhythmic preference. Reduction maxima and band overlap cannot independently trigger
 correction. A documented neutral basis is required for an automatic artistic offset;
 unknown intent abstains. Actual processing/fader/combined outcomes and pending
-listener preference remain separate. General drum tone-target selection is still
-unimplemented; measured EQ probes can remain unselected when fault evidence is weak.
+listener preference remain separate. The legacy drum pass does not select general tone targets; measured EQ probes
+can remain unselected when fault evidence is weak. The whole-band workflow below
+adds explicit profile-driven tone trials.
 
 The [confirmed-snare-bleed investigation](SNARE_BLEED.md) adds conditional event
 features and frozen reference-prediction probes. It distinguishes a detector defect
@@ -272,3 +273,140 @@ evaluation, and always withhold processing without independent source labels.
 ## Historical evidence
 
 The [dated study and original results](../archive/studies/SOURCE_RULES.md) retain experiment-specific settings and validation history.
+
+## Whole-band observation workflow
+
+`ensemble-analyze` observes all channel roles using explicit source identity and a
+frozen baseline. Its channel measurements include raw, filtered, compressed before
+and after makeup, and routed pre-FX signal. Ten-millisecond event-energy windows
+are distinct from integrated, momentary and short-term LUFS. Spectral power uses
+Hann normalization and includes DC, sub energy and Nyquist; bands above the native
+Nyquist are unsupported. No role name supplies a numerical tone target.
+
+```sh
+gigpies ensemble-request artifacts/my-request.json
+gigpies ensemble-analyze baseline.json /path/to/sources artifacts/analysis artifacts/my-request.json
+gigpies ensemble-prepare artifacts/analysis/state.json /path/to/sources artifacts/candidate
+gigpies ensemble-reset artifacts/analysis/state.json artifacts/reset
+```
+
+All output paths must be new. The request defaults to observation only. Optional
+`captures` bind zero-based channel indexes to caller-declared `performance` and
+`capture` strings. Related microphones must identify the same performance;
+unknown identity stays unknown. Optional `profiles` name channel groups, an
+explicit family, capture, supported register, numerical tone objective, allowed
+static EQ, protection budgets and evidence minimums. Missing evidence or disabled
+intent preserves settings and produces an actionable abstention. A profile name
+has no processing semantics.
+
+The versioned `state.json` retains the original settings, request and source
+hashes/BWF offsets. Preparation always starts there; changed inputs, policy or
+baseline require a new analysis. Reset restores those original settings exactly.
+`observations.json` holds measurements; `report.json` and `report.txt` separate
+applicability and decisions. Observations alone do not establish a fault or final
+mix/FX/export acceptance. All-target compliance and listening preference remain
+separate from technical success.
+
+Analysis admits native duration (including BWF gaps and configured FX tails),
+source bytes, sample visits, channel count and feature records before processing.
+The request's finite budgets are editable; the current offline Session schema
+admits up to 64 channels, independently of live product capacity. Training and
+held-out passages, when supplied, must be ordered, non-overlapping and within the
+native timeline. DSP runs continuously from frame zero, including passage gaps. Hierarchy selection
+uses only complete loudness blocks inside declared training passages; gaps and
+held-out passages never contribute to its target levels.
+
+Static trials support kick, bass, snare, toms, electric/acoustic guitars,
+lead/backing vocals, hi-hat, piano, keys, synth, strings and winds with explicit
+profiles. Overheads and rooms require the reviewed capture declaration
+`isolated_ensemble_capture`; this means the declared microphone group is the
+wanted ensemble capture, not that its instruments have been separated. Ambiguous
+bleed and printed effects abstain. These rules test declared band intent and
+preservation, not an automatic instrument-technique or musical-fault diagnosis.
+
+Up to `budget.max_static_trials` broad bell cuts (1–3, default 3) are compared
+with no change. A separate compressor-threshold intervention is evidence only;
+it is never applied. Makeup, HPF, routing and existing EQ remain fixed. Bass
+requires supported notes and fundamental preservation. Related microphone paths
+must all belong to the same profile; a shared correction is measured on the
+signed coherent sum as well as each path, including 10 ms event windows.
+Destructive cancellation and incomplete groups abstain rather than flip polarity.
+
+Selection uses matching baseline training windows, with no-change eligible.
+Every protected spectral/event window must pass; partial training-boundary windows
+cannot acquire extra votes. Per-passage objective errors are checked separately.
+One complete bundle is then measured on held-out passages. Failure restores the
+baseline; `candidate.json` retains the rejected proposal for review. Successful
+preparation also uses the production renderer and delivery checker in `export/`.
+Common delivery attenuation is reported by that renderer and is not tone repair.
+
+The optional request `hierarchy` uses the existing loudness policy fields:
+`kick_to_bass_lu: 2`, `bass_to_others_lu: 1`, `max_fader_change_db: 6`.
+Every channel requires a declared performance identity. Independent channel mode
+is the default; `grouped_hierarchy: true` explicitly changes the unit to each
+coherent performance group. All paths in a group receive the same bounded fader
+delta. Measurements include excitation and dedicated returns before nonlinear
+master processing. A shared or unbound return cannot be attributed to one
+instrument, so hierarchy moves abstain while independent tone work can proceed.
+Whole-source compliance, per-passage integrated LUFS and common-window energy
+comparisons are reported separately. Short/quiet passages without a complete
+loudness window remain missing evidence. An unreachable target remains unmet.
+
+Fixed FX is preserved and checked through the production renderer. The
+`composition` request budgets bound peak rise, mix-energy loss and mono loss.
+Checks cover the direct sum, returns, master HPF and final master/limiter stages,
+including 100 ms windows and tails under the same delivery limiter policy; window comparisons use a reported −100 dBFS
+floor. A composition failure retains `candidate.json` but restores original
+`settings.json`. Accepted output still requires finalized PCM delivery checks.
+
+Optional `dynamic_trials` require reviewed event identity, problem passages and
+disjoint protected passages in **both** training and held-out sets. Each trial
+names a profile, `evidence` (`isolated_sibilance`, `transient_resonance` or
+`low_load`), a `processor`, `problem_spans`, `protected_spans` and
+`max_protected_loss_db` (0–1). Sibilance requires a lead/backing vocal profile
+with `capture: "isolated_vocal"`; cymbal spill cannot establish that identity.
+Example processor fields (illustrative intent, not a vocal preset):
+
+```json
+{"version":1,"hz":6000,"q":1,"depth_db":3,"threshold_dbfs":-30,
+ "attack_ms":5,"release_ms":80}
+```
+
+The processor shares the static trial's frequency/Q and cannot exceed its depth
+budget. It is admitted only if it improves the reviewed event objective beyond
+the best admissible static result while retaining protected passages. With a
+dynamic trial, at most two static candidates plus one compressor comparison and
+one dynamic candidate are measured. Held-out data can veto, never choose another
+candidate. Existing dynamic settings cannot be stacked by this workflow.
+
+Production `Channel.dynamic_eq` is optional and versioned; old sessions retain
+exact bypass by omission. It uses a fixed bell-cut path and band detector with a
+smoothed, stereo-linked dry/wet amount, at most 6 dB depth, no lookahead, added
+sample delay or makeup. Processing continues through gaps and releases into
+pauses. Reset restores original settings. It is available in offline production
+rendering, not activated in the live engine. Modulation sidebands during changes
+remain possible; software checks do not establish perceptual transparency.
+
+Request/state version 2 binds these contracts. Re-analyze the original baseline
+with a new v2 request rather than editing an old saved state's hashes.
+
+Each spectral window also reports the actual simultaneous remaining channel mix
+before excitation/FX/master, its disjoint-band energy, source/rest overlap fraction
+and signed cross-power. Opposite-polarity sources therefore expose cancellation.
+Overlap is a relative spectral proxy, not a psychoacoustic audibility prediction;
+it does not authorize panning, time shifts, polarity changes or source removal.
+
+To prepare listening material without playback after a successful preparation:
+
+```sh
+gigpies ensemble-listen-pack artifacts/analysis/state.json /path/to/sources artifacts/candidate artifacts/listening
+```
+
+This verifies the frozen inputs and candidate delivery, renders a checked baseline
+with the same delivery policy, and copies exact native PCM from the declared
+held-out passages to randomized A/B files and remeasures their boundary peaks. Keep `private-key.json` hidden until
+judgments in `review.json` are recorded. Original delivery levels are retained;
+these are not loudness-matched copies. Full-song exports remain available for
+timing, tails and context. Compare a separately checked static alternative when
+one exists. Record no preference when appropriate; a technical pass never fills
+the preference or musical comments.
