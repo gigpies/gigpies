@@ -50,6 +50,7 @@ fn measurement_physical_startup_and_wrong_hash_refused() {
         mode: "physical".into(),
         owner_executable: "/usr/bin/true".into(),
         owner_sha256: "0".repeat(64),
+        offline_evidence: vec![],
     };
     assert!(c.validate().is_err());
     let mut c = c;
@@ -142,4 +143,36 @@ fn new_owner_operations_require_explicit_v2_without_changing_v1() {
         .validate()
         .is_ok()
     );
+}
+
+#[test]
+fn offline_evidence_requires_explicit_v2_and_pinned_regular_file() {
+    use gigpies::measurement_owner::OfflineEvidence;
+    use sha2::{Digest, Sha256};
+    let mut r = request(Command::MeasurementOfflineEq {
+        id: "review".into(),
+        evidence_id: "import".into(),
+    });
+    assert!(r.validate().is_err());
+    r.version = 2;
+    assert_eq!(
+        wire::Request::decode(&serde_json::to_vec(&r).unwrap()).unwrap(),
+        r
+    );
+    let path = std::env::temp_dir().join(format!("gp20-offline-{}", std::process::id()));
+    let bytes = br#"{"contract":"C-PA-MEASUREMENT","version":2,"operation":"eq_sweeps"}"#;
+    std::fs::write(&path, bytes).unwrap();
+    let mut evidence = OfflineEvidence {
+        id: "import".into(),
+        path: path.clone(),
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+    };
+    assert!(evidence.load().is_ok());
+    std::fs::write(&path, b"changed").unwrap();
+    assert!(evidence.load().unwrap_err().contains("hash"));
+    evidence.path = path.with_extension("link");
+    std::os::unix::fs::symlink(&path, &evidence.path).unwrap();
+    assert!(evidence.load().unwrap_err().contains("regular file"));
+    std::fs::remove_file(evidence.path).unwrap();
+    std::fs::remove_file(path).unwrap();
 }

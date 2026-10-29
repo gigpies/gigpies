@@ -126,6 +126,7 @@ pub enum Action {
         candidate: (Value, String),
         ids: Vec<String>,
         meta: Box<Meta>,
+        provenance: Option<String>,
     },
     Failed(String),
 }
@@ -146,9 +147,11 @@ enum Expected {
         meta: Meta,
         operation: String,
         target: Option<String>,
+        calibration: Value,
     },
 }
 pub struct State {
+    offline_evidence: Vec<(measurement_owner::OfflineEvidence, Value)>,
     worker: measurement_owner::Worker,
     pub records: VecDeque<Record>,
     guards: VecDeque<(String, Guard)>,
@@ -157,7 +160,14 @@ pub struct State {
 }
 impl State {
     pub fn new(config: measurement_owner::Config) -> Result<Self> {
+        config.validate()?;
+        let offline_evidence = config
+            .offline_evidence
+            .iter()
+            .map(|e| Ok((e.clone(), e.load()?)))
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self {
+            offline_evidence,
             worker: measurement_owner::Worker::start(config)?,
             records: VecDeque::with_capacity(16),
             guards: VecDeque::with_capacity(16),
@@ -319,6 +329,55 @@ impl State {
                     deadline: now.saturating_add(5000),
                 })))
             }
+            Command::MeasurementOfflineEq { id, evidence_id } => {
+                if self.busy() || self.records.iter().any(|r| r.summary.id == *id) {
+                    return Err("measurement busy or retained ID".into());
+                }
+                let (evidence, request) = self
+                    .offline_evidence
+                    .iter()
+                    .find(|(key, _)| &key.id == evidence_id)
+                    .ok_or("offline evidence unavailable; explicit startup catalog required")?;
+                let configuration: Value = measurement_owner::decode_document(
+                    basis.configuration_json.as_bytes(),
+                    48 * 1024,
+                )?;
+                if request["configuration"] != configuration
+                    || request["configuration_revision"] != json!(basis.graph_generation)
+                {
+                    return Err("offline evidence configuration/revision mismatch".into());
+                }
+                let positions = request["positions"]
+                    .as_array()
+                    .ok_or("offline sweep positions")?;
+                if positions.is_empty() || positions.len() > 4 {
+                    return Err("offline position bound".into());
+                }
+                let meta: Meta =
+                    serde_json::from_value(positions[0]["transfer"]["capture"].clone())
+                        .map_err(|e| e.to_string())?;
+                let ids = positions
+                    .iter()
+                    .map(|p| {
+                        p["transfer"]["capture"]["id"]
+                            .as_str()
+                            .filter(|id| crate::measurement_wire::identifier(id))
+                            .map(str::to_owned)
+                            .ok_or_else(|| "offline measurement ID".to_string())
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Action::Propose {
+                    id: id.clone(),
+                    request: request.clone(),
+                    candidate: (configuration, basis.graph_generation.0.to_string()),
+                    ids,
+                    meta: Box::new(meta),
+                    provenance: Some(format!(
+                        "Imported offline evidence {} SHA256 {}; not authenticated GP20 capture",
+                        evidence.id, evidence.sha256
+                    )),
+                })
+            }
             Command::MeasurementEq {
                 id,
                 captures,
@@ -359,6 +418,7 @@ impl State {
                     candidate: (configuration, basis.graph_generation.0.to_string()),
                     ids: captures.clone(),
                     meta: Box::new(meta),
+                    provenance: None,
                 })
             }
             Command::MeasurementPropose { id, pairs }
@@ -411,6 +471,7 @@ impl State {
                     candidate: (configuration, basis.graph_generation.0.to_string()),
                     ids,
                     meta: Box::new(first.ok_or("empty positions")?),
+                    provenance: None,
                 })
             }
             _ => Err("measurement action".into()),
@@ -472,6 +533,7 @@ impl State {
                 candidate,
                 ids,
                 meta,
+                provenance,
             } => {
                 if self.busy() {
                     return Err("measurement busy".into());
@@ -481,13 +543,24 @@ impl State {
                     .ok_or("owner operation")?
                     .to_string();
                 let target = request["target"].as_str().map(String::from);
+                let calibration = if operation == "eq_sweeps" {
+                    request["positions"][0]["calibration"].clone()
+                } else {
+                    Value::Null
+                };
+                let kind = if operation == "eq_sweeps" {
+                    "offline_proposal"
+                } else {
+                    "proposal"
+                };
                 let token = self.worker.token();
                 self.worker.submit(measurement_owner::Job {
                     token,
                     request: Payload::Json(request),
                     candidate: Some(candidate),
                 })?;
-                self.insert(id.clone(), "proposal", auth, basis);
+                self.insert(id.clone(), kind, auth, basis);
+                self.record_mut(&id).unwrap().summary.reason = provenance;
                 self.record_mut(&id).unwrap().summary.state = "analyzing".into();
                 self.waiting = Some(Waiting {
                     id,
@@ -498,6 +571,7 @@ impl State {
                         meta: *meta,
                         operation,
                         target,
+                        calibration,
                     },
                 });
                 Ok(())
@@ -512,12 +586,26 @@ impl State {
         basis: Basis,
         reason: &str,
     ) {
-        let (id, kind) = match action {
-            Action::Start(c) => (c.meta.id, "capture"),
-            Action::Propose { id, .. } => (id, "proposal"),
+        let (id, kind, provenance) = match action {
+            Action::Start(c) => (c.meta.id, "capture", None),
+            Action::Propose {
+                id,
+                request,
+                provenance,
+                ..
+            } => (
+                id,
+                if request["operation"] == "eq_sweeps" {
+                    "offline_proposal"
+                } else {
+                    "proposal"
+                },
+                provenance,
+            ),
             _ => return,
         };
         self.insert(id.clone(), kind, auth, basis);
+        self.record_mut(&id).unwrap().summary.reason = provenance;
         self.invalidate(&id, reason);
     }
     fn record_mut(&mut self, id: &str) -> Option<&mut Record> {
@@ -536,7 +624,22 @@ impl State {
                 "invalidated"
             }
             .into();
-            r.summary.reason = Some(reason.into());
+            r.summary.reason = Some(if r.summary.kind == "offline_proposal" {
+                let prefix = r
+                    .summary
+                    .reason
+                    .as_deref()
+                    .unwrap_or("Imported offline evidence")
+                    .split("; outcome: ")
+                    .next()
+                    .unwrap();
+                format!("{prefix}; outcome: {reason}")
+                    .chars()
+                    .take(1024)
+                    .collect()
+            } else {
+                reason.into()
+            });
             r.candidate_configuration_json = None;
         }
         self.guards.retain(|(old, _)| old != id);
@@ -650,7 +753,25 @@ impl State {
                 Ok((state, reason, value, candidate)) => {
                     if let Some(r) = self.record_mut(&w.id) {
                         r.summary.state = state;
-                        r.summary.reason = reason;
+                        r.summary.reason = if r.summary.kind == "offline_proposal" {
+                            Some(
+                                format!(
+                                    "{}{}",
+                                    r.summary
+                                        .reason
+                                        .as_deref()
+                                        .unwrap_or("Imported offline evidence"),
+                                    reason
+                                        .map(|s| format!("; outcome: {s}"))
+                                        .unwrap_or_default()
+                                )
+                                .chars()
+                                .take(1024)
+                                .collect(),
+                            )
+                        } else {
+                            reason
+                        };
                         r.owner_result_json =
                             Some(serde_json::to_string(&value).expect("validated finite JSON"));
                         r.candidate_configuration_json = candidate;
@@ -731,9 +852,10 @@ fn validate_result(
             meta,
             operation,
             target,
+            calibration,
         } => {
             let expected_contract = match operation.as_str() {
-                "eq_propose" => "C-PA-EQ-PROPOSAL",
+                "eq_propose" | "eq_sweeps" => "C-PA-EQ-PROPOSAL",
                 "overlap" => "C-PA-OVERLAP-REVIEW",
                 "propose" => "C-PA-ALIGNMENT-PROPOSAL",
                 _ => return Err("owner operation identity".into()),
@@ -742,7 +864,9 @@ fn validate_result(
                 return Err("owner result operation mismatch".into());
             }
             if value["contract"] == "C-PA-EQ-PROPOSAL" {
-                if value["target"].as_str() != target.as_deref() {
+                if value["target"].as_str() != target.as_deref()
+                    || value["calibration"] != *calibration
+                {
                     return Err("EQ target mismatch".into());
                 }
                 return validate_eq_result(record, value, candidate, ids, meta);
@@ -895,7 +1019,6 @@ fn validate_eq_result(
     ];
     if p.as_object()
         .is_none_or(|o| o.len() != keys.len() || o.keys().any(|k| !keys.contains(&k.as_str())))
-        || !p["calibration"].is_null()
         || !p["reason"].as_str().is_some_and(|s| s.len() <= 256)
         || ["before_rms_db", "predicted_rms_db", "required_headroom_db"]
             .iter()
@@ -998,6 +1121,7 @@ mod tests {
             mode: "software-only".into(),
             owner_executable: path,
             owner_sha256: hash,
+            offline_evidence: vec![],
         })
         .unwrap()
     }
@@ -1195,5 +1319,68 @@ mod tests {
         );
         assert!(!s.busy());
         assert_eq!(s.guards().count(), 0);
+    }
+    #[test]
+    fn offline_origin_cancellation_stale_basis_and_recovery() {
+        let mut s = state();
+        let a = s.prepare(&start(), &basis(), &topology(), 0, 0).unwrap();
+        let Action::Start(capture) = a else {
+            panic!("capture metadata")
+        };
+        let mut meta = capture.meta;
+        meta.source_epoch = Counter(77);
+        meta.clock_domain = "invented-offline-origin".into();
+        meta.reference_offset_frames = Counter(17);
+        let request = json!({"contract":"C-PA-MEASUREMENT","version":2,"operation":"eq_sweeps","configuration_revision":"1","configuration":serde_json::from_str::<Value>(&basis().configuration_json).unwrap(),"positions":[{"transfer":{"capture":meta},"calibration":null}],"target":"flat"});
+        s.offline_evidence.push((
+            measurement_owner::OfflineEvidence {
+                id: "import".into(),
+                path: "/unused".into(),
+                sha256: "a".repeat(64),
+            },
+            request,
+        ));
+        let command = Command::MeasurementOfflineEq {
+            id: "review".into(),
+            evidence_id: "import".into(),
+        };
+        let mut stale = basis();
+        stale.graph_generation = Counter(2);
+        assert!(s.prepare(&command, &stale, &topology(), 0, 0).is_err());
+        let a = s.prepare(&command, &basis(), &topology(), 0, 0).unwrap();
+        let Action::Propose { meta: observed, .. } = &a else {
+            panic!("proposal")
+        };
+        assert_eq!(observed.as_ref(), &meta); // Never replace imported origin with the host's.
+        s.apply(a, auth(), basis()).unwrap();
+        assert_eq!(s.records[0].summary.kind, "offline_proposal");
+        assert!(
+            s.records[0]
+                .summary
+                .reason
+                .as_ref()
+                .unwrap()
+                .contains("SHA256")
+        );
+        let cancel = Command::CaptureCancel {
+            id: "review".into(),
+        };
+        let mut other = auth();
+        other.lease = Some(Counter(2));
+        assert!(s.authorize_records(&cancel, &other).is_err());
+        let token = s.worker.token();
+        let a = s.prepare(&cancel, &basis(), &topology(), 0, 0).unwrap();
+        s.apply(a, auth(), basis()).unwrap();
+        assert_ne!(token, s.worker.token());
+        s.poll(1);
+        assert_eq!(s.records[0].summary.state, "cancelled");
+        assert!(s.records[0].candidate_configuration_json.is_none());
+        assert!(!s.busy());
+        assert!(s.prepare(&command, &basis(), &topology(), 0, 0).is_err());
+        let fresh = Command::MeasurementOfflineEq {
+            id: "fresh-review".into(),
+            evidence_id: "import".into(),
+        };
+        assert!(s.prepare(&fresh, &basis(), &topology(), 0, 0).is_ok());
     }
 }

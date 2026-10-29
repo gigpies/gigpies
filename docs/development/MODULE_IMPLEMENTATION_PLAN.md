@@ -2104,3 +2104,6 @@ qualification material; do not turn these held-out vetoes into a parameter searc
 Keep absent families, real dynamic-event processing and the experimental auditory
 model unqualified. No new permission is needed for the already authorized offline
 scope; publication and physical activation remain outside this invocation.
+
+
+[GP-CAL-REVIEW — calibrated offline Desk review](../archive/pa-cal-review-2026-10-29.md) has software acceptance; physical qualification remains separate.

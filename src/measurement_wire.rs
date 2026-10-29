@@ -44,6 +44,10 @@ pub enum Command {
     CaptureCancel {
         id: String,
     },
+    MeasurementOfflineEq {
+        id: String,
+        evidence_id: String,
+    },
     MeasurementEq {
         id: String,
         captures: Vec<String>,
@@ -106,10 +110,12 @@ impl Request {
         }
         if matches!(
             self.command,
-            Command::MeasurementOverlap { .. } | Command::MeasurementEq { .. }
+            Command::MeasurementOverlap { .. }
+                | Command::MeasurementEq { .. }
+                | Command::MeasurementOfflineEq { .. }
         ) && self.version != 2
         {
-            return Err("overlap requires GP20 v2".into());
+            return Err("measurement operation requires GP20 v2".into());
         }
         self.authority_request().encode()?;
         match &self.command {
@@ -137,6 +143,11 @@ impl Request {
                     || options.band_hz[1] <= options.band_hz[0]
                 {
                     return Err("capture bounds".into());
+                }
+            }
+            Command::MeasurementOfflineEq { id, evidence_id } => {
+                if !identifier(id) || !identifier(evidence_id) {
+                    return Err("offline evidence ID".into());
                 }
             }
             Command::MeasurementEq {

@@ -156,3 +156,51 @@ inputs, not authenticated GP20 records; no new capture owner or automatic sweep
 playback is added. Numerical contracts live in SHR PA `docs/OFFLINE_SETUP.md`.
 
 [PA setup software acceptance](../archive/pa-setup-2026-10-29.md) records the v2 owner/Desk workflow.
+
+## Imported calibrated sweep review (explicit v2)
+
+`measurement_offline_eq` uses GP20 request version 2 with exact body
+`{"id":"review-id","evidence_id":"catalog-id"}`. This requests analysis only.
+The provider delegates the complete existing `C-PA-MEASUREMENT:2 eq_sweeps`
+request to SHR PA, then its existing `eq_candidate` operation. It implements no
+sweep extraction, calibration interpolation or fitting. The source files are
+operator-supplied offline evidence, **not authenticated GP20 captures**.
+
+Startup configuration version 2 adds `offline_evidence`, at most four entries:
+`{"id":"catalog-id","path":"/absolute/request.json","sha256":"lowercase SHA256"}`.
+Version 1 remains unchanged and cannot contain a nonempty catalog. Each entry is
+a regular, non-symlink file of at most 1 MiB; its exact bytes must match the hash.
+Files are read once at explicit startup, duplicate-safe decoded, and retained
+immutably in memory. Unknown IDs refuse. No file paths are accepted from Desk,
+no runtime reload occurs, and no filesystem work occurs on the source offer path.
+The existing 64 KiB integer-only control frames and bounded serial worker remain.
+
+Each file is a complete owner `eq_sweeps` request with one to four complete
+`C-PA-SWEEP-RESULT:1` documents, calibration, exact base configuration and revision.
+The file configuration/revision must match the current actual owner; changing
+configuration requires new evidence, never silently rebasing old measurements.
+Imported source epoch, map, clock domain, reference tap, offset and first frame are
+preserved. SHR PA validates common origins and calibration consistency across
+positions. These declarations and file hashes establish identity, not physical truth.
+The host separately binds the review job to current source/map/graph/program-bus
+identity and the writer lease. Authenticated capture proposal commands cannot use
+an imported result as a capture record.
+
+Results have kind `offline_proposal`, retaining the evidence ID/hash in their
+reason and the owner calibration and original capture metadata in the EQ document.
+Old clients may refuse this explicit successor kind; no fallback relabels it.
+Current Desk displays imported origin/calibration and includes them in the final
+muted GP14 review. No-change/refused results carry no candidate. Pending-job
+cancellation uses the existing explicitly confirmed `capture_cancel` command;
+revocation, disconnect, stale basis and late-result rejection use existing fences.
+No analysis request applies or rearms. GP14 commit remains explicit and muted;
+physical verification and rearm remain separate operator actions.
+
+For reproducible invented integration input, SHR PA's
+`offline-review-fixture GRAPH_JSON REVISION` example emits a complete owner request.
+It models a half-gain path with 23 samples arrival and a declared +6.0206 dB
+magnitude correction, preserving a distinct invented timing origin. Use a second
+copy with mismatched calibration between positions for refusal checks. Keep generated
+files private, hash them into the startup catalog, and remove them after validation.
+The opt-in Desk `actual_keyboard_imported_sweep_review_to_muted_owner` driver expects
+catalog IDs `imported` and `refused` and uses the bounded provider above.

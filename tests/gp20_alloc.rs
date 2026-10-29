@@ -40,6 +40,7 @@ fn reserved_mic_borrowed_offer_never_allocates_or_retires() {
         mode: "software-only".into(),
         owner_executable: executable,
         owner_sha256: hash,
+        offline_evidence: vec![],
     })
     .unwrap();
     let mut topology = EngineTopology::software(16, 2, 2).unwrap();

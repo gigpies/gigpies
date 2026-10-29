@@ -21,10 +21,58 @@ pub struct Config {
     pub mode: String,
     pub owner_executable: PathBuf,
     pub owner_sha256: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offline_evidence: Vec<OfflineEvidence>,
+}
+/// Explicit operator-supplied offline files, never capture authentication.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OfflineEvidence {
+    pub id: String,
+    pub path: PathBuf,
+    pub sha256: String,
+}
+impl OfflineEvidence {
+    pub fn load(&self) -> Result<serde_json::Value> {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::OpenOptionsExt;
+        if !crate::measurement_wire::identifier(&self.id) || !self.path.is_absolute() {
+            return Err("offline evidence identity/path".into());
+        }
+        // Reject symlinks, special files and FIFOs without blocking or opening PCM.
+        let metadata = std::fs::symlink_metadata(&self.path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.len() > 1024 * 1024 {
+            return Err("offline evidence regular file/capacity".into());
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&self.path)
+            .map_err(|e| e.to_string())?;
+        if !f.metadata().map_err(|e| e.to_string())?.is_file() {
+            return Err("offline evidence regular file".into());
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut f)
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if format!("{:x}", Sha256::digest(&bytes)) != self.sha256 {
+            return Err("offline evidence hash".into());
+        }
+        let v: serde_json::Value = decode_document(&bytes, 1024 * 1024)?;
+        if v["contract"] != "C-PA-MEASUREMENT" || v["version"] != 2 || v["operation"] != "eq_sweeps"
+        {
+            return Err("offline evidence requires owner v2 eq_sweeps request".into());
+        }
+        Ok(v)
+    }
 }
 impl Config {
     pub fn validate(&self) -> Result<()> {
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
+            || self.offline_evidence.len() > 4
+            || (self.version == 1 && !self.offline_evidence.is_empty())
             || self.mode != "software-only"
             || !self.owner_executable.is_absolute()
             || self.owner_sha256.len() != 64
@@ -34,6 +82,12 @@ impl Config {
                 .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
         {
             return Err("measurement startup identity".into());
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for evidence in &self.offline_evidence {
+            if !ids.insert(&evidence.id) {
+                return Err("duplicate offline evidence ID".into());
+            }
         }
         self.verify()
     }
@@ -400,6 +454,7 @@ mod tests {
             mode: "software-only".into(),
             owner_executable: path,
             owner_sha256: hash,
+            offline_evidence: vec![],
         })
         .unwrap();
         let token = w.token();
