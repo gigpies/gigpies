@@ -115,15 +115,17 @@ impl Worker {
                     let result = (|| {
                         let request = job.request.value();
                         let result = run(&config, &request, job.token, &g, &s)?;
+                        let proposal = if result["contract"] == "C-PA-OVERLAP-REVIEW" { &result["proposal"] } else { &result };
                         let candidate = if let Some((configuration, revision)) = job.candidate {
                             if matches!(
-                                result.get("status").and_then(|v| v.as_str()),
+                                proposal.get("status").and_then(|v| v.as_str()),
                                 Some("proposed" | "no_change")
-                            ) {
+                            ) && !(proposal["contract"]=="C-PA-EQ-PROPOSAL" && proposal["status"]=="no_change") {
+                                let eq=proposal["contract"]=="C-PA-EQ-PROPOSAL";
                                 let request = serde_json::json!({
-                                    "contract":"C-PA-MEASUREMENT", "version":1,
-                                    "operation":"candidate", "configuration_revision":revision,
-                                    "configuration":configuration, "proposal":result
+                                    "contract":"C-PA-MEASUREMENT", "version":if eq {2} else {1},
+                                    "operation":if eq {"eq_candidate"} else {"candidate"}, "configuration_revision":revision,
+                                    "configuration":configuration, "proposal":proposal
                                 });
                                 Some(run(&config, &request, job.token, &g, &s)?)
                             } else {

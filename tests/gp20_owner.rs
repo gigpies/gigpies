@@ -41,7 +41,14 @@ impl Pump {
         );
         wire::Request {
             contract: wire::CONTRACT.into(),
-            version: 1,
+            version: if matches!(
+                command,
+                M::MeasurementOverlap { .. } | M::MeasurementEq { .. }
+            ) {
+                2
+            } else {
+                1
+            },
             show_id: SHOW.into(),
             module: "audio".into(),
             epoch: Counter(1),
@@ -290,6 +297,64 @@ fn actual_pa_reserved_capture_two_positions_owner_candidate_and_cancel() {
             .configuration_json,
         std::str::from_utf8(&graph).unwrap()
     );
+    for (command, id, expected) in [
+        (
+            M::MeasurementOverlap {
+                id: "overlap".into(),
+                pairs: vec![["anchor-1".into(), "target-1".into()]],
+            },
+            "overlap",
+            "proposed",
+        ),
+        (
+            M::MeasurementEq {
+                id: "eq-flat".into(),
+                captures: vec!["anchor-1".into(), "anchor-2".into()],
+                target: "flat".into(),
+            },
+            "eq-flat",
+            "no_change",
+        ),
+        (
+            M::MeasurementEq {
+                id: "eq-refused".into(),
+                captures: vec!["anchor-1".into(), "target-1".into()],
+                target: "flat".into(),
+            },
+            "eq-refused",
+            "refused",
+        ),
+        (
+            M::MeasurementEq {
+                id: "eq-shaped".into(),
+                captures: vec!["anchor-1".into()],
+                target: "damped_high_frequency".into(),
+            },
+            "eq-shaped",
+            "proposed",
+        ),
+    ] {
+        assert_eq!(p.send(command).state, "pending");
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            p.block();
+            let reply = p.send(M::MeasurementResult { id: id.into() });
+            if let Some(r) = reply.result {
+                if r.summary.state == expected {
+                    if expected == "proposed" {
+                        assert!(r.candidate_configuration_json.is_some());
+                    }
+                    break;
+                }
+                assert!(
+                    !matches!(r.summary.state.as_str(), "invalidated" | "refused"),
+                    "{r:?}"
+                );
+            }
+            assert!(Instant::now() < deadline, "{id} timeout");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
     p.send(M::CaptureStart {
         id: "cancelled".into(),
         reference_input: "input-01".into(),

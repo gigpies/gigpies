@@ -144,6 +144,8 @@ enum Expected {
     Proposal {
         ids: Vec<String>,
         meta: Meta,
+        operation: String,
+        target: Option<String>,
     },
 }
 pub struct State {
@@ -201,7 +203,11 @@ impl State {
     ) -> Result<()> {
         let ids: Vec<&str> = match command {
             Command::CaptureCancel { id } => vec![id],
-            Command::MeasurementPropose { pairs, .. } => {
+            Command::MeasurementEq { captures, .. } => {
+                captures.iter().map(String::as_str).collect()
+            }
+            Command::MeasurementPropose { pairs, .. }
+            | Command::MeasurementOverlap { pairs, .. } => {
                 pairs.iter().flatten().map(String::as_str).collect()
             }
             _ => Vec::new(),
@@ -313,7 +319,50 @@ impl State {
                     deadline: now.saturating_add(5000),
                 })))
             }
-            Command::MeasurementPropose { id, pairs } => {
+            Command::MeasurementEq {
+                id,
+                captures,
+                target,
+            } => {
+                if self.busy() || self.records.iter().any(|r| r.summary.id == *id) {
+                    return Err("measurement busy or retained ID".into());
+                }
+                let mut positions: Vec<Value> = Vec::new();
+                for id in captures {
+                    let r = self
+                        .records
+                        .iter()
+                        .find(|r| r.summary.id == *id)
+                        .ok_or("measurement result missing")?;
+                    if r.summary.state != "measured" || &r.basis != basis {
+                        return Err("stale or unavailable measurement result".into());
+                    }
+                    positions.push(measurement_owner::decode_document(
+                        r.owner_result_json
+                            .as_ref()
+                            .ok_or("measurement missing")?
+                            .as_bytes(),
+                        65536,
+                    )?);
+                }
+                let configuration = measurement_owner::decode_document(
+                    basis.configuration_json.as_bytes(),
+                    48 * 1024,
+                )?;
+                let meta = serde_json::from_value::<Meta>(
+                    positions.first().ok_or("empty positions")?["capture"].clone(),
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(Action::Propose {
+                    id: id.clone(),
+                    request: json!({"contract":"C-PA-MEASUREMENT","version":2,"operation":"eq_propose","configuration_revision":basis.graph_generation,"configuration":configuration,"positions":positions,"target":target}),
+                    candidate: (configuration, basis.graph_generation.0.to_string()),
+                    ids: captures.clone(),
+                    meta: Box::new(meta),
+                })
+            }
+            Command::MeasurementPropose { id, pairs }
+            | Command::MeasurementOverlap { id, pairs } => {
                 if self.busy() {
                     return Err("measurement busy".into());
                 }
@@ -358,7 +407,7 @@ impl State {
                 )?;
                 Ok(Action::Propose {
                     id: id.clone(),
-                    request: json!({"contract":"C-PA-MEASUREMENT","version":1,"operation":"propose","configuration_revision":basis.graph_generation,"configuration":configuration,"positions":positions}),
+                    request: json!({"contract":"C-PA-MEASUREMENT","version":if matches!(command, Command::MeasurementOverlap{..}) {2} else {1},"operation":if matches!(command, Command::MeasurementOverlap{..}) {"overlap"} else {"propose"},"configuration_revision":basis.graph_generation,"configuration":configuration,"positions":positions}),
                     candidate: (configuration, basis.graph_generation.0.to_string()),
                     ids,
                     meta: Box::new(first.ok_or("empty positions")?),
@@ -427,6 +476,11 @@ impl State {
                 if self.busy() {
                     return Err("measurement busy".into());
                 }
+                let operation = request["operation"]
+                    .as_str()
+                    .ok_or("owner operation")?
+                    .to_string();
+                let target = request["target"].as_str().map(String::from);
                 let token = self.worker.token();
                 self.worker.submit(measurement_owner::Job {
                     token,
@@ -439,7 +493,12 @@ impl State {
                     id,
                     token,
                     deadline: std::time::Instant::now() + std::time::Duration::from_secs(12),
-                    expect: Expected::Proposal { ids, meta: *meta },
+                    expect: Expected::Proposal {
+                        ids,
+                        meta: *meta,
+                        operation,
+                        target,
+                    },
                 });
                 Ok(())
             }
@@ -667,8 +726,60 @@ fn validate_result(
             }
             Ok(("measured".into(), None, value, None))
         }
-        Expected::Proposal { ids, meta } => {
-            let p: Proposal = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+        Expected::Proposal {
+            ids,
+            meta,
+            operation,
+            target,
+        } => {
+            let expected_contract = match operation.as_str() {
+                "eq_propose" => "C-PA-EQ-PROPOSAL",
+                "overlap" => "C-PA-OVERLAP-REVIEW",
+                "propose" => "C-PA-ALIGNMENT-PROPOSAL",
+                _ => return Err("owner operation identity".into()),
+            };
+            if value["contract"] != expected_contract {
+                return Err("owner result operation mismatch".into());
+            }
+            if value["contract"] == "C-PA-EQ-PROPOSAL" {
+                if value["target"].as_str() != target.as_deref() {
+                    return Err("EQ target mismatch".into());
+                }
+                return validate_eq_result(record, value, candidate, ids, meta);
+            }
+            let document = if value["contract"] == "C-PA-OVERLAP-REVIEW" {
+                if value["version"] != 1 || value.as_object().is_none_or(|o| o.len() != 4) {
+                    return Err("overlap envelope".into());
+                }
+                let predictions = value["predictions"]
+                    .as_array()
+                    .ok_or("overlap predictions")?;
+                if predictions.len() > 8 {
+                    return Err("overlap position bound".into());
+                }
+                for bins in predictions {
+                    let bins: Vec<Bin> =
+                        serde_json::from_value(bins.clone()).map_err(|e| e.to_string())?;
+                    if bins.len() > 64
+                        || bins.iter().any(|b| {
+                            ![b.frequency_hz, b.magnitude, b.phase_radians, b.coherence]
+                                .iter()
+                                .all(|v| v.is_finite())
+                                || !(20.0..=20000.0).contains(&b.frequency_hz)
+                                || b.magnitude < 0.
+                                || !(0.0..=1.0).contains(&b.coherence)
+                                || b.phase_radians.abs() > std::f64::consts::PI
+                        })
+                    {
+                        return Err("overlap prediction bounds".into());
+                    }
+                }
+                &value["proposal"]
+            } else {
+                &value
+            };
+            let p: Proposal =
+                serde_json::from_value(document.clone()).map_err(|e| e.to_string())?;
             let base: Value = measurement_owner::decode_document(
                 record.basis.configuration_json.as_bytes(),
                 48 * 1024,
@@ -753,6 +864,127 @@ fn validate_result(
             Ok((p.status, None, value, Some(c.configuration_json)))
         }
     }
+}
+fn validate_eq_result(
+    record: &Record,
+    value: Value,
+    candidate: Option<Value>,
+    ids: &[String],
+    meta: &Meta,
+) -> Result<(String, Option<String>, Value, Option<String>)> {
+    let base: Value =
+        measurement_owner::decode_document(record.basis.configuration_json.as_bytes(), 48 * 1024)?;
+    let p = &value;
+    let keys = [
+        "contract",
+        "version",
+        "status",
+        "reason",
+        "basis_capture",
+        "basis_configuration",
+        "basis_configuration_revision",
+        "measurement_ids",
+        "output_index",
+        "target",
+        "calibration",
+        "bands",
+        "before_rms_db",
+        "predicted_rms_db",
+        "required_headroom_db",
+        "verification_required",
+    ];
+    if p.as_object()
+        .is_none_or(|o| o.len() != keys.len() || o.keys().any(|k| !keys.contains(&k.as_str())))
+        || !p["calibration"].is_null()
+        || !p["reason"].as_str().is_some_and(|s| s.len() <= 256)
+        || ["before_rms_db", "predicted_rms_db", "required_headroom_db"]
+            .iter()
+            .any(|k| !p[k].as_f64().is_some_and(|v| v.is_finite() && v >= 0.))
+    {
+        return Err("EQ evidence schema".into());
+    }
+    if p["version"] != 1
+        || p["basis_configuration"] != base
+        || p["basis_configuration_revision"] != json!(record.basis.graph_generation)
+        || p["basis_capture"] != json!(meta)
+        || p["measurement_ids"] != json!(ids)
+        || p["verification_required"] != true
+    {
+        return Err("EQ owner identity".into());
+    }
+    let status = p["status"].as_str().ok_or("EQ status")?.to_string();
+    let bands = p["bands"].as_array().ok_or("EQ bands")?;
+    if matches!(status.as_str(), "refused" | "no_change") {
+        if !bands.is_empty() || candidate.is_some() {
+            return Err("unchanged EQ candidate".into());
+        }
+        return Ok((status, p["reason"].as_str().map(String::from), value, None));
+    }
+    if status != "proposed" || bands.is_empty() || bands.len() > 8 {
+        return Err("EQ proposal state".into());
+    }
+    let c: Candidate = serde_json::from_value(candidate.ok_or("EQ candidate missing")?)
+        .map_err(|e| e.to_string())?;
+    if c.contract != "C-PA-EQ-CANDIDATE"
+        || c.version != 1
+        || c.basis_capture != *meta
+        || c.basis_configuration_revision != record.basis.graph_generation
+    {
+        return Err("EQ candidate identity".into());
+    }
+    let actual: Value =
+        measurement_owner::decode_document(c.configuration_json.as_bytes(), 48 * 1024)?;
+    let mut expected = base.clone();
+    let index = p["output_index"].as_u64().ok_or("EQ output")? as usize;
+    if index != meta.output_index {
+        return Err("EQ output identity".into());
+    }
+    let output = expected["outputs"]
+        .as_array_mut()
+        .and_then(|v| v.get_mut(index))
+        .ok_or("EQ output")?;
+    if output["processing"]["eq_enabled"] != true || output["source"].is_null() {
+        return Err("EQ bank unavailable".into());
+    }
+    let slots = output["processing"]["eq"]
+        .as_array_mut()
+        .ok_or("EQ slots")?;
+    let mut band_iter = bands.iter();
+    let mut boost = 0.;
+    let mut cut = 0.;
+    for slot in slots {
+        if slot["db"].as_f64() == Some(0.)
+            && let Some(b) = band_iter.next()
+        {
+            if b.as_object().is_none_or(|o| o.len() != 5)
+                || b["kind"] != "bell"
+                || b["slope"].as_f64() != Some(1.)
+            {
+                return Err("EQ band schema".into());
+            }
+            let hz = b["hz"].as_f64().ok_or("EQ frequency")?;
+            let q = b["q"].as_f64().ok_or("EQ Q")?;
+            let db = b["db"].as_f64().ok_or("EQ gain")?;
+            if !(50.0..=12000.0).contains(&hz)
+                || !(0.5..=2.0).contains(&q)
+                || !(-6.0..=3.0).contains(&db)
+            {
+                return Err("EQ band bounds".into());
+            }
+            boost += db.max(0.);
+            cut += db.min(0.);
+            *slot = b.clone();
+        }
+    }
+    if band_iter.next().is_some()
+        || boost > 3.
+        || cut < -12.
+        || p["required_headroom_db"].as_f64() != Some(boost)
+        || actual != expected
+    {
+        return Err("EQ changed protected state or limits".into());
+    }
+    Ok((status, None, value, Some(c.configuration_json)))
 }
 #[cfg(test)]
 mod tests {

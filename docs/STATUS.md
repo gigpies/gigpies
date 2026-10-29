@@ -12,7 +12,7 @@
 | Recording | Aligned raw tracks in the engine | Desk Record/Stop controls and standalone recorder playback |
 | Talkback and listening | Brain audio routing and software recovery | Physical duplex device setup, delay and feedback checks |
 | Lighting | Manual looks, cues, scene editing and optional music-following estimates | Physical DMX output and rehearsal accuracy of musical estimates |
-| Measurement | Software capture/analysis and reviewed alignment proposals | Actual microphone/acoustic acceptance |
+| Measurement | Software capture, distance-aware alignment and reviewed output-EQ proposals | Actual microphone/acoustic acceptance |
 | Offline mixing | Multitrack inspection, prepared renders, optional balance/tone/FX changes and export checks | Musical judgement remains with the listener |
 | Performer stations | Design proposal | Not implemented |
 

@@ -12,6 +12,7 @@ controls; a complete live-show setup is not yet a finished product.
 | Check levels or inspect a spectrum | [Meters and spectrum](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#meters-and-spectrum) |
 | Adjust a monitor mix | [Monitor sends](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#monitor-sends) |
 | Adjust the main PA EQ | [Master EQ](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#master-eq) |
+| Review software PA measurements | [PA measurement and setup](https://github.com/gigpies/shr-desk/blob/main/docs/PA_MEASUREMENT.md) |
 | Set up the standalone PA processor | [PA guide](https://github.com/gigpies/shr-pa/blob/main/docs/RUNNING.md) |
 | Adjust GigPies effects | [Desk FX controls](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#effects) |
 | Use the separate two-engine effects rack | [SHR FX guide](https://github.com/gigpies/shr-fx/blob/main/docs/OPERATING_GUIDE.md) |

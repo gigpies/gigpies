@@ -132,3 +132,27 @@ invalidated input. Whole-host control pumping still allocates for protocol repli
 record admission and terminal retirement. Proposal graph parsing and candidate job
 preparation occur before the command boundary. Retained capture reuse/cancellation
 requires the original writer and lease; another PA writer cannot reuse its evidence.
+
+## Explicit GP20 request version 2 additions
+
+Version 1 wire, owner capture records and old clients remain unchanged. Version 2
+requests additionally admit `measurement_overlap` with the same `{id,pairs}` body,
+and `measurement_eq` with `{id,captures,target}` (1–4 capture IDs; target `flat`,
+`bass_shaped`, or `damped_high_frequency`). Replies retain the existing version 1
+transport envelope; successor owner documents remain opaque bounded JSON.
+Only explicit v2 commands enable these operations; old providers may refuse them.
+
+Both use the same writer/lease-bound records, source/configuration basis, serial
+worker, cancellation, deadlines and late-result rejection. The owner receives
+C-PA-MEASUREMENT v2 operations. Overlap returns C-PA-OVERLAP-REVIEW:1 with the
+original alignment proposal and predicted spectra. EQ returns C-PA-EQ-PROPOSAL:1
+and, only for proposed changes, C-PA-EQ-CANDIDATE:1. EQ is never represented as a
+delay/polarity change. The host checks exact basis and that only unused output
+PEQ slots change within the owner contract's gain/Q/frequency bounds. Protected
+configuration equality and separate GP14 muted review/commit/rearm still apply.
+
+Physical capture remains unavailable. Calibration/sweep files are offline owner
+inputs, not authenticated GP20 records; no new capture owner or automatic sweep
+playback is added. Numerical contracts live in SHR PA `docs/OFFLINE_SETUP.md`.
+
+[PA setup software acceptance](../archive/pa-setup-2026-10-29.md) records the v2 owner/Desk workflow.

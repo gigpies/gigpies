@@ -105,3 +105,41 @@ fn unavailable_provider_has_honest_snapshot_and_shared_scope_refusal() {
     drop(h);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn new_owner_operations_require_explicit_v2_without_changing_v1() {
+    for command in [
+        Command::MeasurementOverlap {
+            id: "overlap".into(),
+            pairs: vec![["a".into(), "b".into()]],
+        },
+        Command::MeasurementEq {
+            id: "eq".into(),
+            captures: vec!["a".into()],
+            target: "flat".into(),
+        },
+    ] {
+        let mut r = request(command);
+        assert!(r.validate().is_err());
+        r.version = 2;
+        assert_eq!(
+            wire::Request::decode(&serde_json::to_vec(&r).unwrap()).unwrap(),
+            r
+        );
+    }
+    let mut invalid = request(Command::MeasurementEq {
+        id: "eq".into(),
+        captures: vec!["a".into()],
+        target: "arbitrary".into(),
+    });
+    invalid.version = 2;
+    assert!(invalid.validate().is_err());
+    assert!(
+        request(Command::MeasurementPropose {
+            id: "v1".into(),
+            pairs: vec![["a".into(), "b".into()]]
+        })
+        .validate()
+        .is_ok()
+    );
+}

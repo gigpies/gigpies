@@ -44,6 +44,15 @@ pub enum Command {
     CaptureCancel {
         id: String,
     },
+    MeasurementEq {
+        id: String,
+        captures: Vec<String>,
+        target: String,
+    },
+    MeasurementOverlap {
+        id: String,
+        pairs: Vec<[String; 2]>,
+    },
     MeasurementPropose {
         id: String,
         pairs: Vec<[String; 2]>,
@@ -92,8 +101,15 @@ impl Request {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        if self.contract != CONTRACT || self.version != 1 {
+        if self.contract != CONTRACT || !matches!(self.version, 1 | 2) {
             return Err("measurement contract".into());
+        }
+        if matches!(
+            self.command,
+            Command::MeasurementOverlap { .. } | Command::MeasurementEq { .. }
+        ) && self.version != 2
+        {
+            return Err("overlap requires GP20 v2".into());
         }
         self.authority_request().encode()?;
         match &self.command {
@@ -123,7 +139,25 @@ impl Request {
                     return Err("capture bounds".into());
                 }
             }
-            Command::MeasurementPropose { id, pairs } => {
+            Command::MeasurementEq {
+                id,
+                captures,
+                target,
+            } => {
+                if !identifier(id)
+                    || captures.is_empty()
+                    || captures.len() > 4
+                    || captures.iter().any(|id| !identifier(id))
+                    || !matches!(
+                        target.as_str(),
+                        "flat" | "bass_shaped" | "damped_high_frequency"
+                    )
+                {
+                    return Err("EQ proposal bounds".into());
+                }
+            }
+            Command::MeasurementPropose { id, pairs }
+            | Command::MeasurementOverlap { id, pairs } => {
                 if !identifier(id)
                     || pairs.is_empty()
                     || pairs.len() > 8

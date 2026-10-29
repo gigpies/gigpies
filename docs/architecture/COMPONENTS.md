@@ -76,8 +76,9 @@ No media library or source clone is a build/CI download requirement.
 
 Current PA processing is integrated through C-PA v2. Measurement/phase/delay alignment
 has a distinct [owning task plan](https://github.com/gigpies/shr-pa/blob/main/docs/PHASE_ALIGNMENT.md).
-Develop the synchronized reference/mic analyzer and reviewable proposal there,
-then define its host integration. V2 independent output controls are implemented;
+The offline analyzer and review proposals live there; GigPies integrates them
+through the existing [GP20 software provider](../reference/MEASUREMENT_PRODUCER.md).
+Physical synchronized microphone capture remains separately unqualified. V2 independent output controls are implemented;
 the older standalone pair controls retain their own contract. Neither is proof of
 measured acoustic alignment or physical speaker protection.
 
