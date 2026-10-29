@@ -65,7 +65,9 @@ path. No recording samples come from processed buses or analysis consumers.
 
 The library is retained until all handles, observers and lifecycle workers are
 gone. The independent recorder observer survives consuming finish. Progress is
-cached at no more than 10 Hz, with an independent terminal read after finish.
+cached at no more than 10 Hz, including while draining. Host `finalizing` and
+`pending` remain until its finalizer joins; owner atomics alone cannot announce
+host completion. An independent terminal read after finish preserves its outcome.
 Accepted frames mean admitted PCM; written frames cover all stems and the owner
 journal; durable frames stay null, including after finalization. Counters are
 individually monotonic and weakly consistent during capture. Completion is not a
@@ -118,3 +120,27 @@ shared source boundary while quiesced, retain both old allocations, and retire o
 the controller. Fresh-epoch recovery restores configuration intent muted. Actual
 remote wet blocks (including absent-peer silence) suppress local FX fallback.
 See [composition](MODULAR_PROCESSING.md) and its acceptance matrix.
+
+## Desk recording operator
+
+Desk's Recorder page uses the same GP05 Start/Stop envelopes and FOH lease, on
+the primary local or authenticated remote connection. A complete presented review
+pins the raw track order, authority revision, take and operation. A newly generated
+take name avoids typing; the server still enforces create-new storage. Stop during
+preparation cancels admission and waits for cleanup; a second Start is refused
+while preparing, recording or finalizing.
+
+Command replies are admission/lifecycle evidence only. Desk polls the exact take
+readback independently, shows accepted minus written as queued frames, retains
+unknown durability and distinguishes writer/storage, source and integrity faults.
+The queued count is an observation of asynchronous counters, not disk capacity.
+Free-space bytes, remaining time and power-loss durability are not advertised.
+Startup failure appears as a finalized error; detailed retained filesystem
+evidence and copy recovery remain SHR REC's responsibility.
+
+Desk never retries a recording mutation automatically. A lost reply is unknown;
+reconnect read-only and inspect the current take before issuing a new reviewed
+command. A failed nonce-less status query retires local write authority so late
+responses cannot refresh a new intent. Disconnect/lease loss leaves host capture
+running. Host restart does not claim recovery or completion of an interrupted
+take. GP05 wire versions, REC C ABI and raw file format are unchanged.

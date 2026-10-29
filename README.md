@@ -28,8 +28,7 @@ uses 16 analog inputs and 18 outputs at 48 kHz. Routing is configurable.
 
 **Still experimental.** Integrated software checks and a limited stereo hardware
 bench are complete. Full multichannel hardware, physical controllers/displays
-and lighting output still need qualification. Recording controls are not yet
-available from Desk. [Current limits](docs/STATUS.md).
+and lighting output still need qualification. Desk recording controls require an explicitly configured engine session. [Current limits](docs/STATUS.md).
 
 ## Channel view — running in a terminal
 

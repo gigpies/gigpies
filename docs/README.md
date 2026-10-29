@@ -45,9 +45,12 @@ state before reviewing a change. Missing or stale meters are not silence.
 
 ## Recording
 
-The integrated engine can write aligned raw tracks. **Desk has no Record/Stop
-controls yet**, and the standalone REC application cannot record or play.
-Recording currently needs an explicitly configured engine session; see
+In an explicitly configured engine session, Desk can start and stop aligned raw
+recording. Open **J** in FOH scope, request control with **G**, then review **N**
+(new take) or **S** (Stop) and confirm. Wait for recording readiness or the final
+complete/incomplete/error outcome. Queued and written frames differ; durability
+stays unknown. Reconnecting does not replay Start or Stop, and leaving Desk does
+not stop capture. The standalone REC application cannot record or play. See
 [recording integration](reference/MODULAR_PROCESSING.md) and
 [REC's current scope](https://github.com/gigpies/shr-rec/blob/main/docs/LOCAL_SETUP.md).
 

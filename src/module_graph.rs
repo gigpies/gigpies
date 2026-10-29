@@ -1057,11 +1057,18 @@ impl ModuleGraph {
             .is_none_or(|last| now.saturating_sub(last) >= 100)
         {
             if let Some(t) = &mut self.take
-                && t.status.state != "finalizing"
+                && t.status.state != "finalized"
                 && let Some(observer) = &t.observer
             {
                 let p = observer.snapshot().map_err(|e| e.to_string())?;
+                let finalizing = t.status.state == "finalizing";
                 Self::update(t, p);
+                // Owner atomics can lead the host handoff/join. Publish progress
+                // while keeping host finalization pending until worker completion.
+                if finalizing {
+                    t.status.state = "finalizing".into();
+                    t.status.outcome = "pending".into();
+                }
             }
             self.last_poll = Some(now);
         }

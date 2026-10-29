@@ -226,6 +226,46 @@ mod actual {
         assert_eq!(fixture.recording.unwrap().written_frames, Counter(1440));
     }
     #[test]
+    #[ignore = "explicit accepted owner libraries; finite synthetic REC storage/finalizer checks"]
+    fn recording_storage_refusal_and_finalizer_progress_remain_truthful() {
+        let dir = Directory::new();
+        let mut g = ModuleGraph::load(manifest(), 9, 0).unwrap();
+        std::fs::create_dir(dir.0.join("occupied")).unwrap();
+        g.start(&dir.0, "occupied", Counter(70)).unwrap();
+        finished(&mut g);
+        assert_eq!(
+            g.status(SHOW, 100).unwrap().recording.unwrap().outcome,
+            "error"
+        );
+        g.start(&dir.0, "publish-collision", Counter(71)).unwrap();
+        ready(&mut g);
+        for frame in (0..480).step_by(48) {
+            g.process(9, frame, &[[0.125; 8]; 48], &[[0.; 4]; 48])
+                .unwrap();
+        }
+        // Create-new publication must preserve this unrelated file and report
+        // an actual owner finalization failure, even if all PCM was written.
+        std::fs::write(dir.0.join("publish-collision/channel-001.wav"), b"preserve").unwrap();
+        g.stop("publish-collision", Counter(71)).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        let draining = g.status(SHOW, 200).unwrap().recording.unwrap();
+        assert_eq!(draining.state, "finalizing");
+        assert_eq!(draining.outcome, "pending");
+        assert_eq!(draining.written_frames, Counter(480));
+        assert!(draining.durable_frames.is_none());
+        finished(&mut g);
+        for now in [300, 400, 500] {
+            let failed = g.status(SHOW, now).unwrap().recording.unwrap();
+            assert_eq!(failed.state, "finalized");
+            assert_eq!(failed.outcome, "error");
+            assert!(failed.writer_fault);
+        }
+        assert_eq!(
+            std::fs::read(dir.0.join("publish-collision/channel-001.wav")).unwrap(),
+            b"preserve"
+        );
+    }
+    #[test]
     #[ignore = "requires explicitly supplied independently accepted owner libraries"]
     fn accepted_owner_graph_exact_pcm_lifecycle_faults_and_discontinuity() {
         let dir = Directory::new();

@@ -63,7 +63,7 @@ it is historical, not a queue to execute. Later accepted work supersedes its lim
 | [GP-AUTO-BASS-LOW](#gp-auto-bass-low--observed-low-energy-and-definition) | GigPies | IMPLEMENTED / software-validated: independent low-energy objective and source-stage guards; musical acceptance pending |
 | [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: kick/bass/other source policy; musical acceptance pending |
 | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | GigPies lead; SHR Desk consumer | PLANNED: needs trustworthy measurements and an explicit musical objective |
-| [GP-REC](#gp-rec--complete-integrated-recording-workflow) | GigPies lead; SHR REC provider, SHR Desk consumer | PLANNED: audit existing host lifecycle before defining missing operator actions |
+| [GP-REC](#gp-rec--complete-integrated-recording-workflow) | GigPies lead; SHR REC provider, SHR Desk consumer | SOFTWARE VALIDATED: reviewed recording workflow, exact 8/16-track acceptance |
 | [GP-H1](#gp-h1--physical-audio-qualification) | GigPies lead; PA/REC/FX owners as needed | PLANNED: separate physical session and observed rig required |
 | [GP-H2](#gp-h2--physical-dual-console-operation) | GigPies lead; Desk/Lightdesk contributors | Physical input/profile integration and actual display/controller acceptance; see card |
 | [GP-H3](#gp-h3--whole-show-qualification) | GigPies lead; all runtime owners | PLANNED: follows audio/console qualification and Lux LX-06 output |
@@ -491,11 +491,99 @@ engineering evidence and separate human listening before musical acceptance.
 
 ## GP-REC — complete integrated recording workflow
 
-State: PLANNED. Outcome: safe operator start/stop, readiness, written-versus-queued
-progress, integrity and finalized outcome for actual raw REC. Next: inspect existing
-host actions and Desk read-only health, then plan only missing operator/storage
-feedback. REC owns writer/recovery; standalone player and shell completion do not
-gate this task. Unknown durability must stay unknown.
+State: SOFTWARE VALIDATED, 2026-10-29. Local implementation and finite synthetic
+acceptance complete. GigPies/Desk ownership is released for the deferred GP-FX
+integration. No pushes, publication, service changes or physical activation.
+SHR FX remained read-only; SHR REC required no provider changes.
+
+Audit and plan: GP05 already owned asynchronous create-new preparation/finalization,
+whole-source-frame admission, an independent REC observer and operation-fenced Stop.
+Client/lease loss did not stop capture. Desk's old GP05 view was read-only and
+legacy-local only. Reuse those owners and add the missing operator workflow;
+standalone recorder/player completion is outside this task.
+
+Acceptance checklist:
+- [x] Recorder page and controller menu: generated new take, reviewed Start/Stop,
+  existing FOH lease, shared request IDs and input-generation/revision fences.
+- [x] Admission is separate from polled readiness/outcome. No automatic REC retry
+  or reconnect replay; reconnect starts read-only. Failed nonce-less queries
+  retire REC readback on that attachment. Lost state retains only stale recovery
+  identity; send/receive uncertainty clears freshness.
+- [x] Configured raw mapping, accepted/queued/written progress, all integrity
+  counters and writer/host faults. Storage capacity/time and durability remain
+  unknown. Raw REC ownership, source-clock alignment and recovery are unchanged.
+- [x] Host draining progress stays visible while `finalizing` remains pending
+  until the worker joins. Terminal errors cannot be overwritten by later polling.
+  Callback processing is unchanged and its allocation/deallocation checks pass.
+- [x] Actual provider acceptance covers no-lease and create-new refusal, cancelled
+  preparation, stale operations, source faults, writer/publication error, drain,
+  finalization and capture through Desk/lease loss. The actual Frontend reviews
+  and confirms Start/Stop in both 8-input legacy and 16-input dynamic sessions,
+  reconnects read-only and checks every stored PCM24 sample in every stem against
+  the source-frame reference. It also exercises navigation from Sends to Recorder.
+- [x] Required normal suites, warnings-denied lint, formatting, focused checks,
+  documentation and repository cleanup completed.
+
+Validation (Rust 1.97.1, committed Cargo.lock, canonical targets,
+`CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1`, parent-held nonblocking
+`/home/shome/p/.gigpies-build.lock`; no build-lock bypass):
+
+| Complete normal suite | Passed | Opt-in tests skipped |
+|---|---:|---:|
+| GigPies default, all targets | 485 | 21 |
+| GigPies hardware-host, all targets | 569 | 49 |
+| Desk default, all targets, serial tests | 357 | 26 |
+| Desk native, all targets, serial tests | 360 | 26 |
+
+Both owners passed formatting and both feature configurations passed all-target
+Clippy with warnings denied. Native checks used the inspected lavapipe CPU ICD
+with DISPLAY/WAYLAND_DISPLAY unset. One initial parallel native run hit the
+existing 50 ms Brain held-service assertion; its isolated rerun and both complete
+serial suites passed without changing that deadline. Earlier driver failures
+identified startup-before-ready attachment and GP05's existing floating-point
+metadata; the driver now waits for the host readiness banner and Desk admits
+only GP05 metadata floats while preserving integer authority/REC fields.
+
+Final focused host checks: **11 passed**, including actual exact PCM, callback
+allocation/deallocation, UDS reconnect, startup refusal and final publication
+collision after all frames were written. Final actual Desk check: **1 passed**,
+covering both profiles and all workflow/failure/sample checks in 6.21 seconds.
+Accepted external libraries remain hash-pinned by
+`user/module-workers/0009/pass3/A-GP05/modules.json`. The obsolete sounddesk
+baseline manifest was initially refused because referenced artifacts were absent;
+it supplied no acceptance. Reproduce with the lock/environment above:
+
+```sh
+GP05_MANIFEST=<manifest> cargo +1.97.1 test --locked --features hardware-host --test gp05 --test gp05_alloc --test gp05_local -- --include-ignored --test-threads=1
+SHR_DESK_GP05=<built gigpies-headless> SHR_DESK_GP05_MANIFEST=<manifest> cargo +1.97.1 test --locked --test recorder -- --ignored --nocapture --test-threads=1
+```
+
+Shared interfaces: GP05 envelopes, REC C ABI and raw file format are unchanged.
+Desk adds semantic REC actions and readback to its internal frontend/provider
+boundary. Its strict transport admits existing GP05 floating-point FX/PA metadata
+(including remote Reply wrappers), not floating-point authority/recording data.
+No GP-FX behavior or ABI was implemented or changed. Owning usage and contracts:
+Desk `docs/USING.md`, `docs/CONTROL_CONTRACT.md`, and
+[host lifecycle](../reference/MODULE_GRAPH.md#desk-recording-operator).
+
+Cleanup: after live Git/process/open-file/lock checks, removed 223 exact task-built
+test executables (20,808,437,760 allocated bytes, about 19.4 GiB), plus temporary
+logs. Synthetic takes and private test endpoints were removed by their fixtures.
+Retained source/tests, this concise evidence and reproducible commands, application
+binaries, provider bundles and normal dependency caches. Canonical targets remain
+about 4.6 GiB (GigPies) and 3.9 GiB (Desk), with about 56 GiB free. No unknown,
+user-media, FX or unrelated project data was cleaned, and cleaned tests were not
+rebuilt merely to verify deletion.
+
+Remaining gates: physical audio/controller/display, ADAT/USB mapping and clock
+lock, sustained storage/load and power-loss qualification remain separate and
+unverified. Historical research/auditions, exhaustive matrices, benchmarks and
+unrelated provider/physical opt-ins were intentionally skipped. The new actual
+workflow was exercised through local UDS; remote wrapper/transport regressions
+passed, but no new two-node REC episode was claimed. Interrupted-host takes still
+require the REC owner's evidence-preserving recovery; no automatic recovery or
+standalone playback/UI is added. Next owner: deferred GP-FX integration may use
+GigPies and Desk; this REC session has released implementation/wiring ownership.
 
 ## GP-H1 — physical audio qualification
 
