@@ -351,6 +351,9 @@ instrument, so hierarchy moves abstain while independent tone work can proceed.
 Whole-source compliance, per-passage integrated LUFS and common-window energy
 comparisons are reported separately. Short/quiet passages without a complete
 loudness window remain missing evidence. An unreachable target remains unmet.
+When hierarchy is requested, `all_targets_met` requires compliance in every
+declared passage as well as the whole source. A section conflict or missing
+evidence keeps it false even when the candidate passes the technical protections.
 
 Fixed FX is preserved and checked through the production renderer. The
 `composition` request budgets bound peak rise, mix-energy loss and mono loss.

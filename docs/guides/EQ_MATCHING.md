@@ -323,7 +323,7 @@ Dark Ride injection. The unmodified production receives no EQ. This establishes
 technical recovery in this controlled case; the source production is not diagnosed
 as defective, and musical acceptance remains pending.
 
-Before measurement, `artifacts/automix/eq-comparability-v1/plan.json` fixed one
+Before measurement, the frozen study plan (the generated output tree is now retired) fixed one
 reference at **132–144 s**, training at **132–144 and 156–168 s**, and held out
 at **228–240 and 264–276 s**. None overlaps the initial EQ pilot's intervals.
 The song was previously studied in full, so these are fresh within-song checks,

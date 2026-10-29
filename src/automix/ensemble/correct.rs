@@ -552,6 +552,9 @@ pub(super) fn prepare(state: &workflow::State, root: &Path, base: &Measurement) 
         .and_then(|m| super::group_levels::compliance(&bundle, &m, policy));
         match sections {
             Ok(value) => {
+                // A whole-song average cannot certify the declared passages.
+                // Missing section evidence is also an unmet objective.
+                targets &= value["all_sections_targets_met"] == true;
                 if r.grouped_hierarchy || s.effects.is_some() {
                     targets &= value["whole_source_targets_met"] == true;
                 }

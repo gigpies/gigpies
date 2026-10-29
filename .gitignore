@@ -12,6 +12,7 @@ scratch/
 /sessions/local/
 /user
 /target/
+/listen/
 /preset.json
 /prepared.json
 /initial-settings.json

@@ -63,13 +63,24 @@ fn fixture() -> Fixture {
 }
 #[test]
 fn source_can_be_final_with_exact_samples_stereo_and_balance() {
-    let f = fixture();
+    let mut f = fixture();
+    // Reopening an ensemble candidate must also bypass its dynamic processing.
+    f.s.channels[0].dynamic_eq = Some(automix::dynamic_eq::Config {
+        version: 1,
+        hz: 63.,
+        q: 1.,
+        depth_db: 6.,
+        threshold_dbfs: -60.,
+        attack_ms: 1.,
+        release_ms: 80.,
+    });
     let originals: Vec<_> =
         f.s.channels
             .iter()
             .map(|c| std::fs::read(f.root.join(&c.file)).unwrap())
             .collect();
     let s = preservation::source_settings(&f.s).unwrap();
+    assert!(s.channels.iter().all(|c| c.dynamic_eq.is_none()));
     assert!(matches!(s.channels[3].role, config::Role::Other));
     for (a, b) in s.channels.iter().zip(&f.s.channels) {
         assert_eq!(a.pan, b.pan);

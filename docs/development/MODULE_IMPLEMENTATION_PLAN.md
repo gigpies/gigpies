@@ -59,7 +59,7 @@ it is historical, not a queue to execute. Later accepted work supersedes its lim
 | [GP-METER](#gp-meter--measured-audio-on-the-real-desk) | GigPies lead; SHR Desk consumer | IMPLEMENTED / software-validated; owner-artifact P4 BLOCKED: supply reviewed manifest |
 | [GP-FX](#gp-fx--writable-owner-effects-in-the-console) | GigPies lead; SHR FX provider, SHR Desk consumer | PLANNED: depends on owner FX-02/03 prepared writable contract |
 | [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) | GigPies lead; SHR Desk consumer | PLANNED: define scene contents, safes and reviewed recall before implementation |
-| [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | GigPies | IN PROGRESS: E0–E3 software validated; E4–E7 remain open |
+| [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | GigPies | IN PROGRESS: E0–E6 software validated; E7 recording checks complete, source review and musical qualification open |
 | [GP-AUTO-BASS-LOW](#gp-auto-bass-low--observed-low-energy-and-definition) | GigPies | IMPLEMENTED / software-validated: independent low-energy objective and source-stage guards; musical acceptance pending |
 | [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: kick/bass/other source policy; musical acceptance pending |
 | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | GigPies lead; SHR Desk consumer | PLANNED: needs trustworthy measurements and an explicit musical objective |
@@ -1452,8 +1452,8 @@ compression retuning, playback or physical activation is part of this change.
 
 ## GP-AUTO-ENSEMBLE — observation-led whole-band automixing
 
-State: **IN PROGRESS; E0–E6 offline software validated; E7 recording/listening
-qualification pending on Raspberry Pi, 2026-10-28**. Final software evidence is
+State: **IN PROGRESS; E0–E6 offline software validated; E7 real-recording checks
+complete on Raspberry Pi, source review and musical qualification open, 2026-10-28**. Software evidence is
 recorded in this card; implementation does not imply musical acceptance.
 Owner: GigPies. This card alone owns the implementation sequence, acceptance,
 evidence and next action. [Research record](../archive/studies/AUTOMIX_ROLE_RESEARCH_2026-10-28.md)
@@ -1730,7 +1730,8 @@ this gate open while completed software remains reviewable.
 - [x] E5: assembled mix and fixed FX offline-validated; conflicts and coverage failures explicit; auditory experiment retained outside production.
 - [x] E6: justified dynamic processing has renderer parity and its own protection tests;
   each deferred mechanism has evidence-based disposition, not an untested quality claim.
-- [ ] E7: real-source coverage and listener judgments recorded separately from software.
+- [x] E7 recording exercise: three full native sessions and controlled real-guitar preservation/recovery; outcomes and coverage limits recorded below.
+- [ ] E7 musical qualification: source-review gates, representative intent/event evidence and listener judgments remain separate from technical execution.
 
 Required regression matrix: DC/sub energy, independent FFT power sums, minimum/odd
 sample rates, silence/short/tail windows, absent harmonics, 16/32/48-channel configured
@@ -1971,12 +1972,135 @@ Final validation uses Rust 1.97.1 and `Cargo.lock`, serialized with
   The exhaustive family matrix has the separate recorded run above. No Pi
   runtime/resource or acoustic qualification is claimed by workstation tests.
 
-**Next action: E7 recording and listening qualification on the Raspberry Pi.**
-Use [the whole-band workflow](../guides/SOURCE_RULES.md#whole-band-observation-workflow)
-with the Pi's original recordings/notices and fresh v2 requests. Prefer three
-independent sessions when available; record actual per-role coverage and source
-hashes. Freeze the intent before qualification, inspect candidate/report/export
-checks, then generate listening packs and record the user's judgments separately.
-Keep absent families and the experimental auditory model unqualified. No new
-permission is needed for the already authorized offline scope; publication and
-physical activation remain outside this invocation.
+### Raspberry Pi continuation, 2026-10-28
+
+- Original local WAVs are available. Three previously used research sessions were
+  analyzed over their full native timelines: 12/16/13 routed inputs at
+  44.1/48/96 kHz, respectively. This is real-recording development coverage, not
+  three previously unseen qualification sessions. Frozen requests, original source
+  hashes, BWF identities, per-role observations and reproducible commands remain in
+  ignored `artifacts/automix-validation.json` (records keyed by their former relative paths).
+- Requests preserve established routing and declare the accepted 2 LU/1 LU
+  hierarchy with the existing 6 dB fader bound. Related vocal/room and kit-ambience
+  paths are grouped coherently. Unknown bleed and processing history remain
+  explicit; no source-specific tone fault or dynamic-event identity is invented.
+- Source observation found 54/5/0 full-scale PCM samples across these three
+  routed sessions. The first two preparations retained their baselines under
+  the source-review veto. The first could not reach the hierarchy within its fader budget;
+  the second lacked training LUFS for several declared parts, including quiet
+  backing-vocal, tom and synth paths. Full-scale contact is not itself a diagnosis
+  of recoverable clipping.
+- The third session produced a bounded fader proposal, then failed composition
+  protection in **116 distinct 100 ms windows** (464 stage-window failures across
+  four stages). Peak rise reached **2.492 dB** against a 1 dB budget; energy loss
+  reached **6.460 dB** against a 6 dB budget. Its saved settings exactly match the
+  baseline. **No full-band proposal was automatically accepted.** The budgets and
+  held-out passages were retained unchanged. Private composition evidence records
+  the failing frames and both measured levels for review.
+- The original fader-only diagnostic excerpts were technically verified but
+  rejected by the listener as an unsuitable comparison, then retired. This is
+  not an A/B preference or approval of the rejected proposal.
+- The revised full-production auditions cover Complainiacs, Catbite and Dark Ride.
+  `listen/` contains three `*-full-mix-v5.wav` files and three `*-before.wav`
+  references. Every reference was rebuilt and verified with added channel/master
+  filters, static/dynamic EQ, compression and FX disabled; the former references
+  had inherited filters, and Dark Ride also had legacy EQ/compression. Those
+  misleading comparators and the previous full mixes are retired.
+- V5 removes the remaining +0.5 dB kick/bass offsets: both faders drop 0.5 dB
+  from V4, including both explicitly selected Dark Ride bass files. Main lead
+  faders rise 3 dB for Complainiacs/Catbite and 5 dB for Dark Ride. Backing vocals,
+  vocal room and the named Dark Ride whisper double retain their V4 levels.
+  Named lead sources already have lead routing; historical bus evidence and saved
+  faders indicate recessed lead balance, particularly against Dark Ride backing
+  vocals. This is a balance diagnosis, not newly measured vocal intelligibility.
+- Main-lead reverb/echo sends compensate the fader increase and fall another 2 dB,
+  bringing the direct voice forward without raising those returns. Lead reverb
+  predelay remains 45 ms (backing 35 ms). A parallel lead chorus uses 0.25 Hz,
+  0.6 ms depth, 17 ms base delay and -23 dB sends, filtered at 180 Hz / 6.5 kHz.
+  The dry voice remains intact; subtlety and musical balance await listening.
+- Existing channel EQ/compression, excitation, +2 dB / 8 kHz shelf and master
+  limiter settings remain unchanged. The previous final output gain is fixed
+  for each song. The plain renderer's causal float bus is exported at that gain;
+  its unused automatic normalized copy is discarded. No balance search, loudness
+  matching, independent peak scan or other post-render audio analysis runs for
+  these control edits. The renderer still emits built-in meters, which do not
+  choose the delivered gain. V5 makes no new integrated-loudness or true-peak
+  measurement claim. WAV structure, duration, hashes and exact prepared settings
+  are checked and retained in ignored `artifacts/full-production.json`. No engine
+  code changes or new production-suite run are needed for this settings revision;
+  historical/exhaustive tests remain opt-in.
+- Live-operation direction: apply prepared gain/control changes directly to the
+  running DSP. Metering and analysis may inform automation asynchronously, but
+  must not block audio or re-optimize a master after each gain edit. The limiter
+  catches peaks; it does not determine musical balance. These offline auditions
+  exercise the requested sound changes and do not establish live integration.
+- These user-authorized artistic revisions are offline auditions, not accepted
+  outputs of the guarded automatic correction workflow. That workflow's previous
+  vetoes, held-out evidence and bounds remain unchanged. Musical acceptance is
+  pending; no playback or physical activation was performed here.
+- DSP-only timing was investigated after the listener questioned render speed.
+  The listener clarified that 2x was an informal estimate, not an acceptance
+  requirement; this hardware targets **16 channels at 48 kHz**, excluding
+  39-track and 96 kHz live operation. The measurements below therefore do not
+  establish pass/fail for the intended live workload.
+  A release-built, in-memory Strip/Rack microbenchmark on Pi5 CPU 3 excludes WAV
+  I/O, observers, LUFS, logging and export checks. Two approximately eight-second
+  runs after warmup measured the v2 configurations: Complainiacs (12 inputs, 44.1 kHz) at **4.13-4.16x**,
+  Catbite (13 inputs, 96 kHz) at **1.57x**, and Dark Ride (39 inputs, 44.1 kHz)
+  at **1.60x**. Catbite's 48-frame block p99 is 531-536 us against a 500 us
+  deadline. Normal scheduling also produces occasional outliers. This is a short
+  offline-DSP microbenchmark, not a complete 48 kHz live graph, PA/transport or
+  hardware qualification. The compact private record retains reproducible harness
+  source and conditions; no standalone runner or extra output tree is retained.
+- A controlled +3 dB guitar bell selected the expected −3 dB inverse in training.
+  A separately checked diagnostic render of that rejected proposal reproduces
+  **all 10,056,212 unmodified-reference PCM24 samples exactly**. Independent
+  FFmpeg/libsoxr checks passed for both files. Maximum float-bus difference is
+  1.863e−9. The original waveform is a technical reference, not a listening verdict.
+  The held-out ending changes its natural band ratio from about +3.3 to −8.0 dB;
+  the fixed training-derived target therefore vetoes the inverse. The original
+  control remains unchanged. Targets and protections were not retuned against
+  held-out data; diagnostic export does not override automatic rejection.
+- Fixed two integration regressions: explicit source preservation now clears
+  dynamic EQ, and `all_targets_met` includes every declared hierarchy section,
+  including missing evidence. Exact PCM preservation and a whole-song-pass /
+  section-fail end-to-end regression pass.
+- Coverage is 41 routed inputs across 12 declared families: kick, bass DI, snare,
+  toms, overheads, drum room, electric guitar, lead/backing vocals, vocal room,
+  keys and synth. These are capture declarations, not successful correction or
+  listening qualification for every family. Acoustic guitar, hi-hat, piano,
+  strings, winds and printed-effects profiles remain unqualified here. Reviewed
+  real dynamic-event identities and dynamic-processing listening are still absent.
+- The first complete default run exposed a scheduler-dependent spectrum test:
+  a fixed sleep did not guarantee a complete window after a level change. The test
+  now waits for an acknowledged source-frame transition and observes the existing
+  query-rate limit. Production spectrum behavior is unchanged.
+- Final Rust 1.97.1 checks under the shared build lock, `CARGO_INCREMENTAL=0` and
+  `CARGO_BUILD_JOBS=1`: `cargo test --locked --all-targets` **482 passed / 21 ignored**;
+  the same command with `--features hardware-host` **566 passed / 48 ignored**;
+  all-target/all-feature Clippy with `-D warnings` and formatting passed.
+  Python's normal script suite passed **50 tests**. Historical auditions,
+  exhaustive family matrices, long benchmarks, owner-artifact fixtures and
+  physical/playback tests were intentionally skipped. Offline elapsed times under
+  concurrent development checks are not realtime capacity or hardware acceptance.
+- Repeated analysis/prepare observations were bit-identical in all six native
+  and controlled runs. All 41 original WAVs (2,241,434,386 bytes) still match their
+  frozen hashes. Compact observations, requests/states, complete decisions,
+  failing-window evidence and delivery verification receipts are consolidated in
+  `artifacts/automix-validation.json`. The short diagnostic clips are retired;
+  only the six requested full-song comparison WAVs remain in `listen/`.
+  The obsolete automix output tree, one-use runners, analysis environment and
+  completed test executables were removed. Historical frozen settings and authored
+  patches remain in `artifacts/automix-history.json`. Earlier artifact paths in
+  dated study records describe retired outputs, not current listening locations.
+  Original media and unresolved physical bench evidence are preserved.
+
+**Next action: obtain musical judgments on the revised productions. Assess live
+processing against the intended 16-channel/48-kHz configuration on this hardware,
+without imposing the earlier informal 2x estimate as an acceptance requirement.**
+Use the private results and diagnostics before declaring a preferred mix. Any
+revised intent or source selection requires a fresh v2 analysis and new independent
+qualification material; do not turn these held-out vetoes into a parameter search.
+Keep absent families, real dynamic-event processing and the experimental auditory
+model unqualified. No new permission is needed for the already authorized offline
+scope; publication and physical activation remain outside this invocation.

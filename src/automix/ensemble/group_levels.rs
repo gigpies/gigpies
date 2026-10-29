@@ -303,7 +303,11 @@ pub fn compliance(s: &Session, m: &Levels, p: &crate::automix::hierarchy::Policy
         let delta=|a:usize,b:usize|(row[a]>1e-20 && row[b]>1e-20).then(||10.*(row[a]/row[b]).log10());
         json!({"span":span,"lufs":lu,"lufs_targets_met":compliant,"kick_minus_bass_energy_db":delta(k,b),"other_minus_bass_energy_db":(0..row.len()).filter(|&i|i!=k && i!=b).map(|i|delta(i,b)).collect::<Vec<_>>(),"metric":"common-window mean energy, not LUFS; silence is missing evidence"})
     }).collect::<Vec<_>>();
+    let all_sections_targets_met = !sections.is_empty()
+        && sections
+            .iter()
+            .all(|section| section["lufs_targets_met"] == true);
     Ok(
-        json!({"whole_source_targets_met":ok,"measurement":m,"sections":sections,"scope":"declared coherent performances after channel DSP/excitation/routing plus dedicated returns, before nonlinear master; shared-return attribution abstains"}),
+        json!({"whole_source_targets_met":ok,"all_sections_targets_met":all_sections_targets_met,"measurement":m,"sections":sections,"scope":"declared coherent performances after channel DSP/excitation/routing plus dedicated returns, before nonlinear master; shared-return attribution abstains"}),
     )
 }

@@ -1335,6 +1335,7 @@ fn explicit_group_hierarchy_uses_coherent_lufs_and_reports_section_conflicts() {
     let m = group_levels::measure(&s, &dir.0, &r, true, 96000).unwrap();
     let result = group_levels::compliance(&s, &m, &policy).unwrap();
     assert_eq!(result["whole_source_targets_met"], true, "{result}");
+    assert_eq!(result["all_sections_targets_met"], false, "{result}");
     assert!(
         result["sections"]
             .as_array()
@@ -1343,6 +1344,51 @@ fn explicit_group_hierarchy_uses_coherent_lufs_and_reports_section_conflicts() {
             .any(|s| s["lufs_targets_met"] == false)
     );
     assert!(m.section_lufs.iter().flatten().all(Option::is_some));
+    let mut missing = m;
+    missing.section_lufs[0][0] = None;
+    let result = group_levels::compliance(&s, &missing, &policy).unwrap();
+    assert_eq!(result["all_sections_targets_met"], false);
+    assert!(result["sections"][0]["lufs_targets_met"].is_null());
+
+    // Repeat the same changing arrangement into a later holdout. Its aggregate
+    // hierarchy is attainable, but neither averaging nor technical acceptance
+    // may hide the individual section conflicts in the preparation report.
+    for i in 0..3 {
+        let path = dir.0.join(format!("{i}.wav"));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let spec = reader.spec();
+        let samples = reader
+            .samples::<f32>()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        drop(reader);
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for &x in samples.iter().chain(&samples) {
+            writer.write_sample(x).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+    r.training = vec![[0., 1.], [1., 2.]];
+    r.held_out = vec![[2., 3.], [3., 4.]];
+    r.profiles.clear();
+    r.grouped_hierarchy = true;
+    r.hierarchy = Some(policy);
+    let frozen = ensemble::freeze(&s, &dir.0, &r).unwrap();
+    let state = ensemble::workflow::State {
+        baseline: s,
+        request: r,
+        frozen,
+    };
+    let out = dir.0.join("section-conflict");
+    ensemble::workflow::prepare(state, &dir.0, &out).unwrap();
+    let report: serde_json::Value =
+        serde_json::from_reader(std::fs::File::open(out.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["accepted"], true, "{report}");
+    assert_eq!(
+        report["hierarchy"]["whole_source_targets_met"], true,
+        "{report}"
+    );
+    assert_eq!(report["all_targets_met"], false, "{report}");
 }
 
 #[test]

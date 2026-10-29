@@ -5,7 +5,7 @@ use std::{
     os::unix::{fs::PermissionsExt, net::UnixStream},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -18,16 +18,26 @@ fn actual_selected_spectrum_tones_levels_silence_and_reconnect() {
     let owner_dir = dir.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let level = Arc::new(AtomicUsize::new(0));
+    let applied_level = Arc::new(AtomicUsize::new(usize::MAX));
+    let transition_frame = Arc::new(AtomicU64::new(0));
     let (halt, gain) = (stop.clone(), level.clone());
+    let (applied, transition) = (applied_level.clone(), transition_frame.clone());
     let child = std::thread::spawn(move || {
         let mut owner = LocalAudio::bind(&owner_dir, "audio.sock", show, Counter(1)).unwrap();
         let topology = EngineTopology::legacy();
         let mut pcm = vec![0.; 48 * topology.capture_channels];
         let mut out = vec![0.; 48 * topology.playback_channels];
         let start = Instant::now();
+        let mut previous_level = usize::MAX;
         while !halt.load(Ordering::Relaxed) {
             let frame = owner.frame();
-            let a = match gain.load(Ordering::Relaxed) {
+            let selected_level = gain.load(Ordering::Acquire);
+            if selected_level != previous_level {
+                transition.store(frame, Ordering::Relaxed);
+                applied.store(selected_level, Ordering::Release);
+                previous_level = selected_level;
+            }
+            let a = match selected_level {
                 0 => 0.5,
                 1 => 0.125,
                 _ => 0.,
@@ -51,7 +61,10 @@ fn actual_selected_spectrum_tones_levels_silence_and_reconnect() {
     let mut query = 0;
     let mut costs = vec![];
     let mut bytes = 0;
+    let mut next_request = Instant::now();
     let mut request = |stream: &mut UnixStream, input: usize| {
+        // Respect the provider's 80 ms spectrum-query limit, including retries.
+        std::thread::sleep(next_request.saturating_duration_since(Instant::now()));
         query += 1;
         let start = Instant::now();
         let r = serde_json::json!({"contract":"GP-SPECTRUM","version":1,"show_id":show,"epoch":1,"map":1,"query":query,"input":format!("input-{input:02}")});
@@ -67,6 +80,7 @@ fn actual_selected_spectrum_tones_levels_silence_and_reconnect() {
         costs.push(start.elapsed().as_micros());
         bytes += n + 4;
         let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        next_request = Instant::now() + Duration::from_millis(100);
         assert_eq!(v["query"], query);
         assert_eq!(v["tap"], "raw-pre-processing");
         v
@@ -78,10 +92,32 @@ fn actual_selected_spectrum_tones_levels_silence_and_reconnect() {
     }
     let mut s = UnixStream::connect(dir.join("audio.sock")).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    let mut fresh_snapshot = |stream: &mut UnixStream, input, first_frame| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let v = request(stream, input);
+            if v["valid"] == true && v["first_frame"].as_u64().is_some_and(|f| f >= first_frame) {
+                return v;
+            }
+            assert!(Instant::now() < deadline, "no fresh spectrum window: {v}");
+        }
+    };
+    let change_level = |next| {
+        level.store(next, Ordering::Release);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while applied_level.load(Ordering::Acquire) != next {
+            assert!(
+                Instant::now() < deadline,
+                "capture did not apply level {next}"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Require a complete FFT window after the producer acknowledged the
+        // change, rather than assuming wall-clock sleep advances source frames.
+        transition_frame.load(Ordering::Relaxed)
+    };
     for (input, bin) in [(1, 8f64), (2, 85.), (3, 853.)] {
-        let _ = request(&mut s, input);
-        std::thread::sleep(Duration::from_millis(250));
-        let v = request(&mut s, input);
+        let v = fresh_snapshot(&mut s, input, 0);
         assert_eq!(v["valid"], true);
         let b = v["bins"].as_array().unwrap();
         let peak = b
@@ -94,11 +130,8 @@ fn actual_selected_spectrum_tones_levels_silence_and_reconnect() {
             ((bin * 48000. / 4096. / 20.).log10() / 3. * 64f64).floor() as usize
         );
         assert!((peak.1.as_i64().unwrap() + 6021).abs() < 4);
-        std::thread::sleep(Duration::from_millis(100));
     }
-    level.store(1, Ordering::Relaxed);
-    std::thread::sleep(Duration::from_millis(260));
-    let v = request(&mut s, 3);
+    let v = fresh_snapshot(&mut s, 3, change_level(1));
     assert!(
         (v["bins"]
             .as_array()
@@ -111,9 +144,7 @@ fn actual_selected_spectrum_tones_levels_silence_and_reconnect() {
             .abs()
             < 4
     );
-    level.store(2, Ordering::Relaxed);
-    std::thread::sleep(Duration::from_millis(260));
-    let v = request(&mut s, 3);
+    let v = fresh_snapshot(&mut s, 3, change_level(2));
     assert!(
         v["bins"]
             .as_array()

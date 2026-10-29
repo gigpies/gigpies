@@ -56,6 +56,7 @@ source separation. Do not optimize a track while ignoring its place in the song.
 
 ## Default behavior
 
+- Explicit `preserve-source` clears static and dynamic EQ, bypasses compression and filters, and removes effects while retaining the supplied faders and pan.
 - Baselines require prepared unmatched settings, unity trims, verified routing where asserted and the −0.01 dBFS export ceiling. High-pass filters may be zero or any schema-valid explicit setting; validation does not insert or remove them.
 - Bass and drum measurements use the configured master filter. A zero-frequency high-pass is an exact identity filter.
 - Missing balance intent supplies no numerical role relationships and performs no search. Missing tone intent is `unknown`, with a null target and no proposed EQ.

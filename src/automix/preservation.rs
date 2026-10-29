@@ -18,6 +18,7 @@ pub fn source_settings(s: &Session) -> Result<Session> {
     for ch in &mut source.channels {
         ch.hpf_hz = 0.;
         ch.eq.clear();
+        ch.dynamic_eq = None;
         ch.compressor.ratio = 1.;
         ch.compressor.makeup_db = 0.;
     }
