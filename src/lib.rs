@@ -91,3 +91,5 @@ pub mod meter_wire;
 
 /// Bounded selected-channel spectral observation.
 pub mod spectrum;
+
+pub mod fx_aux_wire;

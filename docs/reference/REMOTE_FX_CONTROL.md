@@ -1,4 +1,122 @@
-# Actual remote FOH FX control — GP21-fx:1
+# FX aux control and legacy remote delay
+
+## Four stereo auxes — GP-FX-aux:1
+
+The four-aux path provides **four stereo FX buses**, separate from configured
+monitor buses. Every logical input has a 0..1 send to each aux, initially zero.
+Sends follow channel processing, fader, mute and pan, with 240-frame level ramps.
+Stagebox sends eight explicitly ordered channels (`fx-1-left`, `fx-1-right`,
+through `fx-4-right`) to Brain. Brain owns four native-f64 SHR FX instances and
+returns eight wet channels on the same source-frame timeline. Stagebox admits
+those returns through the existing bounded jitter/loss gates, sums them into
+Main before PA, and never feeds them back into sends. Raw REC and monitor paths
+are unchanged. Monitor sends keep GP18's independent taps and physical outputs;
+they have no return to Main.
+
+In the Brain runner configuration, set `fx_library` and `fx_aux_sha256` to the
+exact library and SHA256. This selects four auxes instead of the existing stereo
+path; `fx_control_sha256` remains the mutually exclusive legacy GP21 selector.
+Both peers need explicit media permissions; Brain also needs `fx_configuration`
+permission for owner control. Negotiation alone grants no operator writer lease.
+Grouped media uses the existing GPA1 transport; network samples are float32,
+converted to the owner's native f64 at its boundary. The source clock remains
+Stagebox's; Brain processes complete received source blocks, never a free-running
+render clock. Missing/stale groups reset affected continuity and returns fade to
+silence through the existing bounded loss gates. All eight channels retain their
+identity in transport; summation happens only at Stagebox Main.
+
+An optional local source-host variant remains available for offline checks or
+explicit local deployment: `gigpies-headless --fx-aux-library ABS_SO
+--fx-aux-sha256 SHA256`, or provider configuration
+`"fx_aux":{"library":"ABS_SO","sha256":"SHA256"}`. It excludes simultaneous
+remote FX media. Without either four-aux selection, existing fixed local FX and
+GP21 Brain stereo delay retain their behavior. The `hardware-host` feature is a
+build requirement, not authorization to open a device; synthetic checks own none.
+
+Loading hashes an open inode, loads that same inode, and retains its file
+descriptor until the owner instances are destroyed. All four owners must
+resolve the complete `shr_fx_v2_*` palette API, independently of the incompatible
+`shr_fx_delay_v2_*` namespace. Settings/status/capabilities/parameter layouts are
+64/200/48/48 bytes, ABI version2, 48kHz, 48-frame stereo f64 blocks. Algorithm
+support, defaults and bounds come from the loaded owner, not a Desk sound list.
+The adapter admits at most8MiB per prepared object; four active/four retired and
+one caller-held pending object bound effect storage to72MiB plus owner structs.
+The optional aux extension admits its additional send storage/work against the
+existing mixer budget without changing published core resource capabilities.
+Absent this mode, no per-input FX send state is provisioned. These are storage
+bounds, not a four-effect CPU/deadline or listening qualification.
+
+Use the ordinary eleven-key authority envelope with contract `GP-FX-aux`,
+version1. `fx_aux_snapshot` has null writer/lease/request/revision and empty body.
+`fx_aux_configure` requires the existing `fx_configuration` lease, authenticated
+permission on remote connections, fresh same-session read, source epoch and
+shared authority revision. The body contains exactly `bus` (0..3),
+`map_revision`, `library_sha256`, `expected_generation`, `configuration_json`
+and `panic`, plus `owner_binding` for remote owners. The binding is the SHA256 of
+the exact negotiated media descriptor and library hash; local requests omit it.
+This pins the Brain TLS session, source epoch, capability/map generations and
+channel layout, so a reconnected owner cannot accept an old edit even when its
+bus generation starts at zero. The hash input is serde JSON UTF-8 for the tuple
+`[MediaDescriptor, library_sha256]` with the admitted stream order. Counters are decimal strings. Configuration and panic are exclusive.
+Configuration is bounded opaque JSON: exact `settings` (the versioned owner
+settings), `sends` in advertised logical input order, and nullable `tempo`.
+Tempo is `{bpm,denominator,modifier}`: BPM30..300; 1/1 through1/64; straight0,
+dotted1, triplet2. Digital/tape delay only. The owner helper validates the
+resolved `time_ms`; values beyond1..2000ms refuse instead of clamping. Free time
+uses `tempo:null`. Network `return_delay_frames` is a separate explicit transport
+schedule, added to intentional effect delay; no unmeasured path compensation is
+subtracted. There is no external MIDI-clock acquisition in this host mode.
+
+For Brain, the authenticated `GP-FX-aux-owner:1` relay first requests actual owner
+preparation. A permit commits authority, then schedules the send ramps and Brain
+publication at the same future source boundary (4800-frame control lead). It is
+not evidence of DSP application. Correlated owner completion, source send
+readback and settled owner status are required before success; loss after permit
+is UNKNOWN. A delivered permit is not rolled back on disconnection; fresh
+readback merges actual Stagebox send targets with actual Brain effect state.
+Preparation, deadlines and outgoing control queues remain bounded.
+
+For the local variant, preparation and validation occur before reservation; at the exact source
+boundary the existing authority rechecks the lease/revision before publication
+and send ramps. One outstanding control edit is allowed; an individual aux must
+settle before another configuration edit to it; panic can interrupt a transition
+or clear a fault. An owner fault after remote publication yields UNKNOWN and releases
+the outstanding ticket so an explicit fresh probe and panic can recover it. Unchanged settings do not replace its DSP when
+only sends change. Rejected/stale edits keep sounding state unchanged.
+`preparing` is the remote preparation request; `prepared` follows actual owner
+preparation (or local admission). `accepted` is correlated publication/readback, and neither
+is settlement. Snapshot exposes per-aux host generation/applied_generation,
+complete target configuration and actual owner status (current/target,
+accepted/applied request, transition, fault). Desk requires correlated acceptance
+then fresh exact generation/target and settled owner readback. Lost completion
+is UNKNOWN; there is no automatic retry/regrant/replay.
+
+Provider bypass alone stops excitation on the next nonempty block and drains
+history. Other settings use bounded 480-frame fade-out/swap/480-frame fade-in;
+only one DSP state ticks per aux/frame. Panic clears the selected instance,
+not persistent mute. If a replacement has not swapped yet, panic cancels it and
+readback retains the actual active settings; an already swapped state remains.
+Host control settlement after reset does not relabel an interrupted provider
+request as applied. Fault status remains separate from control settlement. Failed process spans zero that aux return; other buses
+continue. Source loss quiesces returns, clears histories and invalidates pending
+intent; recovery requires a new epoch and preserves configured send targets while
+outputs remain disarmed until explicitly rearmed. Aux configuration is runtime
+state: UI reconnect preserves it; process restart or admission of a new Brain
+owner session starts with zero sends. The
+existing saved core-mix schema does not persist these auxes. Queries, preparation, reclamation and
+library teardown stay outside sample processing. All instance calls serialize;
+successful publish consumes the token, refusal leaves it caller-owned, and
+retired tokens are freed by the control pump. Shutdown drops owners after the
+source loop stops. UI disconnection does not stop already sounding effects.
+
+Focused software checks use `tests/fx_aux.rs`; actual owner and authority/sample
+checks require `GP_FX_LIBRARY` and their named ignored tests. Desk's repeatable
+`fx_aux_actual` test launches an owned synthetic headless provider. The shared
+[GP-FX card](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-fx--writable-owner-effects-in-the-console)
+owns validation state; physical placement, aggregate cost and listening remain
+separate acceptance.
+
+## Legacy actual remote FOH FX — GP21-fx:1
 
 This additive software path controls the actual Brain stereo owner processing
 `foh-left`, `foh-right`. Each channel has independent delay, feedback, damping,

@@ -222,6 +222,7 @@ impl AuthenticatedContext {
                 | "brain_snapshot"
                 | "device_snapshot"
                 | "fx_snapshot"
+                | "fx_aux_snapshot"
         ) {
             if !writer.is_null() {
                 return Err("snapshot writer".into());

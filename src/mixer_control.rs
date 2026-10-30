@@ -555,6 +555,12 @@ impl OfflineEngine {
     pub fn topology(&self) -> &crate::topology::EngineTopology {
         self.mixer.topology()
     }
+    pub fn enable_fx_aux(&mut self) -> Result<()> {
+        self.mixer.enable_fx_aux()
+    }
+    pub fn set_fx_sends(&mut self, bus: usize, levels: &[f64]) -> Result<()> {
+        self.mixer.set_fx_sends(bus, levels)
+    }
     pub fn set_operator_tap(&mut self, source: crate::brain_control::MonitorSource) {
         self.mixer.set_operator_tap(source);
     }
@@ -615,6 +621,7 @@ impl OfflineEngine {
             .checked_add(1)
             .ok_or("map exhausted")?;
         let mut next = Self::restore_intent(&intent, epoch, frame)?;
+        next.mixer.inherit_fx_send_intent(&self.mixer)?;
         next.clock = clock;
         *self = next;
         Ok(())

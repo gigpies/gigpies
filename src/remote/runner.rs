@@ -114,6 +114,12 @@ fn expected_analysis_pcm(verify_synthetic: bool, id: &str, frame: u64) -> Result
     }))
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FxAuxConfig {
+    pub library: PathBuf,
+    pub sha256: String,
+}
+#[derive(Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunConfig {
     Provider {
@@ -141,6 +147,8 @@ pub enum RunConfig {
         #[serde(default)]
         provider_timing: bool,
         #[serde(default)]
+        fx_aux: Option<Box<FxAuxConfig>>,
+        #[serde(default)]
         analysis_mapping: Option<crate::analysis_stream::Mapping>,
     },
     Brain {
@@ -155,6 +163,8 @@ pub enum RunConfig {
         fx_library: PathBuf,
         #[serde(default)]
         fx_control_sha256: Option<String>,
+        #[serde(default)]
+        fx_aux_sha256: Option<String>,
         #[serde(default = "default_true")]
         verify_synthetic_source: bool,
         duration_ms: u64,
@@ -349,6 +359,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             ready,
             physical_device,
             provider_timing,
+            fx_aux,
             analysis_mapping,
         } => {
             validate_provider_run(
@@ -395,6 +406,9 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                 topology,
             )?;
             provider.enable_modules(&manifest)?;
+            if let Some(fx) = fx_aux {
+                provider.enable_fx_aux(&fx.library, &fx.sha256)?;
+            }
             if let Some(mapping) = analysis_mapping {
                 provider.enable_configured_analysis(&private_directory, &mapping)?;
             }
@@ -613,6 +627,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             show_id,
             fx_library,
             fx_control_sha256,
+            fx_aux_sha256,
             verify_synthetic_source,
             duration_ms,
             return_delay_frames,
@@ -647,7 +662,14 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             let max = client.max_datagram();
             let mut streams = grouped_streams(MediaRole::Analysis, &ids, 48, 0, 1, max)?;
             let first = streams.len() as u32 + 1;
-            let fx_ids = vec!["foh-left".into(), "foh-right".into()];
+            if fx_aux_sha256.is_some() && fx_control_sha256.is_some() {
+                return Err("select four auxes or legacy stereo FX control".into());
+            }
+            let fx_ids = if fx_aux_sha256.is_some() {
+                super::fx_aux_owner::channel_ids()
+            } else {
+                vec!["foh-left".into(), "foh-right".into()]
+            };
             streams.extend(grouped_streams(
                 MediaRole::FxSend,
                 &fx_ids,
@@ -661,7 +683,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                 &fx_ids,
                 48,
                 return_delay_frames,
-                first + 1,
+                streams.len() as u32 + 1,
                 max,
             )?);
             let identity = client.identity().clone();
@@ -677,8 +699,15 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             if !matches!(client.receive().await?, Response::MediaAccepted { .. }) {
                 return Err("Brain media negotiation refused".into());
             }
-            let mut worker = BrainWorker::prepare(client.media_channel()?, &fx_library)?;
-            let controls = if let Some(hash) = &fx_control_sha256 {
+            let aux_controls = fx_aux_sha256.is_some();
+            let mut worker = if let Some(hash) = &fx_aux_sha256 {
+                BrainWorker::prepare_aux(client.media_channel()?, &fx_library, hash, ids.len())?
+            } else {
+                BrainWorker::prepare(client.media_channel()?, &fx_library)?
+            };
+            let controls = if aux_controls {
+                true
+            } else if let Some(hash) = &fx_control_sha256 {
                 worker.enable_fx_control(&fx_library, hash)?
             } else {
                 false
@@ -706,6 +735,12 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                     _=&mut deadline=>break,
                     response=control_rx.recv(),if controls=>{
                         match response {
+                            Some(Ok(Response::Reply{payload,..})) if payload.get("contract").and_then(serde_json::Value::as_str)==Some(super::fx_aux_owner::CONTRACT)=>{
+                                if let Some(command)=payload.get("command") {
+                                    let command=serde_json::from_value(command.clone()).map_err(|e|e.to_string())?;
+                                    if let Some(message)=worker.aux_command(command)? {client.send_command(serde_json::json!({"contract":super::fx_aux_owner::CONTRACT,"version":1,"kind":"fx_aux_owner","writer":client.writer(),"message":message})).await?;}
+                                }
+                            },
                             Some(Ok(Response::Reply{payload,..})) if payload.get("contract").and_then(serde_json::Value::as_str)==Some(crate::fx_wire::CONTRACT)=>{
                                 if let Some(command)=payload.get("command") {
                                     let command=serde_json::from_value(command.clone()).map_err(|e|e.to_string())?;
@@ -721,7 +756,9 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                         }
                     },
                     _=observation_tick.tick(),if controls=>{
-                        if let Some(message)=worker.poll_fx_observation()? {
+                        if aux_controls {
+                            if let Some(message)=worker.poll_aux_observation()? {client.send_command(serde_json::json!({"contract":super::fx_aux_owner::CONTRACT,"version":1,"kind":"fx_aux_owner","writer":client.writer(),"message":message})).await?;}
+                        } else if let Some(message)=worker.poll_fx_observation()? {
                             client.send_command(serde_json::json!({"contract":crate::fx_wire::CONTRACT,"version":1,"kind":"fx_owner","writer":client.writer(),"message":message})).await?;
                         }
                     },
@@ -759,7 +796,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             if verify_synthetic_source && worker.nonzero_return_samples() == 0 {
                 fault = Some("functional acceptance observed no nonzero owner wet result; source may remain muted".into());
             }
-            let evidence = json!({"mode":"brain","software_only":verify_synthetic_source,"physical_io_owned":false,"physical_qualified":false,"descriptor":descriptor,"elapsed_ms":started.elapsed().as_millis(),"first_analysis_source_frame":first_source,"last_analysis_source_frame":last_source,"analysis_packets":worker.stats.analysis_packets,"synthetic_reference_checked":verify_synthetic_source,"analysis_sample_mismatches":if verify_synthetic_source {Some(mismatches)}else{None},"analysis_samples_per_channel":channel_samples,"analysis_arrival_sha256":format!("{:x}",analysis_hash.finalize()),"returned_wet_sha256":worker.returned_sha256(),"nonzero_returned_wet_samples":worker.nonzero_return_samples(),"fx_send_packets":worker.stats.send_packets,"actual_owner_fx_blocks":worker.stats.processed_blocks,"wet_packets":worker.stats.returned_packets,"incomplete_blocks":worker.stats.incomplete_blocks,"stale_groups":worker.stats.stale_groups,"fx_owner_resets":worker.owner_resets(),"fx_intentional_delay_frames":if controls {None}else{Some(worker.intentional_delay_frames())},"fx_controls_available":controls,"fx_owner_observation":worker.fx_observation().ok(),"fault":fault});
+            let evidence = json!({"mode":"brain","software_only":verify_synthetic_source,"physical_io_owned":false,"physical_qualified":false,"descriptor":descriptor,"elapsed_ms":started.elapsed().as_millis(),"first_analysis_source_frame":first_source,"last_analysis_source_frame":last_source,"analysis_packets":worker.stats.analysis_packets,"synthetic_reference_checked":verify_synthetic_source,"analysis_sample_mismatches":if verify_synthetic_source {Some(mismatches)}else{None},"analysis_samples_per_channel":channel_samples,"analysis_arrival_sha256":format!("{:x}",analysis_hash.finalize()),"returned_wet_sha256":worker.returned_sha256(),"nonzero_returned_wet_samples":worker.nonzero_return_samples(),"fx_send_packets":worker.stats.send_packets,"actual_owner_fx_blocks":worker.stats.processed_blocks,"wet_packets":worker.stats.returned_packets,"incomplete_blocks":worker.stats.incomplete_blocks,"stale_groups":worker.stats.stale_groups,"fx_owner_resets":worker.owner_resets(),"fx_intentional_delay_frames":if controls {None}else{Some(worker.intentional_delay_frames())},"fx_controls_available":controls,"four_aux_controls":aux_controls,"fx_aux_owner_observation":if aux_controls {worker.poll_aux_observation().ok()}else{None},"fx_owner_observation":worker.fx_observation().ok(),"fault":fault});
             save(&report, &evidence)?;
             Ok(evidence)
         }

@@ -1,3 +1,5 @@
+#[path = "fx_aux_relay.rs"]
+mod fx_aux_relay;
 #[path = "fx_relay.rs"]
 mod fx_relay;
 // The authenticated endpoint for the existing composed LocalAudio graph. It
@@ -76,6 +78,7 @@ pub struct HostAuthority {
     meter_reads: BTreeMap<u64, u64>,
     reads: BTreeMap<u64, ReadState>,
     structural_reads: BTreeMap<u64, u64>,
+    fx_aux_reads: BTreeMap<u64, u64>,
     master_eq_reads: BTreeMap<u64, u64>,
     brain_reads: BTreeMap<u64, u64>,
     held_queries: BTreeMap<u64, u64>,
@@ -95,13 +98,15 @@ pub struct HostAuthority {
     descriptor: Option<MediaDescriptor>,
     media_owner: Option<u64>,
     wet_groups: Vec<WetGroup>,
-    gates: [WetGate; 2],
+    gates: [WetGate; 8],
+    wet_channels: usize,
+    aux: fx_aux_relay::AuxRelay,
     wet: [f64; 96],
     outgoing: VecDeque<Vec<u8>>,
     completions: VecDeque<Value>,
     analysis_indices: Vec<usize>,
     analysis: Vec<f64>,
-    fx_send: [f64; 96],
+    fx_send: Vec<f64>,
     capability_generation: u64,
     media_stats: HostMediaStats,
     accepted_wet_hash: Sha256,
@@ -172,6 +177,7 @@ impl HostAuthority {
             meter_reads: BTreeMap::new(),
             reads: BTreeMap::new(),
             structural_reads: BTreeMap::new(),
+            fx_aux_reads: BTreeMap::new(),
             master_eq_reads: BTreeMap::new(),
             brain_reads: BTreeMap::new(),
             held_queries: BTreeMap::new(),
@@ -191,13 +197,15 @@ impl HostAuthority {
             descriptor: None,
             media_owner: None,
             wet_groups: Vec::new(),
-            gates: [WetGate::default(); 2],
+            gates: [WetGate::default(); 8],
+            wet_channels: 2,
+            aux: Default::default(),
             wet: [0.; 96],
             outgoing: VecDeque::with_capacity(256),
             completions: VecDeque::with_capacity(128),
             analysis_indices: Vec::new(),
             analysis: Vec::new(),
-            fx_send: [0.; 96],
+            fx_send: vec![0.; 96],
             capability_generation,
             media_stats: HostMediaStats::default(),
             accepted_wet_hash: Sha256::new(),
@@ -206,12 +214,13 @@ impl HostAuthority {
     }
     fn clear_media_history(&mut self) {
         self.fx_clear_media();
+        self.clear_aux();
         self.brain = None;
         self.provider.close_brain_audio();
         self.descriptor = None;
         self.media_owner = None;
         self.wet_groups.clear();
-        self.gates = [WetGate::default(); 2];
+        self.gates = [WetGate::default(); 8];
         self.wet.fill(0.);
         self.outgoing.clear();
     }
@@ -828,7 +837,7 @@ impl HostAuthority {
         }) {
             self.clear_media_history();
         }
-        let mut incoming = [None; 96];
+        let mut incoming = [None; 384];
         for group in &mut self.wet_groups {
             if frame
                 < group
@@ -856,18 +865,30 @@ impl HostAuthority {
                     Packet::parse(&bytes[..length]).map_err(|e| format!("wet packet {e:?}"))?;
                 for f in 0..48 {
                     for ch in 0..usize::from(group.spec.channels) {
-                        incoming[f * 2 + usize::from(group.spec.first_channel) + ch] = Some(
-                            packet
-                                .sample(f * usize::from(group.spec.channels) + ch)
-                                .map_err(|e| format!("wet sample {e:?}"))?,
-                        );
+                        incoming
+                            [f * self.wet_channels + usize::from(group.spec.first_channel) + ch] =
+                            Some(
+                                packet
+                                    .sample(f * usize::from(group.spec.channels) + ch)
+                                    .map_err(|e| format!("wet sample {e:?}"))?,
+                            );
                     }
                 }
             }
         }
+        self.wet.fill(0.);
         for f in 0..48 {
-            for ch in 0..2 {
-                self.wet[f * 2 + ch] = self.gates[ch].step(incoming[f * 2 + ch]);
+            for ch in 0..self.wet_channels {
+                self.wet[f * 2 + ch % 2] +=
+                    self.gates[ch].step(incoming[f * self.wet_channels + ch]);
+            }
+        }
+        if self.wet_channels == 8 {
+            for (i, sample) in self.wet.iter_mut().enumerate() {
+                *sample *= self
+                    .provider
+                    .engine()
+                    .output_safety_gain(frame + (i / 2) as u64);
             }
         }
         for sample in self.wet {
@@ -877,6 +898,7 @@ impl HostAuthority {
         // Always supply the explicit external wet path, including silence after
         // disconnect. This prevents fallback to another local FX instance.
         self.tick_fx(now_ms)?;
+        self.tick_aux(now_ms)?;
         self.commit_device_intent(now_ms)?;
         self.prepare_brain_block(frame);
         self.provider.tick_with_capture_and_brain(
@@ -912,7 +934,17 @@ impl HostAuthority {
                         capture[f * capture_channels + slot];
                 }
             }
-            self.fx_send.copy_from_slice(self.provider.brain_fx_send());
+            if descriptor.channels(MediaRole::FxSend) == 8 {
+                let aux = self.provider.engine_mut().mixer().fx_aux_samples();
+                for f in 0..48 {
+                    for (b, samples) in aux.iter().enumerate() {
+                        self.fx_send[f * 8 + b * 2..f * 8 + b * 2 + 2]
+                            .copy_from_slice(&samples[f * 2..f * 2 + 2]);
+                    }
+                }
+            } else {
+                self.fx_send.copy_from_slice(self.provider.brain_fx_send());
+            }
             let mut packets = Vec::new();
             if !self.analysis_indices.is_empty() {
                 packets.extend(encode_grouped(
@@ -971,6 +1003,31 @@ impl AuthorityEndpoint for HostAuthority {
                 .map_err(|e| e.to_string());
         }
 
+        if payload.get("contract").and_then(Value::as_str)
+            == Some(crate::remote::fx_aux_owner::CONTRACT)
+        {
+            return self.dispatch_aux_owner(context, payload, now_ms).map(Some);
+        }
+        if payload.get("contract").and_then(Value::as_str) == Some(crate::fx_aux_wire::CONTRACT) {
+            if !self.provider.fx_aux_enabled() {
+                return self.dispatch_aux(context, payload, now_ms).map(Some);
+            }
+            let (_, mutation) =
+                crate::fx_aux_wire::request(&payload, self.provider.engine_mut().wire_version())?;
+            if mutation.is_some() {
+                context.require(&Permission::FxConfiguration)?;
+            }
+            let fresh = self
+                .fx_aux_reads
+                .get(&context.session())
+                .is_some_and(|t| now_ms.saturating_sub(*t) <= 1000);
+            let read = mutation.is_none();
+            let reply = self.provider.fx_aux_request(payload, now_ms, fresh, None)?;
+            if read {
+                self.fx_aux_reads.insert(context.session(), now_ms);
+            }
+            return Ok(Some(reply));
+        }
         if payload.get("contract").and_then(Value::as_str) == Some(crate::fx_wire::CONTRACT) {
             return self.dispatch_fx(context, payload, now_ms).map(Some);
         }
@@ -1237,10 +1294,18 @@ impl AuthorityEndpoint for HostAuthority {
         {
             return Err("Brain media owner already attached".into());
         }
-        if self.fx_control_attached(context.session()) {
+        if self.fx_control_attached(context.session()) || self.aux_mode() {
             return Err("FX owner replacement requires fresh session".into());
         }
         descriptor.validate(context, &self.identity(), crate::transport::MAX_DATAGRAM)?;
+        if self.provider.fx_aux_enabled()
+            && descriptor
+                .streams
+                .iter()
+                .any(|s| matches!(s.role, MediaRole::FxSend | MediaRole::WetReturn))
+        {
+            return Err("local four-aux owner excludes legacy remote FX media".into());
+        }
         if descriptor.streams.iter().any(|s| s.frames != 48) {
             return Err("composed host currently advertises 48-frame media blocks".into());
         }
@@ -1269,10 +1334,19 @@ impl AuthorityEndpoint for HostAuthority {
                     .capture_slot,
             );
         }
-        for role in [MediaRole::FxSend, MediaRole::WetReturn] {
-            let ids = ordered_ids(role);
-            if !ids.is_empty() && ids != ["foh-left", "foh-right"] {
-                return Err("composed FOH FX ports must be explicit left/right".into());
+        let send_ids = ordered_ids(MediaRole::FxSend);
+        let return_ids = ordered_ids(MediaRole::WetReturn);
+        let four_aux = send_ids == crate::remote::fx_aux_owner::channel_ids();
+        if four_aux {
+            context.require(&Permission::FxConfiguration)?;
+            if return_ids != send_ids {
+                return Err("four FX aux return map must match sends".into());
+            }
+        } else {
+            for ids in [&send_ids, &return_ids] {
+                if !ids.is_empty() && *ids != ["foh-left", "foh-right"] {
+                    return Err("explicit stereo or four-aux FX ports required".into());
+                }
             }
         }
         let first = self.provider.frame();
@@ -1292,10 +1366,19 @@ impl AuthorityEndpoint for HostAuthority {
                 buffer,
             });
         }
+        if four_aux {
+            self.provider.enable_remote_fx_aux()?;
+            let zeros = vec![0.; self.provider.topology().inputs.len()];
+            for bus in 0..4 {
+                self.provider.engine_mut().set_fx_sends(bus, &zeros)?;
+            }
+        }
+        self.wet_channels = if four_aux { 8 } else { 2 };
+        self.fx_send = vec![0.; 48 * self.wet_channels];
         self.analysis = vec![0.; 48 * indices.len()];
         self.analysis_indices = indices;
         self.wet_groups = wet_groups;
-        self.gates = [WetGate::default(); 2];
+        self.gates = [WetGate::default(); 8];
         self.wet.fill(0.);
         self.outgoing.clear();
         self.observed_source_epoch = self.provider.source_epoch();
@@ -1393,6 +1476,7 @@ impl AuthorityEndpoint for HostAuthority {
     }
     fn disconnect(&mut self, context: &AuthenticatedContext) {
         self.fx_disconnect(context);
+        self.disconnect_aux(context);
         self.brain_reads.remove(&context.session());
         self.held_queries.remove(&context.session());
         self.paired_queries.remove(&context.session());
@@ -1421,12 +1505,15 @@ impl AuthorityEndpoint for HostAuthority {
         self.meter_reads.remove(&context.session());
         self.reads.remove(&context.session());
         self.structural_reads.remove(&context.session());
+        self.fx_aux_reads.remove(&context.session());
         self.master_eq_reads.remove(&context.session());
         self.completions.retain(|r| {
-            r.get("context")
-                .and_then(|c| c.get("writer"))
-                .and_then(Value::as_str)
-                != Some(context.writer())
+            !(r["contract"] == crate::fx_aux_wire::CONTRACT
+                && r["writer"].as_str() == Some(context.writer()))
+                && r.get("context")
+                    .and_then(|c| c.get("writer"))
+                    .and_then(Value::as_str)
+                    != Some(context.writer())
         });
         if self.media_owner == Some(context.session()) {
             self.media_owner = None;
@@ -1444,6 +1531,9 @@ impl AuthorityEndpoint for HostAuthority {
         context: &AuthenticatedContext,
         _now_ms: u64,
     ) -> Result<Option<Value>> {
+        if let Some(value) = self.poll_aux(context) {
+            return Ok(Some(value));
+        }
         if let Some(value) = self.poll_fx(context) {
             return Ok(Some(value));
         }
@@ -1463,10 +1553,12 @@ impl AuthorityEndpoint for HostAuthority {
             return Ok(self.device_results.remove(index));
         }
         let index = self.completions.iter().position(|r| {
-            r.get("context")
-                .and_then(|c| c.get("writer"))
-                .and_then(Value::as_str)
-                == Some(context.writer())
+            (r["contract"] == crate::fx_aux_wire::CONTRACT
+                && r["writer"].as_str() == Some(context.writer()))
+                || r.get("context")
+                    .and_then(|c| c.get("writer"))
+                    .and_then(Value::as_str)
+                    == Some(context.writer())
         });
         Ok(index.and_then(|index| self.completions.remove(index)))
     }

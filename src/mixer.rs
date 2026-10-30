@@ -215,6 +215,8 @@ pub struct Mixer {
     clock: u64,
     ramps: Vec<Vec<Ramp>>,
     sends: Vec<Vec<TapTransition>>,
+    fx_sends: Vec<[Ramp; 4]>,
+    fx_samples: [[f64; 96]; 4],
     pending: Option<Pending>,
     completion: Option<Completion>,
     fault: bool,
@@ -261,6 +263,8 @@ impl Mixer {
             clock: frame,
             ramps: vec![row; inputs],
             sends: vec![vec![TapTransition::default(); monitors]; inputs],
+            fx_sends: Vec::new(),
+            fx_samples: [[0.; 96]; 4],
             pending: None,
             completion: None,
             fault: false,
@@ -270,6 +274,76 @@ impl Mixer {
             armed: true,
             output_gain: Ramp::fixed(1.),
         })
+    }
+    /// Optional aux provisioning is control-side. Preserve the published core
+    /// resource/snapshot contract; admit this extension against the remaining budget.
+    pub fn enable_fx_aux(&mut self) -> Result<()> {
+        if !self.fx_sends.is_empty() {
+            return Ok(());
+        }
+        let budget = crate::topology::ResourceBudget::default();
+        let core = self.topology.validate(budget)?;
+        let bytes = self
+            .input_count()
+            .checked_mul(4 * size_of::<Ramp>())
+            .and_then(|n| n.checked_add(size_of::<[[f64; 96]; 4]>()))
+            .and_then(|n| n.checked_add(core.estimated_bytes))
+            .ok_or("FX aux memory overflow")?;
+        let work = self
+            .input_count()
+            .checked_mul(8)
+            .and_then(|n| n.checked_mul(self.topology.max_block_frames))
+            .and_then(|n| n.checked_add(core.sample_operations))
+            .ok_or("FX aux work overflow")?;
+        if bytes > budget.bytes || work > budget.sample_operations {
+            return Err("FX aux resource admission".into());
+        }
+        self.fx_sends = vec![[Ramp::fixed(0.); 4]; self.input_count()];
+        Ok(())
+    }
+    pub(crate) fn inherit_fx_send_intent(&mut self, previous: &Self) -> Result<()> {
+        if previous.fx_sends.is_empty() {
+            return Ok(());
+        }
+        if self.input_count() != previous.input_count() {
+            return Err("FX aux recovery dimensions".into());
+        }
+        self.enable_fx_aux()?;
+        for (new, old) in self.fx_sends.iter_mut().zip(&previous.fx_sends) {
+            for (new, old) in new.iter_mut().zip(old) {
+                *new = Ramp::fixed(old.target);
+            }
+        }
+        Ok(())
+    }
+    /// Control-side validated, source-boundary application. No allocation in render.
+    pub fn set_fx_sends(&mut self, bus: usize, levels: &[f64]) -> Result<()> {
+        if bus >= 4
+            || self.fx_sends.len() != self.input_count()
+            || levels.len() != self.input_count()
+            || levels
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+            || self.clock.checked_add(RAMP_FRAMES).is_none()
+        {
+            return Err("FX aux send shape/range".into());
+        }
+        for (row, &target) in self.fx_sends.iter_mut().zip(levels) {
+            row[bus] = Ramp {
+                start: row[bus].at(self.clock),
+                target,
+                begin: self.clock,
+                end: self.clock + RAMP_FRAMES,
+            };
+        }
+        Ok(())
+    }
+    pub fn fx_sends(&self, bus: usize) -> Option<Vec<f64>> {
+        (bus < 4 && !self.fx_sends.is_empty())
+            .then(|| self.fx_sends.iter().map(|r| r[bus].target).collect())
+    }
+    pub fn fx_aux_samples(&self) -> &[[f64; 96]; 4] {
+        &self.fx_samples
     }
     pub fn set_operator_tap(&mut self, source: crate::brain_control::MonitorSource) {
         self.operator_source = source;
@@ -627,6 +701,9 @@ impl Mixer {
             out.fill(0.);
             let tap = (self.clock % 48) as usize * 2;
             self.operator_samples[tap..tap + 2].fill(0.);
+            for aux in &mut self.fx_samples {
+                aux[tap..tap + 2].fill(0.);
+            }
             let meter_frame = (self.clock % 48) as usize;
             if !self.meter_processed.is_empty() {
                 self.meter_processed[meter_frame * inputs..(meter_frame + 1) * inputs].fill(0.);
@@ -672,6 +749,13 @@ impl Mixer {
                     }
                     out[0] += foh * row[0].at(self.clock) * row[1].at(self.clock);
                     out[1] += foh * row[0].at(self.clock) * row[2].at(self.clock);
+                    if let Some(sends) = self.fx_sends.get(channel) {
+                        for (aux, send) in self.fx_samples.iter_mut().zip(sends) {
+                            let sent = foh * row[0].at(self.clock) * send.at(self.clock);
+                            aux[tap] += sent * row[1].at(self.clock);
+                            aux[tap + 1] += sent * row[2].at(self.clock);
+                        }
+                    }
                     for (monitor, (out, send)) in out[2..].iter_mut().zip(&row[4..]).enumerate() {
                         let mode = self.sends[channel][monitor];
                         let select = |tap| match tap {
@@ -707,6 +791,16 @@ impl Mixer {
                     for v in out {
                         *v *= gain;
                     }
+                }
+            }
+            let gain = self.output_safety_gain(self.clock);
+            for aux in &mut self.fx_samples {
+                for sample in &mut aux[tap..tap + 2] {
+                    *sample = if gain == 0. || !sample.is_finite() {
+                        0.
+                    } else {
+                        *sample * gain
+                    };
                 }
             }
             self.meter_valid[meter_frame] = !self.fault && self.armed;

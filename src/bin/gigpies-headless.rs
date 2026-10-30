@@ -29,13 +29,15 @@ fn run() -> Result<(), String> {
     let mut measurement_owner = None;
     let mut fouraux = false;
     let mut modules: Option<String> = None;
+    let mut fx_library = None;
+    let mut fx_hash = None;
     let mut topology = None;
     let mut arm = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--help" {
             println!(
-                "Usage: gigpies-headless --directory ABS_PRIVATE_0700_DIR --show UUID --epoch POSITIVE_INTEGER [--ticks COUNT] [--synthetic-source fouraux] [--analysis | --analysis-map ABS_JSON] [--modules ABS_HASH_MANIFEST] [--topology ABS_JSON] [--measurement-owner ABS_JSON] [--arm-synthetic]\nSynthetic configurable engine; defaults to explicit legacy eight-input/two-monitor compatibility. Expanded topology starts disarmed. Same-UID audio.sock only; no physical devices. New show/epoch identity must be supplied explicitly."
+                "Usage: gigpies-headless --directory ABS_PRIVATE_0700_DIR --show UUID --epoch POSITIVE_INTEGER [--ticks COUNT] [--synthetic-source fouraux] [--analysis | --analysis-map ABS_JSON] [--modules ABS_HASH_MANIFEST] [--fx-aux-library ABS_SO --fx-aux-sha256 SHA256] [--topology ABS_JSON] [--measurement-owner ABS_JSON] [--arm-synthetic]\nSynthetic configurable engine; defaults to explicit legacy eight-input/two-monitor compatibility. Expanded topology starts disarmed. Same-UID audio.sock only; no physical devices. New show/epoch identity must be supplied explicitly."
             );
             return Ok(());
         }
@@ -53,6 +55,8 @@ fn run() -> Result<(), String> {
             "--measurement-owner" if measurement_owner.is_none() => measurement_owner = Some(value),
             "--topology" => topology = Some(value),
             "--modules" => modules = Some(value),
+            "--fx-aux-library" => fx_library = Some(value),
+            "--fx-aux-sha256" => fx_hash = Some(value),
             "--directory" => directory = Some(value),
             "--show" => show = Some(value),
             "--epoch" => epoch = Some(value.parse::<u64>().map_err(|e| e.to_string())?),
@@ -109,6 +113,19 @@ fn run() -> Result<(), String> {
         Counter(epoch),
         topology,
     )?;
+    match (fx_library, fx_hash) {
+        (Some(path), Some(hash)) => {
+            #[cfg(feature = "hardware-host")]
+            server.enable_fx_aux(std::path::Path::new(&path), &hash)?;
+            #[cfg(not(feature = "hardware-host"))]
+            {
+                let _ = (path, hash);
+                return Err("FX aux requires hardware-host feature".into());
+            }
+        }
+        (None, None) => (),
+        _ => return Err("FX aux library and hash required together".into()),
+    }
     if arm {
         server.rearm()?;
     }

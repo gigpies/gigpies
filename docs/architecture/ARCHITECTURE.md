@@ -6,6 +6,13 @@ MIDI keyboard controller for each. Automation is an optional mode within them.
 
 ![GigPies system and module map](../assets/architecture.svg)
 
+The explicit [four-FX-aux mode](../reference/REMOTE_FX_CONTROL.md#four-stereo-auxes--gp-fx-aux1)
+sends four stereo aux buses from Stagebox to four SHR FX palette instances on
+Brain, following Stagebox source frames. Four stereo wet returns travel back to
+Main before PA, without consuming monitor outputs. The existing Brain stereo
+delay and an explicit local source-host variant remain compatible alternatives.
+Physical aggregate performance and listening require separate qualification.
+
 ## Brain local audio and two device clocks
 
 Brain owns one duplex sound-card endpoint for operator talkback capture and

@@ -1310,3 +1310,77 @@ async fn actual_remote_spectrum_desk() {
     );
     assert_eq!(host.provider_mut().engine_mut().revision(), Counter(0));
 }
+
+#[cfg(all(target_os = "linux", feature = "hardware-host"))]
+#[path = "fx_aux_tls_tests.rs"]
+mod fx_aux_tls_tests;
+
+#[cfg(all(target_os = "linux", feature = "hardware-host"))]
+#[test]
+fn four_aux_media_admission_requires_exact_map_and_control_permission() {
+    let directory = PrivateTestDirectory::new();
+    let provider = crate::local_audio::LocalAudio::bind_configured(
+        &directory.0,
+        "host",
+        SHOW,
+        Counter(9),
+        EngineTopology::software(4, 2, 0).unwrap(),
+    )
+    .unwrap();
+    let mut host = HostAuthority::new(provider, 1).unwrap();
+    let c = context(&[Permission::Fx, Permission::FxConfiguration]);
+    let ids = super::fx_aux_owner::channel_ids();
+    let mut streams = grouped_streams(MediaRole::FxSend, &ids, 48, 0, 1, 1100).unwrap();
+    streams.extend(
+        grouped_streams(
+            MediaRole::WetReturn,
+            &ids,
+            48,
+            384,
+            streams.len() as u32 + 1,
+            1100,
+        )
+        .unwrap(),
+    );
+    let i = host.identity();
+    let d = MediaDescriptor {
+        session: Counter(c.session()),
+        source_epoch: i.source_epoch,
+        capability_generation: i.capability_generation,
+        map_generation: i.map_generation,
+        sample_rate: 48000,
+        streams,
+    };
+    assert!(host.negotiate(&context(&[Permission::Fx]), &d).is_err());
+    let mut bad = d.clone();
+    bad.streams
+        .last_mut()
+        .unwrap()
+        .channel_ids
+        .last_mut()
+        .unwrap()
+        .push_str("-wrong");
+    assert!(host.negotiate(&c, &bad).is_err());
+    assert!(host.descriptor().is_none());
+    assert!(host.negotiate(&c, &d).unwrap());
+    assert_eq!(host.descriptor().unwrap().channels(MediaRole::WetReturn), 8);
+    assert_eq!(host.provider().engine().mixer().monitor_count(), 2);
+    assert_eq!(
+        host.provider().engine().mixer().fx_sends(3),
+        Some(vec![0.; 4])
+    );
+    assert!(host.negotiate(&c, &d).is_err());
+}
+
+#[test]
+fn aux_snapshot_is_read_only_but_aux_edits_keep_authenticated_writer() {
+    let c = context(&[]);
+    let mut v = json!({"kind":"fx_aux_snapshot","writer":null});
+    assert!(c.check_writer(&v).is_ok());
+    v["writer"] = json!(c.writer());
+    assert!(c.check_writer(&v).is_err());
+    v["kind"] = json!("fx_aux_configure");
+    assert!(c.check_writer(&v).is_ok());
+    v["writer"] = Value::Null;
+    assert!(c.check_writer(&v).is_err());
+}

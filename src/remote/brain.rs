@@ -132,7 +132,8 @@ pub struct BrainWorker {
     fx_refused: Option<(u64, &'static str)>,
     media: MediaChannel,
     receiver: GroupedReceiver,
-    fx: crate::host::brain_fx::BrainFx,
+    fx: Option<crate::host::brain_fx::BrainFx>,
+    aux: Option<super::fx_aux_owner::BrainAux>,
     wet: Vec<f64>,
     pub stats: BrainStats,
     returned_hash: Sha256,
@@ -165,7 +166,8 @@ impl BrainWorker {
             fx_refused: None,
             media,
             receiver: GroupedReceiver::new(descriptor, MediaRole::FxSend)?,
-            fx,
+            fx: Some(fx),
+            aux: None,
             wet: vec![0.; usize::from(frames) * channels],
             stats: BrainStats::default(),
             returned_hash: Sha256::new(),
@@ -173,7 +175,48 @@ impl BrainWorker {
             fx_library_file: None,
         })
     }
+    pub fn prepare_aux(
+        media: MediaChannel,
+        path: &Path,
+        hash: &str,
+        inputs: usize,
+    ) -> Result<Self> {
+        let descriptor = media.descriptor().clone();
+        let aux = super::fx_aux_owner::BrainAux::load(descriptor.clone(), path, hash, inputs)?;
+        Ok(Self {
+            fx_binding: None,
+            fx_ticket: None,
+            fx_refused: None,
+            receiver: GroupedReceiver::new(descriptor, MediaRole::FxSend)?,
+            media,
+            fx: None,
+            aux: Some(aux),
+            wet: vec![0.; 384],
+            stats: BrainStats::default(),
+            returned_hash: Sha256::new(),
+            nonzero_return_samples: 0,
+            fx_library_file: None,
+        })
+    }
+    pub fn aux_command(
+        &mut self,
+        c: super::fx_aux_owner::Command,
+    ) -> Result<Option<super::fx_aux_owner::Message>> {
+        self.aux
+            .as_mut()
+            .ok_or("four aux owner unavailable")?
+            .command(c)
+    }
+    pub fn poll_aux_observation(&mut self) -> Result<Option<super::fx_aux_owner::Message>> {
+        self.aux
+            .as_mut()
+            .ok_or("four aux owner unavailable")?
+            .poll()
+    }
     pub fn enable_fx_control(&mut self, path: &Path, expected_sha256: &str) -> Result<bool> {
+        if self.aux.is_some() {
+            return Err("four aux owner excludes legacy delay control".into());
+        }
         let d = self.media.descriptor();
         if ![MediaRole::FxSend, MediaRole::WetReturn]
             .iter()
@@ -208,7 +251,7 @@ impl BrainWorker {
         };
         #[cfg(not(target_os = "linux"))]
         let load_path = path.to_path_buf();
-        if !self.fx.enable_configured(&load_path)? {
+        if !self.fx.as_mut().unwrap().enable_configured(&load_path)? {
             return Ok(false);
         }
         self.fx_library_file = Some(file);
@@ -232,6 +275,8 @@ impl BrainWorker {
         let binding = self.fx_binding.clone().ok_or("FX controls unavailable")?;
         let s = self
             .fx
+            .as_mut()
+            .unwrap()
             .configured_owner()
             .ok_or("FX owner unavailable")?
             .status()?;
@@ -260,7 +305,7 @@ impl BrainWorker {
                 apply_frame,
             } => {
                 mutation.validate()?;
-                if self.fx.next_source_frame().is_none() {
+                if self.fx.as_ref().unwrap().next_source_frame().is_none() {
                     return Ok(Some(M::Refused {
                         ticket,
                         reason: "FX source continuity not initialized".into(),
@@ -290,6 +335,8 @@ impl BrainWorker {
                     let config = Configuration::decode(text)?;
                     if let Err(reason) = self
                         .fx
+                        .as_mut()
+                        .unwrap()
                         .configured_owner()
                         .unwrap()
                         .prepare(&config, o.generation.0)
@@ -319,7 +366,7 @@ impl BrainWorker {
                 binding,
                 apply_frame,
             } => {
-                let next = self.fx.next_source_frame();
+                let next = self.fx.as_ref().unwrap().next_source_frame();
                 let p = self
                     .fx_ticket
                     .as_mut()
@@ -343,7 +390,12 @@ impl BrainWorker {
                     .is_some_and(|p| p.ticket == ticket.0 && !p.permitted)
                 {
                     self.fx_ticket = None;
-                    self.fx.configured_owner().unwrap().retire();
+                    self.fx
+                        .as_mut()
+                        .unwrap()
+                        .configured_owner()
+                        .unwrap()
+                        .retire();
                 }
                 Ok(None)
             }
@@ -357,7 +409,12 @@ impl BrainWorker {
             return Ok(None);
         }
         if let Some((ticket, reason)) = self.fx_refused.take() {
-            self.fx.configured_owner().unwrap().retire();
+            self.fx
+                .as_mut()
+                .unwrap()
+                .configured_owner()
+                .unwrap()
+                .retire();
             return Ok(Some(M::Refused {
                 ticket: Counter(ticket),
                 reason: reason.into(),
@@ -369,7 +426,12 @@ impl BrainWorker {
             .is_some_and(|p| !p.applied && std::time::Instant::now() >= p.deadline)
         {
             let p = self.fx_ticket.take().unwrap();
-            self.fx.configured_owner().unwrap().retire();
+            self.fx
+                .as_mut()
+                .unwrap()
+                .configured_owner()
+                .unwrap()
+                .retire();
             return Ok(Some(M::Refused {
                 ticket: Counter(p.ticket),
                 reason: "FX preparation deadline".into(),
@@ -385,7 +447,12 @@ impl BrainWorker {
                 && observation.generation == observation.settled_generation
             {
                 self.fx_ticket = None;
-                self.fx.configured_owner().unwrap().retire();
+                self.fx
+                    .as_mut()
+                    .unwrap()
+                    .configured_owner()
+                    .unwrap()
+                    .retire();
             }
             return Ok(Some(M::Completed {
                 ticket,
@@ -405,6 +472,8 @@ impl BrainWorker {
         }
         let gap = self
             .fx
+            .as_ref()
+            .unwrap()
             .next_source_frame()
             .is_some_and(|next| next != frame);
         if gap
@@ -424,7 +493,7 @@ impl BrainWorker {
             self.fx_ticket = None;
             return;
         }
-        let owner = self.fx.configured_owner().unwrap();
+        let owner = self.fx.as_mut().unwrap().configured_owner().unwrap();
         let rc = if let Some(mask) = p.panic_mask {
             owner.panic(mask)
         } else {
@@ -448,10 +517,15 @@ impl BrainWorker {
         self.nonzero_return_samples
     }
     pub fn intentional_delay_frames(&self) -> u32 {
-        self.fx.intentional_delay_frames()
+        self.fx
+            .as_ref()
+            .map_or(0, |fx| fx.intentional_delay_frames())
     }
     pub fn owner_resets(&self) -> u64 {
-        self.fx.resets
+        self.fx.as_ref().map_or_else(
+            || self.aux.as_ref().map_or(0, |a| a.resets()),
+            |fx| fx.resets,
+        )
     }
     pub async fn step(&mut self) -> Result<Option<Vec<u8>>> {
         let bytes = self.media.receive().await?;
@@ -469,11 +543,22 @@ impl BrainWorker {
             }
         };
         if let Some((frame, input)) = assembled {
-            self.fx_boundary(frame, &input);
+            if let Some(aux) = &mut self.aux {
+                aux.process(frame, &input, &mut self.wet)?;
+            } else {
+                self.fx_boundary(frame, &input);
+                self.fx
+                    .as_mut()
+                    .unwrap()
+                    .process(
+                        self.media.descriptor().source_epoch.0,
+                        frame,
+                        &input,
+                        &mut self.wet,
+                    )
+                    .map_err(|e| format!("Brain FX {e:?}"))?;
+            }
             let descriptor = self.media.descriptor();
-            self.fx
-                .process(descriptor.source_epoch.0, frame, &input, &mut self.wet)
-                .map_err(|e| format!("Brain FX {e:?}"))?;
             let packets = encode_grouped(descriptor, MediaRole::WetReturn, frame, &self.wet)?;
             for packet in packets {
                 let parsed =

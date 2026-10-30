@@ -8,7 +8,7 @@
 |---|---|---|
 | Audio desk | Channel EQ/compression, fader/pan, meters, monitor sends and spectrum | Physical display/controller setup and listening acceptance |
 | PA | Configurable routing, output controls and master EQ | Speaker protection and acoustic alignment in a real system |
-| Effects | Integrated stereo effects, tail-preserving bypass and panic | Listening and sustained target-hardware performance |
+| Effects | Four stereo FX auxes through Brain, wet returns to Main, palette controls, tail-preserving bypass and panic; [owning GP-FX card](development/MODULE_IMPLEMENTATION_PLAN.md#gp-fx--writable-owner-effects-in-the-console) | Saved-show integration, listening and sustained target-hardware performance |
 | Recording | Reviewed Desk Start/Stop, aligned raw tracks, readiness/progress/fault/final outcome readback | Physical storage/load and power-loss durability; standalone recorder playback |
 | Talkback and listening | Brain audio routing and software recovery | Physical duplex device setup, delay and feedback checks |
 | Lighting | Manual looks, cues, scene editing and optional music-following estimates | Physical DMX output and rehearsal accuracy of musical estimates |

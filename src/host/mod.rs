@@ -293,4 +293,6 @@ pub mod duplex;
 pub mod brain_fx;
 
 #[cfg(feature = "hardware-host")]
+pub mod fx_palette;
+#[cfg(feature = "hardware-host")]
 pub mod fx_v2;

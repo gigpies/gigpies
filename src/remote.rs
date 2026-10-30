@@ -6,6 +6,8 @@ mod authority;
 mod brain;
 mod brain_audio;
 mod diagnostics;
+#[cfg(feature = "hardware-host")]
+pub mod fx_aux_owner;
 #[cfg(all(target_os = "linux", feature = "hardware-host"))]
 mod host;
 mod media;

@@ -18,6 +18,7 @@ use std::{
     },
     path::{Path, PathBuf},
 };
+mod fx_aux;
 mod measurement;
 pub const MAX_CLIENTS: usize = 4;
 pub const MAX_FRAME: usize = 65536;
@@ -73,6 +74,7 @@ impl Packet {
     }
 }
 enum Incoming {
+    FxAux(serde_json::Value),
     Measurement(crate::measurement_wire::Request),
     Meter(crate::meter_wire::Request),
     Spectrum(crate::spectrum::Request),
@@ -101,6 +103,7 @@ struct Client {
     structural_snapshot_ms: Option<u64>,
     master_eq_snapshot_ms: Option<u64>,
     measurement_snapshot_ms: Option<u64>,
+    fx_aux_snapshot_ms: Option<u64>,
     brain_snapshot_ms: Option<u64>,
     writer: Option<String>,
     lease: Option<Counter>,
@@ -157,6 +160,10 @@ impl Client {
         let bytes = &self.buffer[4..length + 4];
         let value: serde_json::Value = crate::show::decode(bytes)?;
         let request = if value.get("contract").and_then(|v| v.as_str())
+            == Some(crate::fx_aux_wire::CONTRACT)
+        {
+            Incoming::FxAux(value)
+        } else if value.get("contract").and_then(|v| v.as_str())
             == Some(crate::measurement_wire::CONTRACT)
         {
             Incoming::Measurement(crate::measurement_wire::Request::decode(bytes)?)
@@ -491,6 +498,12 @@ pub struct LocalAudio {
     playback_scratch: Vec<f64>,
     pcm_scratch: Vec<i32>,
     remote_completions: VecDeque<serde_json::Value>,
+    #[cfg(feature = "hardware-host")]
+    fx_aux: Option<fx_aux::Rack>,
+    #[cfg(feature = "hardware-host")]
+    remote_fx_aux: bool,
+    #[cfg(feature = "hardware-host")]
+    fx_aux_pending: Option<fx_aux::Pending>,
     measurement: Option<crate::measurement_capture::State>,
     measurement_pending: Option<measurement::Pending>,
     measurement_cache: VecDeque<(
@@ -619,6 +632,12 @@ impl LocalAudio {
             analysis: None,
             synthetic_fouraux: false,
             remote_completions: VecDeque::with_capacity(64),
+            #[cfg(feature = "hardware-host")]
+            fx_aux: None,
+            #[cfg(feature = "hardware-host")]
+            remote_fx_aux: false,
+            #[cfg(feature = "hardware-host")]
+            fx_aux_pending: None,
             measurement: None,
             measurement_pending: None,
             measurement_cache: VecDeque::with_capacity(256),
@@ -1694,6 +1713,8 @@ impl LocalAudio {
         self.epoch.0
     }
     pub fn quiesce_source(&mut self, reason: &str) -> Result<()> {
+        #[cfg(feature = "hardware-host")]
+        self.reset_fx_aux();
         if let Some(s) = &mut self.measurement {
             s.invalidate_all(reason);
         }
@@ -1727,6 +1748,8 @@ impl LocalAudio {
         self.quiesce_source("source_reopen")?;
         self._epoch_owner.advance(epoch)?;
         self.engine.recover(epoch, frame)?;
+        #[cfg(feature = "hardware-host")]
+        self.reset_fx_aux();
         #[cfg(feature = "hardware-host")]
         if let Some(g) = &mut self.modules {
             g.discontinuity(epoch.0, frame)?;
@@ -1772,6 +1795,8 @@ impl LocalAudio {
         &self.bus_scratch
     }
     pub fn revoke_writer(&mut self, writer: &str) {
+        #[cfg(feature = "hardware-host")]
+        self.revoke_fx_aux_writer(writer);
         if let Some(s) = &mut self.measurement {
             let ids: Vec<_> = s
                 .guards()
@@ -1825,11 +1850,25 @@ impl LocalAudio {
         // Keep the connection tombstone for this epoch: reconnect must use a
         // fresh writer identity, even after its old lease is revoked.
         self.remote_completions.retain(|r| {
-            r.get("context")
-                .and_then(|c| c.get("writer"))
-                .and_then(|w| w.as_str())
-                != Some(writer)
+            !(r["contract"] == crate::fx_aux_wire::CONTRACT && r["writer"].as_str() == Some(writer))
+                && r.get("context")
+                    .and_then(|c| c.get("writer"))
+                    .and_then(|w| w.as_str())
+                    != Some(writer)
         });
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn enable_remote_fx_aux(&mut self) -> Result<()> {
+        if self.fx_aux.is_some() {
+            return Err("local FX aux owner already enabled".into());
+        }
+        self.engine.enable_fx_aux()?;
+        self.remote_fx_aux = true;
+        Ok(())
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn engine(&self) -> &OfflineEngine {
+        &self.engine
     }
     pub fn engine_mut(&mut self) -> &mut OfflineEngine {
         &mut self.engine
@@ -2361,6 +2400,8 @@ impl LocalAudio {
         }
         self.last_now = now;
         self.poll_measurement(now);
+        #[cfg(feature = "hardware-host")]
+        self.poll_fx_aux(now)?;
         self.ticks = self.ticks.checked_add(1).ok_or("tick exhausted")?;
         for _ in 0..MAX_CLIENTS {
             match self.listener.accept() {
@@ -2388,6 +2429,7 @@ impl LocalAudio {
                         structural_snapshot_ms: None,
                         master_eq_snapshot_ms: None,
                         measurement_snapshot_ms: None,
+                        fx_aux_snapshot_ms: None,
                         brain_snapshot_ms: None,
                         writer: None,
                         lease: None,
@@ -2405,6 +2447,32 @@ impl LocalAudio {
             match result {
                 Err(_) => keep = false,
                 Ok(None) => (),
+                Ok(Some(Incoming::FxAux(value))) => {
+                    let handled = (|| -> Result<()> {
+                        let (request, mutation) =
+                            crate::fx_aux_wire::request(&value, self.engine.wire_version())?;
+                        let c = &self.clients[index];
+                        let fresh = c
+                            .fx_aux_snapshot_ms
+                            .is_some_and(|t| now.saturating_sub(t) <= 1000);
+                        if mutation.is_some()
+                            && (!c.snapshot
+                                || c.writer != request.writer
+                                || c.lease != request.lease)
+                        {
+                            return Err("FX aux connection authority".into());
+                        }
+                        let read = mutation.is_none();
+                        let reply = self.fx_aux_request(value, now, fresh, Some(c.id))?;
+                        if read {
+                            self.clients[index].fx_aux_snapshot_ms = Some(now);
+                        }
+                        self.clients[index].queue_module(&reply, now)
+                    })();
+                    if handled.is_err() {
+                        keep = false;
+                    }
+                }
                 Ok(Some(Incoming::Spectrum(request))) => {
                     if !self.clients[index].replies.is_empty()
                         || self.clients[index]
@@ -2650,6 +2718,10 @@ impl LocalAudio {
             latest.drain();
         }
         let completions = self.engine.process_interleaved(inputs, output, now)?;
+        #[cfg(feature = "hardware-host")]
+        let aux_wet = self.process_fx_aux(source_frame);
+        #[cfg(feature = "hardware-host")]
+        let wet = aux_wet.as_ref().map(|v| v.as_slice()).or(wet);
         let rendered_frame = self.frame();
         self.brain_frame_times[(rendered_frame / 48 % 64) as usize] = Some((rendered_frame, now));
         for f in 0..48 {
@@ -2721,6 +2793,22 @@ impl LocalAudio {
         {
             for (out, v) in self.brain_monitor.iter_mut().zip(wet) {
                 *out += v;
+            }
+        }
+        #[cfg(feature = "hardware-host")]
+        if let Some(aux) = aux_wet
+            .as_ref()
+            .map(|v| v.as_slice())
+            .or(if self.remote_fx_aux { wet } else { None })
+        {
+            for (out, pair) in output.chunks_exact_mut(buses).zip(aux.chunks_exact(2)) {
+                out[0] += pair[0];
+                out[1] += pair[1];
+            }
+            if self.modules.is_none() {
+                for (meter, wet) in self.meter_main.iter_mut().zip(aux) {
+                    *meter += wet;
+                }
             }
         }
         for (out, tb) in output

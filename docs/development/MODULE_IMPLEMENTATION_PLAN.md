@@ -57,7 +57,7 @@ it is historical, not a queue to execute. Later accepted work supersedes its lim
 |---|---|---|
 | [GP-PANEL](#gp-panel--shared-physical-instrument-panel) | GigPies shared UI; Desk/Lightdesk consumers | IN PROGRESS: real-terminal proof and initial production adapters; acceptance gates remain |
 | [GP-METER](#gp-meter--measured-audio-on-the-real-desk) | GigPies lead; SHR Desk consumer | IMPLEMENTED / software-validated; owner-artifact P4 BLOCKED: supply reviewed manifest |
-| [GP-FX](#gp-fx--writable-owner-effects-in-the-console) | GigPies lead; SHR FX provider, SHR Desk consumer | PLANNED: depends on owner FX-02/03 prepared writable contract |
+| [GP-FX](#gp-fx--writable-owner-effects-in-the-console) | GigPies lead; SHR FX provider, SHR Desk consumer | SOFTWARE VALIDATED: four Brain auxes and Desk controls; physical acceptance separate |
 | [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) | GigPies lead; SHR Desk consumer | PLANNED: define scene contents, safes and reviewed recall before implementation |
 | [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | GigPies | IN PROGRESS: E0–E6 software validated; E7 recording checks complete, source review and musical qualification open |
 | [GP-AUTO-BASS-LOW](#gp-auto-bass-low--observed-low-energy-and-definition) | GigPies | IMPLEMENTED / software-validated: independent low-energy objective and source-stage guards; musical acceptance pending |
@@ -464,12 +464,134 @@ when needed and run /home/shome/Documents/knowledge/.zk/validate.sh.
 
 ## GP-FX — writable owner effects in the console
 
-State: PLANNED. Outcome: real prepared wet-effects edits and readback from Desk
-through GigPies into SHR FX, preserving independent dry/protected/recorded paths.
+State: SOFTWARE VALIDATED (2026-10-30). Owner clarification: four stereo FX auxes,
+each with per-input post-fader/post-mute sends, one selected wet effect and a
+return to Main. Existing configurable monitor buses remain independent, with no
+return to Main. This does not expose SHR FX's standalone A/B slot rack.
+
+| Dependency | Owner / deliverable | Acceptance |
+|---|---|---|
+| 1 | SHR FX native-f64 prepared palette, FX-02/03 | Actual C caller wet samples and lifecycle; existing evidence |
+| 2 | GigPies four bounded aux sends and independent effect owners | Isolation, wet-only output, tails, publication, faults, raw REC/monitor preservation |
+| 3 | GigPies scoped authority and versioned owner readback | Stale/refused edits, accepted versus applied, disconnect and shutdown |
+| 4 | Desk send/return and palette controls | Actual producer, reviewed edits and fresh settlement; normal default/native suites |
+
+Single-thread implementation in canonical checkouts; no peers, commits or physical
+activation. Baselines: GigPies `f277a981c135f984172c868e5d2768494b34e99e`,
+Desk `a42b91748895891cd6c344016b9e4ee5f4d10953`; preserve the existing SHR FX
+working changes on `703be52ed3fffde053760ae0f6ac4378b46989df`.
+Rust 1.97.1, locked dependencies, incremental off, normal targets, serialized
+parent-held `/home/shome/p/.gigpies-build.lock`. Focused checks precede complete
+normal production suites; physical aggregate performance and listening remain
+separate acceptance. The existing fixed-delay compatibility path is retained.
 Provider design and DSP belong to [SHR FX's plan](https://github.com/gigpies/shr-fx/blob/main/docs/GIGPIES_IMPLEMENTATION.md).
-Next: resolve FX-02/03 units, f64 preparation/publication/retirement, bounds and
-fault/tail semantics before specifying the host and Desk adapter. Acceptance must
-check actual wet samples and failed edits, not just ACKs or standalone rack tests.
+
+Implemented contract: [GP-FX-aux:1](../reference/REMOTE_FX_CONTROL.md), four
+independent generic `shr_fx_v2_*` owners. Native f64; settings/status/capabilities/
+parameter sizes 64/200/48/48 bytes. Existing v1 and GP21-specific delay adapters
+remain separate. Stagebox sends four stereo auxes to Brain's four palette owners;
+eight wet channels return to Stagebox Main before PA. Raw REC and monitor buses
+retain their paths. An explicit source-host variant remains compatible.
+Aux configuration is runtime state, not yet part of saved shows. Source recovery
+retains sends but keeps outputs disarmed; Desk reconnect retains sound read-only.
+
+Consumer wiring order is now implemented: hash-pinned owner admission → four
+post-fader sends and wet returns → scoped boundary publication/readback → Desk
+palette/parameter/tempo review → actual producer/sample checks. To use it later:
+configure the exact library/hash in the Brain four-aux runner, attach Desk and explicitly
+probe/grant FX control, then review an effect/send/return change. No automatic
+activation, writer regrant or replay. Qualify aggregate CPU, physical mapping,
+latency and dry+wet listening in a separately authorized session.
+
+Validation findings: the initial full-suite run exposed a core resource-capability
+regression; optional aux admission now leaves that published contract unchanged.
+Recovery also retains actual mixer send targets, matching owner readback. The
+actual Desk episode exposed a stale raw/FX snapshot pairing; paired fresh queries
+now enforce the same shared authority revision. Panic remains available during
+faulted or interrupted transitions and reports actual retained settings.
+
+
+Verified software evidence (2026-10-29–30):
+
+- Complete GigPies default normal suite: **490 passed, 21 opt-ins ignored**;
+  hardware-host normal suite: **575 passed, 53 opt-ins ignored**. Desk
+  default: **361 passed, 27 opt-ins ignored**; native: **364 passed, 27 opt-ins
+  ignored**. All four complete `--locked --all-targets -- --test-threads=1`
+  suites passed without deadline changes; native checks selected CPU lavapipe
+  with display variables unset.
+
+- Final actual local authority/sample/fault/panic/recovery and four independent
+  palette-owner lifecycle tests also pass against the hash-pinned native library.
+- Final optimized GigPies headless and both Desk default/native release builds
+  passed. Formatting, changed Markdown links and `git diff --check` passed;
+  Python publication checks: GigPies 50, Desk 9. Complete-index guards passed
+  (770/554 tracked entries); these checks do not claim publication of unstaged work.
+- All-target Clippy passes with warnings denied for GigPies default/hardware-host
+  and Desk default/native. Focused normal tests cover exact legacy capabilities,
+  four sends, monitor preservation, source recovery, allocation freedom,
+  malformed-client isolation, explicit media admission and actual producer codecs.
+- Optimized `actual_four_aux_source_brain_roundtrip_and_loss` passes actual f64
+  owner processing through grouped send/return packets, exact dry+wet summing,
+  stale/wrong-writer refusal, late preparation after Desk disconnect, and bounded
+  return fade after Brain loss. Other effects continue after an unpermitted edit
+  is cancelled; native owner state remains exact.
+- Optimized `actual_four_aux_tls_brain_controls_and_samples` passes real
+  authenticated loopback QUIC with delay, plate, tape echo and bright exciter:
+  627 actual Brain blocks, 60,576 exact Main comparisons, all four wet energies
+  nonzero and monitor output unchanged. Existing two-second control/lease and
+  1500ms preparation deadlines are unchanged. The initial debug-only episode
+  exposed the missing read-only command registration (fixed and regression-tested)
+  and then timing/lease maintenance limits; optimized acceptance renews the lease
+  explicitly and completes in the ordinary bounds.
+- The final actual Desk Frontend episode passes against the rebuilt optimized
+  synthetic GigPies executable: send edits, direct tape selection, musical timing,
+  a second aux, bypass/panic, cancellation and read-only reconnect (5.06s).
+- Desk's versioned `gp-fx-aux/v1/brain-owner.json` is an actual producer snapshot
+  from that authenticated episode; `owner.json` retains the local-mode fixture.
+  Normal tests verify both and fence changed media-session bindings.
+
+Reproduce actual transport checks under the shared build lock with
+`GP_FX_LIBRARY=/absolute/libshr_fx.so cargo +1.97.1 test --release --locked
+--features hardware-host --lib actual_four_aux -- --ignored --test-threads=1`.
+Exact provider/contract identity for these checks (uncommitted working trees on
+the baselines above):
+
+- `shr-fx/target/debug/libshr_fx.so` SHA256
+  `ef18cec931a1483fdab49ffc136ada5424de696d3807ecd9352cc69e190fc89a`.
+- `shr-fx/include/shr_fx.h` SHA256
+  `e3fb2b267d5d7632ea3d7c5fdc722b9ffeb8e2cad772b04a696db807df21823f`.
+- Desk actual local `gp-fx-aux/v1/owner.json` SHA256
+  `d5b59898a5ef1ccdc2568efd2abb0eb2bcbbdb42a119b725e5d812d47e261bbd`;
+  actual Brain `brain-owner.json` SHA256
+  `a80137ba37696cdaafb5958fc4e56c1830d2a9fae3b880895c3605115420943b`.
+
+- Final `gigpies/target/release/gigpies-headless` SHA256
+  `ae0ec8508f520ff8b66cda231fd67da7890c5dce67c501cc5b4578729aee2b1d`.
+- Final native `shr-desk/target/release/shr-desk` SHA256
+  `246e73fe7adaf4ab45a11f068f12a0a73f859c1579b77ffdc590e0cf85104df7`;
+  preceding default-feature build SHA256
+  `9dff7201042ebeb4627017e3ea04b7fef71bc40291d5a4cee8c0503547b456d7`
+  (replaced in the normal target path by the native build).
+
+Additional actual-provider reproduction, using the same lock/environment:
+`cargo +1.97.1 test --release --locked --features hardware-host --lib
+actual_aux_authority -- --ignored`, then `cargo +1.97.1 test --locked
+--features hardware-host --test fx_aux -- --ignored`, with `GP_FX_LIBRARY` set.
+Desk: `GP_FX_PROVIDER_EXE=/absolute/gigpies-headless GP_FX_LIBRARY=/absolute/libshr_fx.so
+cargo +1.97.1 test --locked --test fx_aux_actual -- --ignored --test-threads=1`.
+All use owned synthetic endpoints; child processes and private temporary
+directories were removed by their test guards. No task scratch runner, render,
+log or core remains; final cleanup reclaimed 0 additional bytes. Normal reusable
+outputs reviewed and retained: GigPies 17GiB, Desk 13GiB (debug symbols and both
+feature suites plus release artifacts), FX 1005MiB; 36GiB free. No active build
+or synthetic child remained, and no unrelated cache was removed.
+
+No provider blocker remains for this bounded software path. Saved-show aux
+persistence belongs to GP-SHOW; live aggregate admission and listening remain
+separate gates, not implied by these tests.
+
+Fixtures and normal tests require no physical endpoint. Historical auditions,
+exhaustive research, load benchmarks, device activation and listening are excluded.
 
 ## GP-SHOW — audio scenes and operator recovery
 
