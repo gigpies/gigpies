@@ -49,6 +49,15 @@ struct WetGroup {
     buffer: JitterBuffer,
 }
 
+/// Source-clock witness only: this is not a wall-clock or one-way latency sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct LateWetWitness {
+    pub source_epoch: u64,
+    pub packet_source_frame: u64,
+    pub packet_output_frame: u64,
+    pub observed_source_frame: u64,
+}
+
 #[derive(Default, Serialize)]
 pub struct HostMediaStats {
     pub accepted_talkback_packets: u64,
@@ -57,6 +66,8 @@ pub struct HostMediaStats {
     pub dropped_monitor_packets: u64,
     pub accepted_wet_packets: u64,
     pub late_wet_packets: u64,
+    pub first_late_wet: Option<LateWetWitness>,
+    pub last_late_wet: Option<LateWetWitness>,
     pub rejected_wet_packets: u64,
     pub nonzero_received_wet_samples: u64,
     pub nonzero_rendered_wet_samples: u64,
@@ -1420,7 +1431,17 @@ impl AuthorityEndpoint for HostAuthority {
                 }
                 self.accepted_wet_hash.update(packet.bytes());
             }
-            Err(crate::transport::Error::Late) => self.media_stats.late_wet_packets += 1,
+            Err(crate::transport::Error::Late) => {
+                self.media_stats.late_wet_packets += 1;
+                let witness = LateWetWitness {
+                    source_epoch: self.provider.engine().clock_status().epoch,
+                    packet_source_frame: packet.source_frame(),
+                    packet_output_frame: packet.output_frame(),
+                    observed_source_frame: self.provider.frame(),
+                };
+                self.media_stats.first_late_wet.get_or_insert(witness);
+                self.media_stats.last_late_wet = Some(witness);
+            }
             Err(_) => self.media_stats.rejected_wet_packets += 1,
         }
         Ok(())

@@ -77,6 +77,14 @@ intentional FX delay is separate from negotiated network return delay. Missing w
 fades through `WetGate` while local dry processing and REC continue. Source recovery
 clears previous media and fade history and requires explicit output rearm.
 
+Provider media reports retain the first and last rejected-late wet packet's
+source epoch, packet source/output frames and source frame at admission. These
+two fixed-size witnesses remain null until a late packet is observed and persist
+with the cumulative counters across source recovery. They locate a refusal on
+the source timeline; they do not measure network transit or identify whether
+sender processing, scheduling or transport caused it. Admission and the negotiated
+return budget are unchanged; no per-packet log or unbounded storage is added.
+
 With `hardware-host`, `gigpies-remote --config PRIVATE.json` defaults to bounded,
 device-free provider and Brain FX modes for functional acceptance. The synthetic
 provider duration is at most60 seconds and its source runs independently of clients.

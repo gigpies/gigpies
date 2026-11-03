@@ -720,13 +720,30 @@ hardware deadlines and acoustic protection; software profiles are not hardware p
 
 ### Next Ethernet session — execution plan, 2026-11-03
 
-State: planned, not run. Source synchronization does not reserve the link or
-authorize PCM, load injection, cable pulls or service changes. Pi5 coordinates
-the session directly; no peer Codex worker is needed. Record a finite reservation
+State: IN PROGRESS; cable baseline and five-second four-aux smoke passed on
+November 3. The first 30-second trial failed with two late wet packets at the
+unchanged 768-frame return budget; 60-second, full Desk/duplex and fault trials
+remain gated on diagnosis. Private task0026 owns exact identities, reservations,
+failed reports and sample checks. Source synchronization does not reserve the
+link or authorize PCM, load injection, cable pulls or service changes. Pi5
+coordinates directly; no peer Codex worker is needed. Record a finite reservation
 and acknowledgment from both nodes in the private exchange before measurements.
 Keep SSH on the documented Tailscale aliases; bind test traffic explicitly to
 the observed dedicated Ethernet addresses and verify its route. Historical
 192.168.234.221/222 assignments must be observed again, not assumed from SSH reachability.
+
+Measured cable baseline: both links 1000/full, MTU1500; 200/200 idle replies,
+RTT median/p95/p99/max 0.175/0.206/0.245/0.324ms; TCP 936/942Mbit/s with no
+retransmissions; UDP25/50/100Mbit/s with zero reported loss and no NIC error/drop
+deltas. RTT is not one-way latency. The 16-input synthetic graph used eight PA
+outputs, five independent monitors and four stereo FX auxes. The failed30s run
+recorded 1,436,784 exact contiguous frames per input and passed960 independent
+monitor sample comparisons across FX edits. Render p50/p99/max was189/223/3715µs;
+source scheduling debt peaked at7932µs. These measurements do not establish a
+hardware deadline or explain the two late wet packets. Bounded first/last late
+packet witnesses now retain source/output/admission frames without changing
+deadlines. Keep the failure open until an equal-load diagnostic explains it;
+do not infer acceptance from CLI exit status or a later intermittent pass.
 
 The priority is the current authenticated QUIC/media graph, including four FX
 auxes, raw recording and Brain duplex crossings. The accepted October 3 GPA1 UDP

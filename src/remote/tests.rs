@@ -690,6 +690,34 @@ fn composed_host_noncontiguous_analysis_deadlines_loss_and_epoch() {
         }
     }
     assert_eq!(seen.len(), 16);
+    assert_eq!(host.media_stats().first_late_wet, None);
+    // A returned block whose output boundary has already passed remains refused;
+    // witnesses retain source-clock identity without changing admission or audio.
+    host.media(&ctx, crate::transport::Packet::parse(&wet).unwrap(), 9)
+        .unwrap();
+    let first = LateWetWitness {
+        source_epoch: 9,
+        packet_source_frame: 0,
+        packet_output_frame: 384,
+        observed_source_frame: 432,
+    };
+    assert_eq!(host.media_stats().first_late_wet, Some(first));
+    let second = encode_grouped(&descriptor, MediaRole::WetReturn, 48, &[0.25; 96])
+        .unwrap()
+        .remove(0);
+    host.media(&ctx, crate::transport::Packet::parse(&second).unwrap(), 9)
+        .unwrap();
+    assert_eq!(host.media_stats().late_wet_packets, 2);
+    assert_eq!(host.media_stats().accepted_wet_packets, 1);
+    assert_eq!(host.media_stats().first_late_wet, Some(first));
+    assert_eq!(
+        host.media_stats().last_late_wet,
+        Some(LateWetWitness {
+            packet_source_frame: 48,
+            packet_output_frame: 432,
+            ..first
+        })
+    );
     host.disconnect(&ctx);
     assert!(
         host.media(&ctx, crate::transport::Packet::parse(&wet).unwrap(), 9)
@@ -702,6 +730,8 @@ fn composed_host_noncontiguous_analysis_deadlines_loss_and_epoch() {
     }
     assert_eq!(host.provider().frame(), 16 * 48);
     host.provider_mut().recover_source(Counter(10), 0).unwrap();
+    assert_eq!(host.media_stats().first_late_wet, Some(first));
+    assert_eq!(host.media_stats().late_wet_packets, 2);
     assert!(host.negotiate(&ctx, &descriptor).is_err());
     let mut renewed = descriptor.clone();
     renewed.source_epoch = Counter(10);
