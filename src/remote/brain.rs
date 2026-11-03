@@ -127,6 +127,7 @@ struct FxTicket {
     panic_mask: Option<u32>,
 }
 pub struct BrainWorker {
+    trace: super::diagnostics::Handle,
     fx_binding: Option<crate::fx_wire::Binding>,
     fx_ticket: Option<FxTicket>,
     fx_refused: Option<(u64, &'static str)>,
@@ -161,6 +162,7 @@ impl BrainWorker {
         )
         .map_err(|e| e.to_string())?;
         Ok(Self {
+            trace: None,
             fx_binding: None,
             fx_ticket: None,
             fx_refused: None,
@@ -184,6 +186,7 @@ impl BrainWorker {
         let descriptor = media.descriptor().clone();
         let aux = super::fx_aux_owner::BrainAux::load(descriptor.clone(), path, hash, inputs)?;
         Ok(Self {
+            trace: None,
             fx_binding: None,
             fx_ticket: None,
             fx_refused: None,
@@ -527,9 +530,18 @@ impl BrainWorker {
             |fx| fx.resets,
         )
     }
+    pub(crate) fn set_diagnostics(&mut self, trace: super::diagnostics::Handle) {
+        self.trace = trace;
+    }
     pub async fn step(&mut self) -> Result<Option<Vec<u8>>> {
         let bytes = self.media.receive().await?;
         let packet = Packet::parse(&bytes).map_err(|e| format!("Brain packet {e:?}"))?;
+        super::diagnostics::media_record(
+            &self.trace,
+            super::diagnostics::Stage::BrainReceive,
+            packet,
+            0,
+        );
         if packet.spec().role == Role::Analysis {
             self.stats.analysis_packets = self.stats.analysis_packets.saturating_add(1);
             return Ok(Some(bytes));
@@ -543,6 +555,19 @@ impl BrainWorker {
             }
         };
         if let Some((frame, input)) = assembled {
+            let token = super::diagnostics::Token {
+                session: packet.spec().session,
+                ordinal: frame,
+                request: frame,
+                kind: 0,
+            };
+            super::diagnostics::record(
+                &self.trace,
+                token,
+                super::diagnostics::Stage::BrainProcessBegin,
+                0,
+                0,
+            );
             if let Some(aux) = &mut self.aux {
                 aux.process(frame, &input, &mut self.wet)?;
             } else {
@@ -558,6 +583,13 @@ impl BrainWorker {
                     )
                     .map_err(|e| format!("Brain FX {e:?}"))?;
             }
+            super::diagnostics::record(
+                &self.trace,
+                token,
+                super::diagnostics::Stage::BrainProcessEnd,
+                0,
+                0,
+            );
             let descriptor = self.media.descriptor();
             let packets = encode_grouped(descriptor, MediaRole::WetReturn, frame, &self.wet)?;
             for packet in packets {
@@ -568,8 +600,17 @@ impl BrainWorker {
                         u64::from(parsed.sample(index).is_ok_and(|sample| sample != 0.));
                 }
                 self.returned_hash.update(&packet);
+                super::diagnostics::media_record(
+                    &self.trace,
+                    super::diagnostics::Stage::BrainSend,
+                    parsed,
+                    0,
+                );
                 self.media.send(packet)?;
                 self.stats.returned_packets = self.stats.returned_packets.saturating_add(1);
+            }
+            if self.trace.is_some() && frame.is_multiple_of(4800) {
+                self.media.diagnostic_stats(&self.trace, frame);
             }
             self.stats.processed_blocks = self.stats.processed_blocks.saturating_add(1);
             self.stats.incomplete_blocks = self.receiver.incomplete_dropped;

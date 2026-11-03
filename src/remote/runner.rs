@@ -88,10 +88,19 @@ fn validate_fx_run(duration_ms: u64, delay: u32, verify_synthetic: bool) -> Resu
     }
     Ok(())
 }
+#[cfg(test)]
 fn expected_analysis_pcm(verify_synthetic: bool, id: &str, frame: u64) -> Result<Option<i32>> {
     if !verify_synthetic {
         return Ok(None);
     }
+    let (period, amplitude) = analysis_reference(id)?;
+    Ok(Some(if (frame / period).is_multiple_of(2) {
+        amplitude
+    } else {
+        -amplitude
+    }))
+}
+fn analysis_reference(id: &str) -> Result<(u64, i32)> {
     let index = id
         .strip_prefix("input-")
         .ok_or("analysis source ID")?
@@ -107,11 +116,24 @@ fn expected_analysis_pcm(verify_synthetic: bool, id: &str, frame: u64) -> Result
             .ok_or("analysis source amplitude")?,
     )
     .map_err(|e| e.to_string())?;
-    Ok(Some(if (frame / period).is_multiple_of(2) {
-        amplitude
-    } else {
-        -amplitude
-    }))
+    Ok((period, amplitude))
+}
+// Optional software diagnostic, outside physical callbacks. Values are local to
+// the calling source thread; no peer-clock subtraction is involved.
+fn thread_resources() -> Option<[u64; 5]> {
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) } != 0 {
+        return None;
+    }
+    Some([
+        ((usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) * 1_000_000
+            + usage.ru_utime.tv_usec
+            + usage.ru_stime.tv_usec) as u64,
+        usage.ru_minflt as u64,
+        usage.ru_majflt as u64,
+        usage.ru_nvcsw as u64,
+        usage.ru_nivcsw as u64,
+    ])
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -147,6 +169,8 @@ pub enum RunConfig {
         #[serde(default)]
         provider_timing: bool,
         #[serde(default)]
+        media_timing: bool,
+        #[serde(default)]
         fx_aux: Option<Box<FxAuxConfig>>,
         #[serde(default)]
         analysis_mapping: Option<crate::analysis_stream::Mapping>,
@@ -167,6 +191,8 @@ pub enum RunConfig {
         fx_aux_sha256: Option<String>,
         #[serde(default = "default_true")]
         verify_synthetic_source: bool,
+        #[serde(default)]
+        media_timing: bool,
         duration_ms: u64,
         return_delay_frames: u32,
         report: PathBuf,
@@ -184,7 +210,19 @@ struct RevisionWindow {
 // Diagnostic storage is capped independently of fake or physical run duration.
 // Collection happens after the composed source worker, never inside Mixer/PA DSP.
 const OUTPUT_WINDOW_FRAMES: u64 = 4_800;
-const OUTPUT_WINDOW_LIMIT: usize = 1_024;
+// 60s owner observations (up to20/s), 100ms buckets and bounded control changes.
+const OUTPUT_WINDOW_LIMIT: usize = 2_048;
+const REVISION_WINDOW_LIMIT: usize = 2_048;
+#[derive(Serialize)]
+struct BrainWindow {
+    elapsed_ms: u64,
+    source_frame: u64,
+    snapshot: crate::brain_control::Snapshot,
+    bridge: Option<crate::brain_audio::bridge::BridgeStatus>,
+    playback: Vec<f64>,
+    monitor: Vec<f64>,
+    fx_send: Vec<f64>,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 struct OutputState {
     source_epoch: Counter,
@@ -359,6 +397,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             ready,
             physical_device,
             provider_timing,
+            media_timing,
             fx_aux,
             analysis_mapping,
         } => {
@@ -374,10 +413,16 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             if physical_device.is_some() && analysis_mapping.is_some() {
                 return Err("configured analysis requires software source until physical acquisition age is propagated".into());
             }
-            if provider_timing && (physical_device.is_some() || duration_ms > 60_000) {
+            if (provider_timing || media_timing)
+                && (physical_device.is_some() || duration_ms > 60_000)
+            {
                 return Err("provider timing requires finite <=60s software run".into());
             }
-            let trace = provider_timing.then(super::diagnostics::Trace::new);
+            let trace = if media_timing {
+                Some(super::diagnostics::Trace::with_media())
+            } else {
+                provider_timing.then(super::diagnostics::Trace::new)
+            };
             let physical = physical_device.is_some();
             let physical_epoch = physical_device
                 .as_ref()
@@ -482,7 +527,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             let mut revision_windows: Vec<RevisionWindow> = Vec::new();
             let mut revision_windows_overflow = 0u64;
             let mut output_windows = OutputWindows::default();
-            let mut brain_windows: Vec<Value> = Vec::new();
+            let mut brain_windows: Vec<BrainWindow> = Vec::new();
             let mut brain_windows_overflow = 0u64;
             let mut brain_window_identity = None;
             let mut blocks = 0u64;
@@ -531,8 +576,13 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                                 capture[f*capture_channels+input.capture_slot]=polarity*((index+1)*128) as f64/8_388_608.;
                             }}
                             let render_begin=trace.as_ref().map(|t|t.now()).unwrap_or(0);
+                            let resources_begin=media_timing.then(thread_resources).flatten();
                             if let Err(error)=host.process_source(now,source_epoch,frame,&capture,&mut playback){fault=Some(error);break;}
                             diagnostic_render=trace.as_ref().map(|t|t.now().saturating_sub(render_begin)).unwrap_or(0);
+                            if let (Some(before),Some(after),Some(trace))=(resources_begin,media_timing.then(thread_resources).flatten(),&trace) {
+                                let delta: [u64;5]=std::array::from_fn(|i|after[i].saturating_sub(before[i]));
+                                trace.record(super::diagnostics::Token{session:delta[1],ordinal:frame,request:delta[0],kind:delta[3]},super::diagnostics::Stage::SourceResources,delta[4],delta[2]);
+                            }
                         }
                         let report_begin=trace.as_ref().map(|t|t.now()).unwrap_or(0);
                         mailboxes.retain(|m|!m.retired());
@@ -542,11 +592,13 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                         let brain=host.provider().brain_snapshot();
                         let brain_identity=(revision.0,brain.selection_generation.0,brain.held_generation,frame/4800);
                         if brain_window_identity!=Some(brain_identity){
-                            if brain_windows.len()<2048{brain_windows.push(json!({"elapsed_ms":started.elapsed().as_millis() as u64,"source_frame":frame,"snapshot":brain,"bridge":host.brain_bridge_status(),"playback":playback,"monitor":host.provider().brain_monitor_output(),"fx_send":host.provider().brain_fx_send()}));}else{brain_windows_overflow+=1;}
+                            // Retain native samples; materialize per-sample JSON
+                            // only after the bounded source run has stopped.
+                            if brain_windows.len()<2048{brain_windows.push(BrainWindow{elapsed_ms:started.elapsed().as_millis() as u64,source_frame:frame,snapshot:brain,bridge:host.brain_bridge_status(),playback:playback.clone(),monitor:host.provider().brain_monitor_output().to_vec(),fx_send:host.provider().brain_fx_send().to_vec()});}else{brain_windows_overflow+=1;}
                             brain_window_identity=Some(brain_identity);
                         }
                         if revision_windows.last().is_none_or(|w|w.revision!=revision) {
-                            if revision_windows.len()<64 {
+                            if revision_windows.len()<REVISION_WINDOW_LIMIT {
                                 revision_windows.push(RevisionWindow{revision,first_source_frame:frame,last_source_frame:frame+47,blocks:0,energy_per_playback_slot:vec![0.;playback_channels],first_block_samples:playback.clone()});
                             } else {revision_windows_overflow+=1;}
                         }
@@ -629,11 +681,16 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             fx_control_sha256,
             fx_aux_sha256,
             verify_synthetic_source,
+            media_timing,
             duration_ms,
             return_delay_frames,
             report,
         } => {
             validate_fx_run(duration_ms, return_delay_frames, verify_synthetic_source)?;
+            if media_timing && (!verify_synthetic_source || duration_ms > 60_000) {
+                return Err("media timing requires finite <=60s synthetic run".into());
+            }
+            let trace = media_timing.then(super::diagnostics::Trace::with_media);
             let credentials = Credentials::load_der(&certificate, &key, &ca)?;
             let endpoint = client_endpoint(bind, &credentials)?;
             let policy = PolicyStore::new(peers)?;
@@ -705,6 +762,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             } else {
                 BrainWorker::prepare(client.media_channel()?, &fx_library)?
             };
+            worker.set_diagnostics(trace.clone());
             let controls = if aux_controls {
                 true
             } else if let Some(hash) = &fx_control_sha256 {
@@ -721,7 +779,16 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             };
             let mut observation_tick = tokio::time::interval(Duration::from_millis(50));
             let started = Instant::now();
-            let deadline = tokio::time::sleep(Duration::from_millis(duration_ms));
+            // Keep the connection alive for the last return's existing budget.
+            // Otherwise close can retire the provider mailbox after dequeue but
+            // before source-owner admission. Reserve this inside the run limit;
+            // it does not extend media deadlines or acknowledge delivery.
+            let shutdown_hold_ms = u64::from(return_delay_frames)
+                .div_ceil(48)
+                .min(duration_ms / 2);
+            let finish_at = tokio::time::Instant::now() + Duration::from_millis(duration_ms);
+            let deadline =
+                tokio::time::sleep_until(finish_at - Duration::from_millis(shutdown_hold_ms));
             tokio::pin!(deadline);
             let mut first_source = None;
             let mut last_source = None;
@@ -729,6 +796,15 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             let mut mismatches = 0u64;
             let mut channel_samples: std::collections::BTreeMap<String, u64> =
                 ids.iter().cloned().map(|id| (id, 0)).collect();
+            let references: std::collections::BTreeMap<_, _> = ids
+                .iter()
+                .map(|id| {
+                    let reference = verify_synthetic_source
+                        .then(|| analysis_reference(id))
+                        .transpose()?;
+                    Ok((id.clone(), reference))
+                })
+                .collect::<Result<_>>()?;
             let mut fault = None;
             loop {
                 tokio::select! {
@@ -768,17 +844,24 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                             first_source.get_or_insert(packet.source_frame());last_source=Some(packet.source_frame());
                             let stream=descriptor.streams.iter().find(|s|s.stream==packet.spec().stream).ok_or("analysis evidence stream")?;
                             for (channel,id) in stream.channel_ids.iter().enumerate() {
+                                let reference=references.get(id).ok_or("analysis reference channel")?;
                                 for f in 0..usize::from(packet.spec().frames) {
                                     let actual=packet.pcm(f*usize::from(packet.spec().channels)+channel).map_err(|e|format!("analysis PCM {e:?}"))?;
-                                    if let Some(expected)=expected_analysis_pcm(verify_synthetic_source,id,packet.source_frame()+f as u64)? && actual!=expected {mismatches+=1;}
-                                    *channel_samples.get_mut(id).ok_or("analysis channel evidence")?+=1;
+                                    if let Some((period,amplitude))=reference {
+                                        let expected=if ((packet.source_frame()+f as u64)/period).is_multiple_of(2) {*amplitude} else {-*amplitude};
+                                        if actual!=expected {mismatches+=1;}
+                                    }
                                 }
+                                *channel_samples.get_mut(id).ok_or("analysis channel evidence")?+=u64::from(packet.spec().frames);
                             }
                             analysis_hash.update(&bytes);
                         },
                         Ok(None)=>(),Err(error)=>{fault=Some(error);break;}
                     }
                 }
+            }
+            if fault.is_none() {
+                tokio::time::sleep_until(finish_at).await;
             }
             if let Some(task) = control_task {
                 task.abort();
@@ -796,7 +879,12 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             if verify_synthetic_source && worker.nonzero_return_samples() == 0 {
                 fault = Some("functional acceptance observed no nonzero owner wet result; source may remain muted".into());
             }
-            let evidence = json!({"mode":"brain","software_only":verify_synthetic_source,"physical_io_owned":false,"physical_qualified":false,"descriptor":descriptor,"elapsed_ms":started.elapsed().as_millis(),"first_analysis_source_frame":first_source,"last_analysis_source_frame":last_source,"analysis_packets":worker.stats.analysis_packets,"synthetic_reference_checked":verify_synthetic_source,"analysis_sample_mismatches":if verify_synthetic_source {Some(mismatches)}else{None},"analysis_samples_per_channel":channel_samples,"analysis_arrival_sha256":format!("{:x}",analysis_hash.finalize()),"returned_wet_sha256":worker.returned_sha256(),"nonzero_returned_wet_samples":worker.nonzero_return_samples(),"fx_send_packets":worker.stats.send_packets,"actual_owner_fx_blocks":worker.stats.processed_blocks,"wet_packets":worker.stats.returned_packets,"incomplete_blocks":worker.stats.incomplete_blocks,"stale_groups":worker.stats.stale_groups,"fx_owner_resets":worker.owner_resets(),"fx_intentional_delay_frames":if controls {None}else{Some(worker.intentional_delay_frames())},"fx_controls_available":controls,"four_aux_controls":aux_controls,"fx_aux_owner_observation":if aux_controls {worker.poll_aux_observation().ok()}else{None},"fx_owner_observation":worker.fx_observation().ok(),"fault":fault});
+            let mut evidence = json!({"mode":"brain","software_only":verify_synthetic_source,"physical_io_owned":false,"physical_qualified":false,"descriptor":descriptor,"elapsed_ms":started.elapsed().as_millis(),"first_analysis_source_frame":first_source,"last_analysis_source_frame":last_source,"analysis_packets":worker.stats.analysis_packets,"synthetic_reference_checked":verify_synthetic_source,"analysis_sample_mismatches":if verify_synthetic_source {Some(mismatches)}else{None},"analysis_samples_per_channel":channel_samples,"analysis_arrival_sha256":format!("{:x}",analysis_hash.finalize()),"returned_wet_sha256":worker.returned_sha256(),"nonzero_returned_wet_samples":worker.nonzero_return_samples(),"fx_send_packets":worker.stats.send_packets,"actual_owner_fx_blocks":worker.stats.processed_blocks,"wet_packets":worker.stats.returned_packets,"incomplete_blocks":worker.stats.incomplete_blocks,"stale_groups":worker.stats.stale_groups,"fx_owner_resets":worker.owner_resets(),"fx_intentional_delay_frames":if controls {None}else{Some(worker.intentional_delay_frames())},"fx_controls_available":controls,"four_aux_controls":aux_controls,"fx_aux_owner_observation":if aux_controls {worker.poll_aux_observation().ok()}else{None},"fx_owner_observation":worker.fx_observation().ok(),"fault":fault});
+            if let Some(trace) = &trace {
+                evidence["timing"] =
+                    serde_json::to_value(trace.report()).map_err(|e| e.to_string())?;
+            }
+            evidence["shutdown_hold_ms"] = json!(shutdown_hold_ms);
             save(&report, &evidence)?;
             Ok(evidence)
         }

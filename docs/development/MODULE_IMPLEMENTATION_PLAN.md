@@ -720,41 +720,88 @@ hardware deadlines and acoustic protection; software profiles are not hardware p
 
 ### Next Ethernet session — execution plan, 2026-11-03
 
-State: IN PROGRESS; cable baseline and five-second four-aux smoke passed on
-November 3. The first 30-second trial failed with two late wet packets at the
-unchanged 768-frame return budget; 60-second, full Desk/duplex and fault trials
-remain gated on diagnosis. Private task0026 owns exact identities, reservations,
-failed reports and sample checks. Source synchronization does not reserve the
-link or authorize PCM, load injection, cable pulls or service changes. Pi5
-coordinates directly; no peer Codex worker is needed. Record a finite reservation
-and acknowledgment from both nodes in the private exchange before measurements.
-Keep SSH on the documented Tailscale aliases; bind test traffic explicitly to
-the observed dedicated Ethernet addresses and verify its route. Historical
-192.168.234.221/222 assignments must be observed again, not assumed from SSH reachability.
+State: IN PROGRESS; cable baseline passed, but synthetic transport acceptance
+remains gated on the late-return diagnosis. Private task0026 owns exact identities,
+reservations, failed reports and sample checks. Source synchronization does not
+reserve the link or authorize PCM, cable pulls or service changes. Pi5 coordinates
+directly without peer workers. Record a finite reservation and acknowledgment on
+both nodes before measurements; build first. Keep SSH on persistent Tailscale
+aliases, and verify the dedicated Ethernet carrier, speed, addresses and route.
 
-Measured cable baseline: both links 1000/full, MTU1500; 200/200 idle replies,
-RTT median/p95/p99/max 0.175/0.206/0.245/0.324ms; TCP 936/942Mbit/s with no
-retransmissions; UDP25/50/100Mbit/s with zero reported loss and no NIC error/drop
-deltas. RTT is not one-way latency. The 16-input synthetic graph used eight PA
-outputs, five independent monitors and four stereo FX auxes. The failed30s run
-recorded 1,436,784 exact contiguous frames per input and passed960 independent
-monitor sample comparisons across FX edits. Render p50/p99/max was189/223/3715µs;
-source scheduling debt peaked at7932µs. These measurements do not establish a
-hardware deadline or explain the two late wet packets. Bounded first/last late
-packet witnesses now retain source/output/admission frames without changing
-deadlines. Keep the failure open until an equal-load diagnostic explains it;
-do not infer acceptance from CLI exit status or a later intermittent pass.
-The diagnostic repeat at `c153548` reproduced two late groups for source frame
-633360, rejected exactly at output/source frame634128. A preceding8.598ms gap
-between source-tick records was followed by catch-up: those768 source frames
-advanced in9.489ms of observed tick-to-tick wall time. This identifies compressed
-deadline headroom, not the sole cause or a one-way network delay. Raw recording
-again matched1,436,784 frames per input exactly. Next: correlate bounded Brain
-receive/process/send timestamps with provider admission and scheduler gaps at the
-same load; keep the768-frame deadline and60s synthetic cap. The full Desk gate/FX/
-REC lifecycle, both active Brain ASRC crossings,60s trial and owned fault/reconnect
-cases remain unrun in this session. Normal validation passed503 default and588
-hardware-host tests (22/54 opt-ins skipped), formatting and warning-denied Clippy.
+Measured cable baseline: both links1000/full, MTU1500;200/200 idle replies,
+RTT median/p95/p99/max0.175/0.206/0.245/0.324ms; TCP936/942Mbit/s with no
+retransmissions; UDP25/50/100Mbit/s with zero reported loss or NIC error/drop
+deltas. RTT is not one-way latency. The graph uses16inputs, eight PA outputs,
+five independent monitors and four stereo FX auxes from validated configuration;
+these test dimensions are not product limits. Both earlier30s runs rejected two
+late wet groups at the unchanged768-frame deadline while raw recording remained
+exact and continuous. Source633360/output634128/admission634128 followed an8.598ms
+source-tick gap and768frames of catch-up in9.489ms. This is compressed headroom,
+not proof of wire loss or the sole cause.
+
+Continuation after dependency review rebuilt the actual PA/FX/REC owners and
+verified all13 manifest revisions on both Pis. Frame-correlated evidence closes
+packet accounting in failed runs: for example,115,976 returned wet packets were
+115,944 admitted +8 host-late +24 early deadline refusals, with zero unexplained
+packets. NIC/UDP error deltas and interior traced network gaps were zero. These
+are audio deadline rejections, not demonstrated wire loss. Admission/application
+QUIC dequeue is not socket arrival; clocks from different nodes are never subtracted.
+Commands, meters and analysis have their own contracts, not the wet-audio deadline.
+They are traced only to identify interference through shared execution resources.
+
+For source1933776, source-tick to QUIC-send call took17.514ms; the cached source
+had already reached1934544, the intended wet-return frame. Brain processing was
+approximately98µs. Separating network/control tasks from the source owner fixes
+that shared-executor blockage. Later failures also showed source catch-up after
+multi-millisecond render-wall pauses. A resource witness recorded6017µs wall,
+301µs accounted thread CPU, one minor fault and one voluntary switch; accounting
+granularity does not permit an exact waiting-time inference. Profiling identified
+first-write page faults in lazily zeroed diagnostic storage and allocations for
+live per-sample JSON. Diagnostic storage is now touched before timing, and sample
+windows retain native numbers for serialization after the run. These observations
+identify contributors; they do not establish one exclusive cause for every pause.
+
+Additional fixes preserve structural completion across mailbox retirement, deliver
+deferred owner replies through the proxy, and defer early meter reads to the
+existing40ms interval instead of triggering reconnect churn. Session bounds and
+rate limits are unchanged. Bounded FX shutdown reserves the existing16ms return
+budget inside the requested duration so final returns can reach owner admission.
+Neither the768-frame deadline nor the60-second synthetic-provider cap changes.
+
+Final rebuilt candidate passed the5/30/60s sequence. The60s run admitted all
+115,978 returned wet packets, with zero late/rejected packets, interior traced
+media gaps or NIC/UDP error deltas;2,876,928 raw frames per input were independently
+exact and contiguous. Source-tick to send-call maximum was3.833ms. Separate actual
+Desk gate/FX/REC/reconnect passed with all55,976 wet packets admitted and a complete
+338,880-frame/input take. Owned FX loss/restart preserved raw recording and dry PA,
+then recovered actual wet samples with a fresh session. These are separate bounded
+runs, not a continuous soak.
+
+The final combined60s fake-duplex case passed exact16-channel raw recording, PFL
+including input16, post-ASRC PFL gain error−0.042011dB, and1,488 distinct submitted
+playback frames of simultaneous talkback/monitor/FX/REC evidence. All trace and
+sample-window overflow counters were zero. It nevertheless FAILED clean timing:
+89,986 returned wet packets =89,963 admitted +15 host-late +8 earlier deadline
+refusals, with zero unexplained packets and zero NIC/UDP error deltas. One Brain
+first-group-to-processing interval was4.460ms; provider send-to-return-dequeue
+maximum16.849ms includes both directions, processing, scheduling and buffering.
+Those durations are not one-way network latency. Remaining application scheduling/
+queue interference under combined control/duplex load is unresolved; do not claim
+complete software acceptance or advance to physical audio on this evidence.
+Source epochs260048/260049 passed exact raw recording, stale command/media intent
+rejection, read-only unarmed reconnect without a writer grant, and explicit output
+rearm with fresh actual wet samples; Brain local epochs independently advanced1/2/3.
+The next software action is to isolate combined-load receive/assembly and source
+mailbox delays without putting control or analysis work under the audio deadline.
+Only after clean combined timing and separate physical authorization: observe
+the actual device/socket map, conservative5s L/R electrical smoke, then the
+UMC1820/ADA8200 16-input/18-output mapping and ADAT lock if that rig is present.
+
+Validation:505 default and591 hardware-host production tests passed;22/54 opt-ins
+intentionally ignored. Formatting, all-target hardware-host Clippy with warnings
+denied,67 publication-script tests and the release build passed. Historical research,
+auditions, exhaustive matrices and physical opt-ins were not rerun. Focused tests
+cover runtime isolation, retirement completion, deferred meter reads and trace bounds.
 
 The priority is the current authenticated QUIC/media graph, including four FX
 auxes, raw recording and Brain duplex crossings. The accepted October 3 GPA1 UDP

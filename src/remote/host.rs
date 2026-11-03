@@ -87,6 +87,7 @@ pub struct HostAuthority {
     fx: fx_relay::FxRelay,
     provider: LocalAudio,
     meter_reads: BTreeMap<u64, u64>,
+    pending_meter_reads: BTreeMap<u64, crate::meter_wire::Request>,
     reads: BTreeMap<u64, ReadState>,
     structural_reads: BTreeMap<u64, u64>,
     fx_aux_reads: BTreeMap<u64, u64>,
@@ -186,6 +187,7 @@ impl HostAuthority {
             fx: fx_relay::FxRelay::default(),
             provider,
             meter_reads: BTreeMap::new(),
+            pending_meter_reads: BTreeMap::new(),
             reads: BTreeMap::new(),
             structural_reads: BTreeMap::new(),
             fx_aux_reads: BTreeMap::new(),
@@ -1043,14 +1045,24 @@ impl AuthorityEndpoint for HostAuthority {
             return self.dispatch_fx(context, payload, now_ms).map(Some);
         }
         if payload.get("contract").and_then(Value::as_str) == Some(crate::meter_wire::CONTRACT) {
+            let request = crate::meter_wire::Request::decode(&super::encode(&payload)?)?;
+            if self.pending_meter_reads.contains_key(&context.session()) {
+                return Err("meter observer read pending".into());
+            }
             if self
                 .meter_reads
                 .get(&context.session())
                 .is_some_and(|t| now_ms.saturating_sub(*t) < 40)
             {
-                return Err("meter observer poll bound".into());
+                // Client cadence includes connection setup and network jitter.
+                // Keep the 40ms production bound without forcing a reconnect
+                // loop: at most one pending read per authenticated session.
+                if self.pending_meter_reads.len() >= MAX_CONNECTIONS {
+                    return Err("meter observer pending capacity".into());
+                }
+                self.pending_meter_reads.insert(context.session(), request);
+                return Ok(None);
             }
-            let request = crate::meter_wire::Request::decode(&super::encode(&payload)?)?;
             self.meter_reads.insert(context.session(), now_ms);
             let reply = self
                 .provider
@@ -1524,6 +1536,7 @@ impl AuthorityEndpoint for HostAuthority {
         }
         self.provider.revoke_writer(context.writer());
         self.meter_reads.remove(&context.session());
+        self.pending_meter_reads.remove(&context.session());
         self.reads.remove(&context.session());
         self.structural_reads.remove(&context.session());
         self.fx_aux_reads.remove(&context.session());
@@ -1547,11 +1560,23 @@ impl AuthorityEndpoint for HostAuthority {
     fn source_frame(&self) -> Option<u64> {
         Some(self.provider.frame())
     }
-    fn poll_reply(
-        &mut self,
-        context: &AuthenticatedContext,
-        _now_ms: u64,
-    ) -> Result<Option<Value>> {
+    fn poll_reply(&mut self, context: &AuthenticatedContext, now_ms: u64) -> Result<Option<Value>> {
+        if self.pending_meter_reads.contains_key(&context.session())
+            && self
+                .meter_reads
+                .get(&context.session())
+                .is_some_and(|at| now_ms.saturating_sub(*at) >= 40)
+        {
+            context.check_current()?;
+            let request = self.pending_meter_reads.remove(&context.session()).unwrap();
+            self.meter_reads.insert(context.session(), now_ms);
+            let reply = self
+                .provider
+                .meter_snapshot(&request, self.capability_generation)?;
+            return serde_json::to_value(reply)
+                .map(Some)
+                .map_err(|e| e.to_string());
+        }
         if let Some(value) = self.poll_aux(context) {
             return Ok(Some(value));
         }
@@ -2158,20 +2183,58 @@ mod meter_reads_tests {
             r.query_id = Counter(2);
             assert!(
                 host.dispatch(&ctx, serde_json::to_value(&r).unwrap(), 39)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(host.poll_reply(&ctx, 39).unwrap().is_none());
+            assert!(
+                host.dispatch(&ctx, serde_json::to_value(&r).unwrap(), 39)
                     .is_err()
             );
+            let deferred = host.poll_reply(&ctx, 40).unwrap().unwrap();
+            assert_eq!(deferred["query_id"], "2");
+            assert_eq!(deferred["reason"], "missing_window");
+            assert!(host.pending_meter_reads.is_empty());
+            assert_eq!(host.meter_reads[&ctx.session()], 40);
+            assert!(host.poll_reply(&ctx, 41).unwrap().is_none());
+            assert_eq!(host.provider.engine_mut().revision(), Counter(0));
             r.version = 2;
             assert_eq!(
-                host.dispatch(&ctx, serde_json::to_value(&r).unwrap(), 40)
+                host.dispatch(&ctx, serde_json::to_value(&r).unwrap(), 80)
                     .unwrap()
                     .unwrap()["reason"],
                 "unsupported"
             );
-            policy.replace(vec![]).unwrap();
+            // Exercise the real network/source handoff: pending must not become
+            // a synthetic refusal before the final owner reply is available.
+            let (mut proxy, mut mailbox) = authority_channel(&ctx, host.identity()).unwrap();
+            proxy
+                .dispatch(&ctx, serde_json::to_value(&r).unwrap(), 81)
+                .unwrap();
+            mailbox.service(&mut host, 81).unwrap();
+            assert!(proxy.poll_refusal().unwrap().is_none());
+            assert!(proxy.poll_reply(&ctx, 81).unwrap().is_none());
+            mailbox.service(&mut host, 119).unwrap();
+            assert!(proxy.poll_reply(&ctx, 119).unwrap().is_none());
+            mailbox.service(&mut host, 120).unwrap();
+            assert_eq!(
+                proxy.poll_reply(&ctx, 120).unwrap().unwrap()["reason"],
+                "unsupported"
+            );
+            assert!(proxy.poll_reply(&ctx, 120).unwrap().is_none());
             assert!(
-                host.dispatch(&ctx, serde_json::to_value(&r).unwrap(), 80)
+                host.dispatch(&ctx, serde_json::to_value(&r).unwrap(), 121)
+                    .unwrap()
+                    .is_none()
+            );
+            policy.replace(vec![]).unwrap();
+            assert!(host.poll_reply(&ctx, 160).is_err());
+            assert!(
+                host.dispatch(&ctx, serde_json::to_value(&r).unwrap(), 160)
                     .is_err()
             );
+            host.disconnect(&ctx);
+            assert!(host.pending_meter_reads.is_empty());
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

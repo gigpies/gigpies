@@ -1,7 +1,17 @@
 //! Explicit bounded authenticated provider/Brain; physical PCM requires a CLI gate.
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    if let Err(error) = run().await {
+// The source future stays on the calling thread. QUIC/control tasks must keep
+// polling while that owner renders, services commands, or catches up source ticks.
+fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+}
+fn main() {
+    let result = runtime()
+        .map_err(|e| e.to_string())
+        .and_then(|rt| rt.block_on(run()));
+    if let Err(error) = result {
         eprintln!("gigpies-remote: {error}");
         std::process::exit(1);
     }
@@ -30,4 +40,22 @@ async fn run() -> Result<(), String> {
         return Err("bounded run reported a fault; retain its report".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn network_tasks_progress_while_source_owner_is_busy() {
+    let rt = runtime().unwrap();
+    rt.block_on(async {
+        let source_thread = std::thread::current().id();
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        let network = tokio::spawn(async move {
+            tx.send(std::thread::current().id()).unwrap();
+        });
+        // A current-thread runtime cannot poll the network task until this owner
+        // yields. This models the source's synchronous render/control interval.
+        let network_thread = rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        assert_ne!(source_thread, network_thread);
+        network.await.unwrap();
+    });
 }

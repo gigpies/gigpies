@@ -10,8 +10,9 @@ use std::sync::{
 use std::time::Instant;
 
 #[cfg(any(test, all(target_os = "linux", feature = "hardware-host")))]
-pub(crate) const SOURCE_CAPACITY: usize = 60_000;
-pub(crate) const CONTROL_CAPACITY: usize = 79_264;
+pub(crate) const SOURCE_CAPACITY: usize = 60_001;
+// Four simultaneous Desk scopes plus owner traffic in a bounded 60s trial.
+pub(crate) const CONTROL_CAPACITY: usize = 4 * 79_264;
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Token {
     pub session: u64,
@@ -97,6 +98,21 @@ pub(crate) enum Stage {
     QuinnUdp = 25,
     QuinnBoundary = 26,
     ResponseIdentity = 27,
+    MediaSend = 28,
+    MediaReceive = 29,
+    MediaAdmission = 30,
+    #[cfg(feature = "hardware-host")]
+    BrainReceive = 31,
+    #[cfg(feature = "hardware-host")]
+    BrainProcessBegin = 32,
+    #[cfg(feature = "hardware-host")]
+    BrainProcessEnd = 33,
+    #[cfg(feature = "hardware-host")]
+    BrainSend = 34,
+    MediaRefused = 35,
+    MediaQueueFull = 36,
+    #[cfg(feature = "hardware-host")]
+    SourceResources = 37,
 }
 struct Slot {
     words: [AtomicU64; 8],
@@ -108,6 +124,8 @@ pub(crate) struct Report {
     pub schema: u32,
     pub clock: &'static str,
     pub allocated_bytes: usize,
+    pub media_attempts: u64,
+    pub media_overflow: u64,
     pub control_attempts: u64,
     pub source_attempts: u64,
     pub control_overflow: u64,
@@ -124,6 +142,8 @@ pub(crate) struct Report {
 pub struct Trace {
     origin: Instant,
     slots: Box<[Slot]>,
+    media_slots: Box<[Slot]>,
+    media: AtomicU64,
     control: AtomicU64,
     source: AtomicU64,
     active: AtomicU64,
@@ -141,18 +161,41 @@ impl Trace {
     }
     #[cfg(any(test, all(target_os = "linux", feature = "hardware-host")))]
     fn with_capacity(capacity: usize) -> Arc<Self> {
-        Arc::new(Self {
+        let trace = Arc::new(Self {
             origin: Instant::now(),
             slots: (0..capacity)
                 .map(|_| Slot {
                     words: std::array::from_fn(|_| AtomicU64::new(0)),
                 })
                 .collect(),
+            media_slots: Box::new([]),
+            media: AtomicU64::new(0),
             control: AtomicU64::new(0),
             source: AtomicU64::new(0),
             active: AtomicU64::new(0),
             overhead: AtomicU64::new(0),
-        })
+        });
+        // calloc/zero initialization can leave pages backed by the shared zero
+        // page. Touch storage before timing, rather than fault on first append.
+        for slot in &trace.slots {
+            // Still exclusively owned during construction; volatile forces a page write.
+            unsafe { std::ptr::write_volatile(slot.words[0].as_ptr(), 0) };
+        }
+        trace
+    }
+    #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+    pub(crate) fn with_media() -> Arc<Self> {
+        let mut trace = Self::new();
+        Arc::get_mut(&mut trace).unwrap().media_slots = (0..480_000)
+            .map(|_| Slot {
+                words: std::array::from_fn(|_| AtomicU64::new(0)),
+            })
+            .collect();
+        for slot in &trace.media_slots {
+            // Still exclusively owned during construction; volatile forces a page write.
+            unsafe { std::ptr::write_volatile(slot.words[0].as_ptr(), 0) };
+        }
+        trace
     }
     pub fn active_tasks(&self) -> u64 {
         self.active.load(Ordering::Acquire)
@@ -168,8 +211,17 @@ impl Trace {
         // Diagnostics are admitted only for <=60s software runs. Even one event/ns
         // stays below 2^36; u64 fetch_add cannot wrap in the admitted lifetime.
         let begin = self.now();
+        let media = stage as u64 >= 28;
+        if media && self.media_slots.is_empty() {
+            return;
+        }
         let source = stage as u64 == 20;
-        let (index, end) = if source {
+        let (index, end) = if media {
+            (
+                self.media.fetch_add(1, Ordering::Relaxed),
+                self.media_slots.len() as u64,
+            )
+        } else if source {
             (
                 CONTROL_CAPACITY as u64 + self.source.fetch_add(1, Ordering::Relaxed),
                 self.slots.len() as u64,
@@ -183,7 +235,11 @@ impl Trace {
         if index >= end {
             return;
         }
-        let slot = &self.slots[index as usize];
+        let slot = if media {
+            &self.media_slots[index as usize]
+        } else {
+            &self.slots[index as usize]
+        };
         let words = [
             0,
             self.now(),
@@ -225,10 +281,23 @@ impl Trace {
             row[0] = stage;
             records.push(row);
         }
+        let media = self.media.load(Ordering::Relaxed);
+        for slot in self.media_slots.iter().take(media as usize) {
+            let stage = slot.words[0].load(Ordering::Acquire);
+            if stage == 0 {
+                incomplete += 1;
+                continue;
+            }
+            records.push(std::array::from_fn(|i| {
+                slot.words[i].load(Ordering::Relaxed)
+            }));
+        }
         Report {
+            media_attempts: media,
+            media_overflow: media.saturating_sub(self.media_slots.len() as u64),
             schema: 1,
             clock: "process-local monotonic microseconds; stage elapsed includes scheduling/preemption; not CPU time",
-            allocated_bytes: self.slots.len() * 64,
+            allocated_bytes: (self.slots.len() + self.media_slots.len()) * 64,
             control_attempts: control,
             source_attempts: source,
             control_overflow: control.saturating_sub(CONTROL_CAPACITY.min(self.slots.len()) as u64),
@@ -248,7 +317,7 @@ impl Trace {
                 "a",
                 "b",
             ],
-            stages: "1:first_byte 2:framed(bytes) 3:decoded 4:request_dequeued 5:proxy_enqueued 6:dispatch_begin 7:dispatch_end 8:event_enqueued 9:event_dequeued 10:reply_enqueued 11:reply_dequeued 12:serialize_begin 13:serialize_end(bytes) 14:pages_end(pages,bytes) 15:write_first_poll 16:write_first_pending 17:write_end(outcome,pending_polls) 18:quinn_path(rtt_us,lost_packets) 19:quinn_traffic(sent_packets,cwnd) 20:source_tick(report_us in session,frame in ordinal,debt_us in request,dispatch_us in kind,render_us,total_tick_us) 21:max_data(rx,tx) 22:max_stream_data(rx,tx) 23:data_blocked(rx,tx) 24:stream_data_blocked(rx,tx) 25:udp_datagrams(rx,tx) 26:quinn_boundary(0:before/1:after,0); connection-wide aggregates cannot identify a stream stall cause; 27:response_identity(revision_or_u64MAX,frame_or_u64MAX)",
+            stages: "1:first_byte 2:framed(bytes) 3:decoded 4:request_dequeued 5:proxy_enqueued 6:dispatch_begin 7:dispatch_end 8:event_enqueued 9:event_dequeued 10:reply_enqueued 11:reply_dequeued 12:serialize_begin 13:serialize_end(bytes) 14:pages_end(pages,bytes) 15:write_first_poll 16:write_first_pending 17:write_end(outcome,pending_polls) 18:quinn_path(rtt_us,lost_packets) 19:quinn_traffic(sent_packets,cwnd) 20:source_tick(report_us in session,frame in ordinal,debt_us in request,dispatch_us in kind,render_us,total_tick_us) 21:max_data(rx,tx) 22:max_stream_data(rx,tx) 23:data_blocked(rx,tx) 24:stream_data_blocked(rx,tx) 25:udp_datagrams(rx,tx) 26:quinn_boundary(0:before/1:after,0); connection-wide aggregates cannot identify a stream stall cause; 27:response_identity(revision_or_u64MAX,frame_or_u64MAX); media stages use session,source_frame,output_frame,stream,a=reserved_zero,b=observed_source_or_zero: 28:quinn_send_call 29:quinn_dequeue 30:provider_admission 31:brain_dequeue 32:brain_process_begin 33:brain_process_end 34:brain_send_call 35:media_refused 36:media_queue_full; 37:source_render_resources(frame in ordinal,CPU_us in request,minor_faults in session,voluntary_switches in kind,involuntary_switches in a,major_faults in b); first channel group only except refusals; send call is not wire departure and dequeue is not socket arrival",
             records,
         }
     }
@@ -363,6 +432,64 @@ pub(crate) fn response_identity(trace: &Handle, token: Token, response: &super::
             frame.unwrap_or(u64::MAX),
         );
     }
+}
+
+/// Normal events trace the first group; refusals trace all non-analysis groups.
+/// Session and source frame join both nodes; the descriptor supplies the epoch.
+/// QUIC dequeue is application observation, never a kernel socket arrival time.
+pub(crate) fn media_record(
+    trace: &Handle,
+    stage: Stage,
+    packet: crate::transport::Packet<'_>,
+    observed: u64,
+) {
+    let Some(trace) = trace else {
+        return;
+    };
+    if trace.media_slots.is_empty()
+        || (packet.spec().first_channel != 0
+            && !matches!(stage, Stage::MediaRefused | Stage::MediaQueueFull))
+        || packet.spec().role == crate::transport::Role::Analysis
+    {
+        return;
+    }
+    trace.record(
+        Token {
+            session: packet.spec().session,
+            ordinal: packet.source_frame(),
+            request: packet.output_frame(),
+            kind: u64::from(packet.spec().stream),
+        },
+        stage,
+        0,
+        observed,
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn media_trace_is_opt_in_bounded_and_preserves_source_identity() {
+    let mut trace = Trace::test_trace();
+    let token = Token {
+        session: 7,
+        ordinal: 633360,
+        request: 634128,
+        kind: 9,
+    };
+    trace.record(token, Stage::MediaAdmission, 0, 634128);
+    assert_eq!(trace.report().media_attempts, 0);
+    Arc::get_mut(&mut trace).unwrap().media_slots = vec![Slot {
+        words: std::array::from_fn(|_| AtomicU64::new(0)),
+    }]
+    .into_boxed_slice();
+    trace.record(token, Stage::MediaAdmission, 0, 634128);
+    trace.record(token, Stage::MediaAdmission, 0, 634176);
+    let report = trace.report();
+    assert_eq!(report.media_attempts, 2);
+    assert_eq!(report.media_overflow, 1);
+    assert_eq!(report.records.len(), 1);
+    assert_eq!(&report.records[0][2..], &[7, 633360, 634128, 9, 0, 634128]);
+    assert_eq!(report.incomplete, 0);
 }
 
 #[cfg(test)]

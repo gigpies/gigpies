@@ -113,8 +113,8 @@ the external hard process deadline remains authoritative.
 
 For bounded software diagnostics, a provider configuration may explicitly set
 `"provider_timing": true`. It defaults to false and is rejected for physical
-providers or durations above 60 seconds. The trace preallocates 139,264 numeric
-64-byte slots (79,264 control and 60,000 source records, about 8.5 MiB), records
+providers or durations above 60 seconds. The trace preallocates 377,057 numeric
+64-byte slots (317,056 control and 60,001 source records, about 23 MiB), records
 outside sample loops, and writes `provider_timing` in the final report. Final
 report materialization needs additional temporary allocations. Disabled mode skips
 trace storage, timestamps and statistics reads, while retaining fixed token
@@ -137,6 +137,59 @@ Desk's corresponding opt-in diagnostics are documented in its native frontend
 contract. Instrumentation perturbs timing, and the partial append-cost measurement
 is not its total overhead. These diagnostics do not relax authority or timing
 requirements.
+
+The `gigpies-remote` executable runs its source/FX future on the calling thread
+and uses two Tokio worker threads for spawned QUIC and control tasks. This keeps
+network progress independent of synchronous source render/control work and burst
+catch-up. The bounded SPSC authority queues remain the only source-owner handoff;
+network workers neither render nor advance the source clock. This isolation is
+not a realtime scheduling or physical latency guarantee.
+An orderly map retirement preserves queued structural completions while stopping
+Brain-media polling. A bounded FX run reserves its final return-budget interval
+inside the configured duration as a connection hold after production stops. This
+avoids discarding the last dequeued block when the mailbox retires on close; it
+is not delivery acknowledgment. Reports expose `shutdown_hold_ms`; sent/admitted
+packet equality still requires independent provider evidence. Fault exits remain
+fail-closed and do not take this graceful hold.
+
+Meter observations retain a40ms minimum production interval per authenticated
+session. One early request may wait for that interval; a second outstanding read
+is refused. The pending table is bounded by `MAX_CONNECTIONS`, is cleared on
+disconnect, and rechecks authorization before producing a fresh snapshot. This
+handles setup/arrival jitter without increasing the observation rate or forcing
+a reconnect loop. Pending reads never reserve a writer lease or modify audio.
+
+An explicit `"media_timing": true` enables a separate fixed 480,000-event lane
+in bounded synthetic provider/Brain runs only. It adds about29.3 MiB of numeric
+storage per enabled process; final JSON materialization costs additional memory.
+Numeric trace pages are touched before source timing starts, avoiding lazy zero-page
+faults on first append. The control lane accommodates four simultaneous Desk scopes
+and owner traffic; source, control and media overflow remain explicit failures.
+Output and revision evidence each retain at most2048 windows, covering60s of owner
+observations plus100ms buckets and control changes. Brain sample windows retain
+native floats during the run and convert to JSON only afterward.
+The provider retains source/control records in `provider_timing`; Brain writes
+`timing`. Source capacity includes the immediate initial tick plus60,000 timed
+ticks, without extending the60-second run cap. Media records join by authenticated
+session and source frame; the report/negotiated descriptor supplies source epoch.
+They cover source send calls, application QUIC dequeue, mailbox admission, Brain
+assembly/processing/send, pre-host refusal and queue pressure. Normal events sample
+the first channel group; refusal/pressure events retain every non-analysis group.
+Trace overflow remains explicit and must not be interpreted as missing wire media.
+Stage37 records source-render thread resource deltas: source frame in ordinal,
+CPU microseconds in request, minor faults in session, voluntary context switches
+in kind, involuntary switches in a and major faults in b. These optional Linux
+`getrusage(RUSAGE_THREAD)` reads add measurement overhead and run only in synthetic
+media diagnostics. They distinguish wall time from accounted thread CPU; they
+do not establish realtime scheduling guarantees.
+
+QUIC dequeue is later than socket arrival; a send call precedes actual wire
+transmission. Only timestamps from the same process may be subtracted. Provider
+send-to-return-dequeue includes both directions, Brain processing and scheduling;
+it is neither QUIC RTT nor physical latency. Host late counters cover host
+admission only: transport/mailbox prefilters can refuse older packets earlier.
+Clean diagnostic acceptance must also check those refusal events and correlated
+source-frame completeness, not just the CLI exit status or host counters.
 
 Focused normal tests: `cargo +1.97.1 test --locked --features hardware-host --lib remote::tests`.
 Actual owner REC evidence is opt-in with `GP05_MANIFEST` set to an accepted manifest:

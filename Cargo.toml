@@ -29,7 +29,7 @@ bytes = "=1.12.1"
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
 
 [features]
-hardware-host = ["dep:alsa", "dep:libloading"]
+hardware-host = ["dep:alsa", "dep:libloading", "tokio/rt-multi-thread"]
 
 [[bin]]
 name = "gigpies-hardware"

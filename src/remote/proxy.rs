@@ -219,7 +219,14 @@ impl AuthorityEndpoint for AuthorityProxy {
         self.check(context)?;
         // Drop on bounded media pressure. Missing wet follows the host's fade;
         // it never stalls source progress or consumes REC capacity.
-        let _ = self.media_in.push(packet.bytes().to_vec());
+        if self.media_in.push(packet.bytes().to_vec()).is_err() {
+            diagnostics::media_record(
+                &self.trace,
+                Stage::MediaQueueFull,
+                packet,
+                self.source_frame().unwrap_or(0),
+            );
+        }
         Ok(())
     }
     fn brain_media(
@@ -237,6 +244,12 @@ impl AuthorityEndpoint for AuthorityProxy {
         Ok(())
     }
     fn poll_brain_media(&mut self, context: &AuthenticatedContext) -> Result<Option<Vec<u8>>> {
+        // A map replacement can retire the mailbox while the network task is
+        // draining its final control reply. Do not abort that writer merely
+        // because this same tick reaches its media drain afterwards.
+        if context == &self.context && self.shared.retiring.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         self.check(context)?;
         Ok(self.brain_out.pop().ok())
     }
@@ -347,14 +360,18 @@ impl AuthorityMailbox {
             };
             diagnostics::record(&self.trace, token, Stage::DispatchBegin, 0, 0);
             let event = match job {
-                Job::Command(payload, token) => Event::Reply(
-                    authority
-                        .dispatch(&self.context, payload, now_ms)
-                        .and_then(|reply| {
-                            reply.ok_or_else(|| "nested deferred authority unsupported".into())
-                        }),
-                    token,
-                ),
+                Job::Command(payload, token) => {
+                    match authority.dispatch(&self.context, payload, now_ms) {
+                        Ok(Some(reply)) => Event::Reply(Ok(reply), token),
+                        Err(reason) => Event::Reply(Err(reason), token),
+                        Ok(None) => {
+                            // The bounded owner retains the pending operation;
+                            // poll_reply below delivers its eventual completion.
+                            diagnostics::record(&self.trace, token, Stage::DispatchEnd, 0, 0);
+                            continue;
+                        }
+                    }
+                }
                 Job::Negotiate(descriptor, token) => Event::Negotiated(
                     authority
                         .negotiate(&self.context, &descriptor)
@@ -396,10 +413,22 @@ impl AuthorityMailbox {
             if packet.spec().session != self.context.session {
                 return Err("host media session".into());
             }
+            diagnostics::media_record(
+                &self.trace,
+                Stage::MediaAdmission,
+                packet,
+                authority.source_frame().unwrap_or(0),
+            );
             if authority
                 .source_frame()
                 .is_some_and(|frame| packet.output_frame() < frame)
             {
+                diagnostics::media_record(
+                    &self.trace,
+                    Stage::MediaRefused,
+                    packet,
+                    authority.source_frame().unwrap_or(0),
+                );
                 continue;
             }
             authority.media(&self.context, packet, now_ms)?;
@@ -430,6 +459,34 @@ impl AuthorityMailbox {
 mod diagnostic_tests {
     use super::*;
     use crate::show::Counter;
+    #[test]
+    fn retirement_during_media_drain_preserves_structural_completion() {
+        let policy = PolicyStore::new(vec![Peer {
+            id: "test".into(),
+            certificate_sha256: fingerprint(b"test"),
+            permissions: std::collections::BTreeSet::new(),
+        }])
+        .unwrap();
+        let context = policy.authenticate(b"test", 91).unwrap();
+        let identity = EngineIdentity {
+            source_epoch: Counter(1),
+            capability_generation: Counter(1),
+            map_generation: Counter(1),
+        };
+        let (mut proxy, mut mailbox) = authority_channel(&context, identity).unwrap();
+        assert!(!proxy.retiring());
+        let completion = serde_json::json!({"state":"final"});
+        mailbox
+            .events
+            .push(Event::Reply(Ok(completion.clone()), Token::default()))
+            .ok()
+            .unwrap();
+        mailbox.shared.retiring.store(true, Ordering::Release);
+        assert_eq!(proxy.poll_reply(&context, 0).unwrap(), Some(completion));
+        assert!(proxy.poll_brain_media(&context).unwrap().is_none());
+        assert!(proxy.retiring());
+        assert!(proxy.dispatch(&context, serde_json::json!({}), 0).is_err());
+    }
     #[test]
     fn event_tokens_survive_interleaved_queries_refusal_and_deferred_final() {
         let policy = PolicyStore::new(vec![Peer {

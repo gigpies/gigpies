@@ -332,8 +332,16 @@ impl ServerSession {
                         self.policy.check(&self.context)?;
                         if bytes.starts_with(b"GBA1") {
                             let _ = authority.brain_media(&self.context, &bytes, now);
-                        } else if let Ok(packet) = media.receive(&bytes, MediaSide::ProcessingNode, authority.source_frame()) {
-                            authority.media(&self.context, packet, now)?;
+                        } else {
+                            if trace.is_some() && let Ok(packet) = crate::transport::Packet::parse(&bytes) {
+                                diagnostics::media_record(&trace, Stage::MediaReceive, packet, authority.source_frame().unwrap_or(0));
+                            }
+                            match media.receive(&bytes, MediaSide::ProcessingNode, authority.source_frame()) {
+                                Ok(packet) => authority.media(&self.context, packet, now)?,
+                                Err(_) => if trace.is_some() && let Ok(packet) = crate::transport::Packet::parse(&bytes) {
+                                    diagnostics::media_record(&trace, Stage::MediaRefused, packet, authority.source_frame().unwrap_or(0));
+                                },
+                            }
                         }
                     }
                     error = writer_error_rx.recv() => return Err(error.unwrap_or_else(|| "control writer closed".into())),
@@ -377,6 +385,10 @@ impl ServerSession {
                         for _ in 0..64 {
                             let Some(bytes) = authority.poll_media(&self.context)? else { break; };
                             media.validate_outgoing(&bytes, MediaSide::ProcessingNode)?;
+                            if trace.is_some() && let Ok(packet) = crate::transport::Packet::parse(&bytes) {
+                                diagnostics::media_record(&trace, Stage::MediaSend, packet, authority.source_frame().unwrap_or(0));
+                                if packet.spec().first_channel == 0 && packet.source_frame().is_multiple_of(4800) { diagnostics::quinn_stats(&trace, Token { ordinal: packet.source_frame(), ..Token::default() }, &self.connection, false); }
+                            }
                             if bytes.len() > max_datagram { return Err("media datagram capacity".into()); }
                             self.connection.send_datagram(bytes.into()).map_err(|e| e.to_string())?;
                         }
@@ -797,6 +809,19 @@ pub struct MediaChannel {
     max_datagram: usize,
 }
 impl MediaChannel {
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn diagnostic_stats(&self, trace: &Handle, source_frame: u64) {
+        diagnostics::quinn_stats(
+            trace,
+            Token {
+                session: self.context.session,
+                ordinal: source_frame,
+                ..Token::default()
+            },
+            &self.connection,
+            false,
+        );
+    }
     fn check(&self) -> Result<()> {
         if self.generation
             != self
