@@ -1,14 +1,111 @@
-# GP07 channel processing, version 2
+# GP07 channel processing (legacy v2/v4 and gate v5)
 
 Accepted four-band GP-07 contract; software implementation and acceptance tracked below. Software-only, fixed 48000 Hz, eight mono inputs;
 no physical/listening acceptance. Existing C-AUDIO:1 and GP03-rendered:1 bytes
 remain unchanged. Processing is an explicit `GP07-processing:2` extension on the
 same private local endpoint. Older providers may disconnect on a v2 probe; clients mark processing unavailable and require explicit reconnect without replay. A disconnect alone does not identify the unsupported version.
 
+## Gate extension (v5)
+
+Dynamic providers accept `GP07-processing:5` in addition to legacy v4. Desk's
+current dynamic session probes v5. Legacy v2/v4 writes cannot contain gate
+settings; an engine with non-default gate settings refuses legacy processing
+requests with `unsupported_version`, rather than dropping state. Old persisted
+engine intent (v1/v2) loads default-bypassed gates. Non-default gate intent uses
+v3 and restores only after current topology/resource admission.
+
+The optional `gate` config object defaults to bypass when absent. Its strict fields:
+
+| Field | Bounds / meaning |
+|---|---|
+| bypass | boolean, default true |
+| threshold_mdb | −90000..0 milli-dBFS, opening magnitude threshold |
+| attack_us | 100..200000 microseconds, finite opening fade |
+| hold_ms | 0..2000 ms continuously below closing threshold |
+| release_ms | 1..5000 ms, finite closing fade |
+| range_mdb | 0..90000 milli-dB attenuation floor |
+| hysteresis_mdb | 0..24000 milli-dB below opening threshold |
+| detector_hz | 0 bypasses filtering; otherwise 20..16000 Hz, below 0.45 × rate |
+| detector_q_milli | 100..10000; detector-only bandpass Q |
+
+`gate::Prepared::new` accepts 8–192 kHz; the live strip remains 48 kHz. Detector
+magnitude is instantaneous absolute amplitude, optionally after one RBJ bandpass.
+Hold bridges waveform zero crossings. Opening and closing use finite cubic
+smoothstep gain ramps; retriggers restart opening from the current gain, with no
+lockout. The bandpass never filters the audio itself. No lookahead is added.
+Coefficients, thresholds and time counts are prepared outside rendering; the
+sample loop has fixed storage and no log/exp/pow, allocations, locks or I/O.
+Default bypass returns the input directly. Nonfinite core input produces zero;
+the surrounding mixer retains its existing source-fault policy.
+
+Gate follows EQ and precedes compressor. Raw recording, raw analysis and raw
+post-mute sends remain upstream. Processed sends, PFL/AFL and FX sends include
+the gate according to their existing tap. Crossfades keep one gate gain/detector/hold/ramp state outside both branches.
+The detector follows the blended EQ signal and applies a common gain before
+both compressors. Unrelated edits do not reset it or double gate evaluation.
+Compressor reduction history is also retained. New source epochs reset state.
+Optional channel `gate` readback contains `state` and positive `attenuation_mdb`,
+separate from `gain_reduction_mdb`. The snapshot frame supplies observation time; state/attenuation is unavailable
+during configuration crossfades or source faults.
+
+`gate::prepare_soundcheck` accepts independently labelled measured hit, bleed and
+decay summaries plus a separate evaluation passage (8..4096 values per array).
+Opening threshold is calibration hit p10 minus 6 dB; calibration hit p10 must
+exceed bleed p95 by at least 12 dB. Every evaluation hit must exceed threshold
+by 3 dB, and every evaluation bleed measurement must remain 3 dB below it. Hold is decay p90
+(clamped 20..2000 ms); release is half that decay (50..2500 ms). Confidence is
+`clamp((separation−6)/18, 0, 1)`. Invalid/insufficient/overlapping evidence returns
+bypass and a reason enum. Settings remain fixed until explicitly replaced.
+`gigpies gate-prepare <measurements.json> <new-proposal.json>` exposes this rule
+without audio I/O and refuses to overwrite its output. Input JSON (maximum
+512 KiB) has `version: 1`, a stable `input`, distinct `calibration_id` and
+`evaluation_id`, and numeric arrays `hits_db`, `bleed_db`, `decay_ms`,
+`evaluation_hits_db`, `evaluation_bleed_db`. The passage IDs identify independently
+measured pre-gate evidence; distinct names alone do not prove independent data.
+Output carries those identities and `proposal` containing config, confidence,
+reason and measured quantiles/evaluation counts. Insufficient separation exports
+a bypassed proposal, not an enabled guess.
+
+Desk's Gate menu offers Manual, Tom and Automatic Import. Manual disables the
+detector filter; Tom requires an explicitly entered measured detector band.
+Automatic Import accepts the absolute proposal path, checks the selected input
+and distinct passage identities, displays confidence/reason, and fills only the
+local draft. Review/Apply still governs the v5 write. The resulting settings are
+frozen; there is no runtime learner. Raw-cue preparation is also available with input JSON `version: 2`: the same
+`input`, `calibration_id`, `evaluation_id` plus `hits`, `bleed`,
+`evaluation_hits`, `evaluation_bleed` arrays of 8–32 absolute local WAV paths each.
+Each file is one independently cued isolated hit/full tail or a non-target bleed
+passage: mono 48 kHz PCM16/24/32, complete 10 ms windows, at most 40.96 seconds.
+The CLI only reads files; `Capture::push` is the bounded software acquisition
+boundary and opens no device. Uncued mixed recordings cannot establish source
+identity and are not automatically classified.
+
+Capture retains at most 4096 peak windows for each of nine detector candidates:
+full-band, 60/90/135/200/300/450/675/1000 Hz, Q 0.7. Coefficients come from the
+runtime gate preparation. Calibration alone selects the largest quiet-hit p10
+minus bleed p95 separation; each bleed passage contributes its maximum, so a
+short transient cannot hide inside a passage percentile. Peak and last window
+within 20 dB of peak determine hit strength and decay. Silent or truncated tails
+refuse preparation. Candidate frequency denotes detector discrimination, not a
+claim to identify the drum's physical fundamental.
+
+Decoded PCM hashes must be unique across all cues, including calibration and
+held-out evidence. The selected frozen settings then run through the same causal
+`Gate::tick` core on each original evaluation WAV, after a silent settling period.
+Any hit with more than 1 dB total energy loss, or any bleed passage opening above
+the attenuation floor, returns bypass with `causal_evaluation_failed`. The output
+includes `causal_evaluation` counts and worst hit energy change; Desk checks these
+on import. The second read must match the captured PCM hash. This bounds software
+acceptance; it does not establish separation in arbitrary performances.
+
+`Gate::process_block` is an offline adapter over the exact live sample core.
+It does not add gating to historical automix settings or regenerate mixes.
+No audition songs, post-render tuning or reference-song targets are used.
+
 ## Signal and state
 
 Raw PCM24 REC and named analysis remain before all processing, byte-identical.
-FOH: raw -> four independent parametric bells -> compressor (including explicit makeup) -> shared
+FOH: raw -> four independent parametric bells -> gate (v5) -> compressor (including explicit makeup) -> shared
 mute -> FOH fader/pan -> existing sum -> existing FX -> existing PA.
 Monitors: raw -> shared mute -> existing independent sends. Advertised processing
 tap is `foh-post-eq-dynamics-v2`; monitor tap is `raw-post-mute-v1`.
@@ -24,8 +121,8 @@ makeup and is positive attenuation, never an output-level meter.
 
 Complete channel replacement commits at the strict next 48-frame boundary.
 Old and freshly prepared target branches run with a linear output crossfade over
-240 frames: boundary sample old, endpoint sample exactly target. Target filter
-and detector histories start zero; old histories continue during the fade. No
+240 frames: boundary sample old, endpoint sample exactly target. Target EQ filter histories start zero; gate and compressor histories are retained.
+Old histories continue during the fade. No
 coefficient interpolation. The local service always renders48 frames per tick.
 The offline Mixer accepts equal-length caller-owned slices, with fixed per-sample
 work and checked frame-counter growth; partitioning the same samples is equivalent. A new uncached processing edit while any processing fade is active

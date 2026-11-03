@@ -2,6 +2,78 @@
 
 Measure an ensemble and optionally propose bounded fader changes from an explicit musical policy. Without a policy, preserve faders and report observations. See [source preservation](SOURCE_PRESERVATION.md).
 
+These commands are components of the automixing work, not a complete unattended
+musical-balance system. The default preserves existing faders. The experimental
+role policy has a lead-presence/guitar relationship but no backing-vocal move;
+the optional hierarchy below solves a supplied ordering rather than vocal
+prominence. The [owning ensemble task](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-auto-ensemble--observation-led-whole-band-automixing)
+tracks the measured decision workflow needed to remove per-song manual tuning.
+
+## Formula-driven spectral candidate
+
+The reference-free spectral experiment uses the production ensemble analyzer and
+`scripts/spectral_balance.py`. It measures every channel before and after channel
+DSP, reconstructs the coherent pre-exciter/pre-FX mix spectrum, and proposes
+bounded reductions against an explicit **equal-power-per-octave** target. This is
+a pink-spectrum engineering hypothesis, not a universal ideal curve or a reference
+recording. It neither copies accepted audition gains nor learns from those mixes.
+
+```sh
+# PREPARED.json preserves the current processing, routing and effect controls.
+target/release/gigpies ensemble-request request.json
+target/release/gigpies ensemble-analyze PREPARED.json SOURCE_DIR scratch-analysis request.json
+python3 scripts/spectral_balance.py compact scratch-analysis measured
+python3 scripts/spectral_balance.py calculate measured/measurement.json calculated
+# Render calculated/settings.json with the existing fixed output-gain workflow.
+```
+
+Keep `request.hierarchy` absent/null and tone profiles empty for this measurement
+flow. Analysis admits prepared unity trims and preserves the native source
+clock/timeline. Optional `compact --families families.json` binds filenames whose
+role is `other` to a known musical family, such as `bass`, `hi_hat`, `keys` or
+`synth`. This supplies identity, not a level or EQ prescription. Unknown families,
+silent sources and room microphones do not receive automatic changes in this
+first spectral policy. Related multi-microphone decisions need explicit grouping
+before this workflow can claim general unattended mixing.
+
+For band bounds `a,b`, the target power is `C * log2(b/a)`. `C` is fitted from the
+octave-width-weighted median measured power per octave in supported bands between 25 Hz and 12 kHz.
+The loss penalizes excess more than 3 dB above that target, weighted by octave
+width. It does not boost absent content to fill every dip. A second cost protects
+an instrument's energy in bands that were not excessive. The solver tests 0.5 dB
+fader reductions and broad bell cuts, picks the largest supported loss reduction,
+and stops when no admissible improvement remains or the finite step budget ends.
+It limits fader reductions to 3 dB, each added bell to 3 dB and new bells to two
+per channel, respecting the existing eight-band limit. Vocal articulation and
+instrument fundamental ranges have a cumulative predicted 1 dB protection budget.
+No source ordering relative to kick or bass is enforced.
+
+The measured mix spectrum retains phase interactions: with `N > 2` channels,
+`P_mix = (sum(P_rest_i) - sum(P_i)) / (N - 2)`. These spectra come from matching
+production Hann windows. Window summaries are duration-weighted, including partial
+tails. The candidate model holds baseline cross terms fixed, evaluates EQ at band
+centres, and refuses material changes in strongly coherence-sensitive bands.
+It abstains from EQ proposals when dynamic EQ is present or observed compression
+exceeds its model's 3 dB reduction budget. These limits make it a conservative spectral proposal;
+they are not proof that compression, excitation or effect returns will follow the
+prediction exactly. Recalculate from the same frozen measurement; do not repeatedly refit the curve
+from its own output and accumulate cuts. The audio uses the real production DSP, unchanged effects,
+limiter and the previous fixed delivery gain, with no post-render level matching.
+
+`measured/measurement.json` retains settings, input identities, activity, raw and
+routed per-channel spectra and measured mix powers. `calculated/calculation.json`
+records the target, each chosen move, cost changes and predicted spectrum;
+`calculated/spectra.html` shows every channel and the mix/target comparison.
+The optional compressed temporal trace emitted by compaction is disposable after
+review when the retained summaries suffice. Remove the large `scratch-analysis`
+output once compact evidence and source identities are retained.
+
+Run `python3 -m unittest discover -s scripts -p 'test_spectral_balance.py'` for the
+focused calculation/streaming regressions. This experiment does not yet implement
+independent vocal/backing prominence, event recognition or a bounded live
+controller. Its output is a calculated candidate for listening, not an automatic
+claim of a musically correct mix. Those requirements remain in the owning task.
+
 ## Commands
 
 Use a new directory for every run. The baseline must already have DI-only bass,
@@ -43,8 +115,10 @@ target/release/gigpies loudness-policy new-loudness-policy.json
 target/release/gigpies loudness-pass baseline-settings.json source-dir new-loudness-pass new-loudness-policy.json
 ```
 
-The default musical intent is **kick 2 LU above bass; all other individual
-sources at least 1 LU below bass**. The policy contains `kick_to_bass_lu: 2`,
+This optional command generates a legacy policy of **kick 2 LU above bass; all
+other individual sources at least 1 LU below bass**. These are command defaults,
+not the current audition intent: the user removed that musical hierarchy. See
+[current balance intent](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-auto-ensemble--observation-led-whole-band-automixing). The policy contains `kick_to_bass_lu: 2`,
 `bass_to_others_lu: 1` and `max_fader_change_db: 6`; all are editable. This is
 an artistic choice, not a broadcasting standard or a universal mix rule.
 The command keeps kick fixed, moves bass toward its offset, and only lowers
@@ -78,7 +152,8 @@ clear against the other instruments. A sub-heavy bass may still consume headroom
 or trigger broadband compression while lacking definition. Use the
 [bass diagnosis and correction pass](BASS_KICK.md) to inspect low-band energy,
 100–400 Hz body, 400–1600 Hz definition, fundamentals, crest loss and compressor
-reduction before selecting tone changes; then remeasure the LUFS hierarchy.
+reduction before selecting tone changes; remeasure a LUFS hierarchy only if
+that optional policy was explicitly selected.
 Do not compensate for weak definition by blindly increasing the whole bass.
 The current bass rule is an optional bounded EQ proposal with held-out guards,
 not an automatic perceptual masking model or a guarantee of audible articulation.

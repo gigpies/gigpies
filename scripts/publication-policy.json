@@ -58,7 +58,9 @@
     "scripts/preview_panel.py",
     "scripts/measure_panel_terminal.py",
     "scripts/preview_panel_providers.py",
-    "scripts/probe_panel_cleanup.py"
+    "scripts/probe_panel_cleanup.py",
+    "scripts/spectral_balance.py",
+    "scripts/test_spectral_balance.py"
   ],
   "binary_artwork": [
     "docs/assets/gigpies-concept.png",

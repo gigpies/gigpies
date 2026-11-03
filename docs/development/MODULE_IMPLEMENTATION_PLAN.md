@@ -55,13 +55,14 @@ it is historical, not a queue to execute. Later accepted work supersedes its lim
 
 | Task | Owner / contributors | State and next action |
 |---|---|---|
+| [GP-GATE](#gp-gate--lightweight-channel-gates-and-tom-decay-control) | GigPies channel DSP; Desk presentation | IN PROGRESS: core, live strip, v5 contract and preparation API; workflow acceptance remains |
 | [GP-PANEL](#gp-panel--shared-physical-instrument-panel) | GigPies shared UI; Desk/Lightdesk consumers | IN PROGRESS: real-terminal proof and initial production adapters; acceptance gates remain |
 | [GP-METER](#gp-meter--measured-audio-on-the-real-desk) | GigPies lead; SHR Desk consumer | IMPLEMENTED / software-validated; owner-artifact P4 BLOCKED: supply reviewed manifest |
 | [GP-FX](#gp-fx--writable-owner-effects-in-the-console) | GigPies lead; SHR FX provider, SHR Desk consumer | SOFTWARE VALIDATED: four Brain auxes and Desk controls; physical acceptance separate |
 | [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) | GigPies lead; SHR Desk consumer | PLANNED: define scene contents, safes and reviewed recall before implementation |
 | [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | GigPies | IN PROGRESS: E0–E6 software validated; E7 recording checks complete, source review and musical qualification open |
 | [GP-AUTO-BASS-LOW](#gp-auto-bass-low--observed-low-energy-and-definition) | GigPies | IMPLEMENTED / software-validated: independent low-energy objective and source-stage guards; musical acceptance pending |
-| [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: kick/bass/other source policy; musical acceptance pending |
+| [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: optional legacy hierarchy; superseded for current auditions |
 | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | GigPies lead; SHR Desk consumer | PLANNED: needs trustworthy measurements and an explicit musical objective |
 | [GP-REC](#gp-rec--complete-integrated-recording-workflow) | GigPies lead; SHR REC provider, SHR Desk consumer | SOFTWARE VALIDATED: reviewed recording workflow, exact 8/16-track acceptance |
 | [GP-H1](#gp-h1--physical-audio-qualification) | GigPies lead; PA/REC/FX owners as needed | PLANNED: separate physical session and observed rig required |
@@ -717,6 +718,58 @@ and [Brain procedure](../reference/BRAIN_AUDIO.md#bounded-physical-followup).
 Keep H8's unresolved timing/right-return evidence. Qualify sustained configured
 hardware deadlines and acoustic protection; software profiles are not hardware proof.
 
+### Next Ethernet session — execution plan, 2026-11-03
+
+State: planned, not run. Source synchronization does not reserve the link or
+authorize PCM, load injection, cable pulls or service changes. Pi5 coordinates
+the session directly; no peer Codex worker is needed. Record a finite reservation
+and acknowledgment from both nodes in the private exchange before measurements.
+Keep SSH on the documented Tailscale aliases; bind test traffic explicitly to
+the observed dedicated Ethernet addresses and verify its route. Historical
+192.168.234.221/222 assignments must be observed again, not assumed from SSH reachability.
+
+The priority is the current authenticated QUIC/media graph, including four FX
+auxes, raw recording and Brain duplex crossings. The accepted October 3 GPA1 UDP
+identity-return benchmark is historical evidence, not acceptance of today's graph.
+Use [remote transport](../reference/REMOTE_TRANSPORT.md),
+[Brain audio](../reference/BRAIN_AUDIO.md),
+[Brain acceptance](../acceptance/BRAIN_AUDIO_ACCEPTANCE.md) and
+[hardware evidence](../acceptance/AUDIO_HARDWARE.md) as the contracts and baseline.
+
+| Order | Bounded experiment | Evidence and pass condition |
+|---|---|---|
+| 1. Inventory | Read link/carrier, negotiated speed/duplex, MTU, addresses/routes, NIC errors, CPU/thermal/throttling state, disks and running owners on both Pis. Identify actual audio cards without opening PCM. | Exact source/library hashes, node roles and explicit socket/channel map; enough storage; no competing build or timing workload. Stop on unknown ownership or route. |
+| 2. Cable baseline | After load authorization: 200 idle pings, then separate 10 s TCP forward/reverse runs and 10 s UDP runs at 25/50/100 Mbit/s using bounded one-shot servers. | Loss, RTT median/p95/p99/max, throughput/retransmissions and NIC-counter deltas. No unexplained idle loss or link errors; UDP loss must be resolved before claiming a healthy audio baseline. RTT is not one-way delay. No MTU/sysctl/governor changes. |
+| 3. Current software graph | Build before reserving timing resources. Use trusted PA/FX/REC libraries, fresh private TLS identity/permissions, synthetic 48 kHz source, 16 inputs and a validated configurable output topology. Run 5 s smoke, then independent 30 s and 60 s trials. | Production QUIC media and control, exact raw-analysis identity, source-frame continuity, four stereo aux sends/returns, unchanged independent monitors and actual post-PA samples. Report queue/loss/late/rejection counters and render/control costs. No unexplained missing media, recorder gaps or source faults in clean trials. |
+| 4. Operator and fault cases | Separate runs, each at most 60 s: actual Desk v5 gate edits, FX edits/tails/panic, REC Start/Stop; then owned Brain-FX loss/restart, Desk disconnect/reconnect and source-epoch replacement. | Applied/readback/settled distinguished; raw REC and local dry path survive remote loss; wet fades and fresh prefill follow source-frame bounds. No replayed mutation, old-epoch audio or automatic rearm. Keep expected loss counters separate from clean-run failures. |
+| 5. Brain local clock | First repeat fake-duplex scenarios over the cable, at most 60 s per process, including monitor selection, talkback release and permission/owner loss. | Both bounded ASRC crossings, source/local epochs, occupancy/ratio bounds, under/overflow, fail-closed destinations and source-clock FX/raw REC isolation. Fake pacing does not qualify oscillator drift or physical latency. |
+| 6. Physical mapping and latency | Only after separate PCM authorization and an observed wiring map: 5 s muted/conservative smoke, then 30 s channel-by-channel electrical loopback. Stagebox soundcard is the reference; Brain local duplex remains independent. | Verify both L/R returns first, then all configured sockets. For UMC1820 + ADA8200, qualify 16 analog inputs/18 outputs and actual ADAT lock; with other hardware, report only that subset. Measure capture-to-output and Brain-monitor/talkback paths independently, with uncertainty and intentional FX delay separated. |
+| 7. Sustained graph | After preceding passes: 60 s, then 600 s physical runs; extend to a separately reserved 30-minute run only if useful for measured skew/thermal behavior. Include admitted PA, gate/EQ/compression, four FX, raw REC and both consoles. | Zero unexplained xruns, source gaps, recorder drops or queue failures; continuous bounded counters, render p50/p95/p99/max and deadline margin, CPU/RSS/temperature and storage throughput. Sparse snapshots and means cannot establish worst-case deadlines. |
+| 8. Recovery | Separately authorize an owned process kill, then physical cable interruption/reconnect; never start with a power cut. | Local Stagebox audio/recording independence, bounded wet/talkback closure, explicit fresh grants/rearm, incomplete-take truthfulness and no stale media after reconnection. Storage power-loss durability remains a separate REC acceptance task. |
+
+Synthetic provider/fake duplex configurations are capped at 60 seconds today.
+Do not label repeated runs as one continuous soak or raise the cap for convenience.
+Long physical runs require explicit activation and an external hard deadline;
+cancel only task-owned processes. Prepare credentials and manifests privately,
+never publish them. Check the executable's actual schema before writing configs;
+do not reuse old stereo/UDP fixture dimensions as product limits.
+
+For each run record topology, block size, negotiated return budget, configured
+device buffers, effect algorithms/parameters, file/source identities and a single
+compact result. Set thresholds before execution; retain failures without silently
+increasing deadlines. Stop escalation after an unexplained xrun, loss, overflow,
+clock discontinuity, clipping, thermal throttle or incomplete measurement. Diagnose
+the failing layer before repeating. Preserve only required failed-case evidence and
+final requested captures; remove disposable trial outputs when idle.
+
+Remaining acceptance outside the cable-only phase: H8 timing discontinuities and
+attenuated right return; real ADAT/socket mapping; independent duplex drift and
+electrical/acoustic latency; aggregate FX/PA/REC deadlines; controller/LED behavior
+(GP-H2), acoustic protection and whole-show recovery (GP-H3). Master gain/speed
+provider integration and saved-show work remain software tasks, not cable tests.
+The independent dev-PC lane is SHR Lux LX-06's software-only output-worker slice;
+its owning module card defines the scope. No audio-side repository is shared with it.
+
 ## GP-H2 — physical dual-console operation
 
 State: IN PROGRESS; semantic menu software is implemented; physical acquisition
@@ -819,6 +872,219 @@ source-linked knowledge routing. Follow the owner's publication authorization;
 source acceptance does not deploy services or authorize device activation.
 
 
+## GP-GATE — lightweight channel gates and tom decay control
+
+State: **IN PROGRESS**, implementation started 2026-10-30. Owner: GigPies channel
+DSP and soundcheck automation; Desk consumes processing v5. Core, live strip,
+persistence and measured-proposal preparation/import are implemented; software validation and
+remaining workflow integration are tracked below. Accepted V8 settings/audio unchanged.
+
+Outcome: reduce between-hit bleed with a smooth, retriggerable closing fade,
+without losing intended quiet hits or adding material multichannel CPU load.
+“Hold” retains an open gate; “release” is the closing fade; “range” limits the
+attenuation rather than requiring complete silence. Hysteresis gives opening
+and closing different thresholds to avoid chatter.
+
+### Processing and modes
+
+- Default bypass, zero added audio delay, fixed per-channel state. One reusable
+  DSP core serves the live channel path and any offline adapter; no separate
+  audition-only gate implementation. Provisional position: after channel EQ,
+  before compressor/makeup. Audit all send taps, source-analysis taps and bypass
+  routing before freezing this ordering. Raw REC and raw source analysis remain
+  upstream and untouched. Clearly label post-gate analysis taps.
+- Basic gate: bounded detector envelope, separate open/close thresholds,
+  attack/open/hold/release/closed state machine and finite attenuation range.
+  Hold counts consecutive time below the closing threshold; return above it
+  resets hold. A new opening crossing during release smoothly reopens from
+  current gain. No gain discontinuities on retrigger, bypass or updates.
+- Tom mode: optional detector-only band selection (one prepared RBJ bandpass in the implemented core), fast attack,
+  minimum open time, then a bounded hold and release envelope chosen for the
+  drum's decay. Audio itself is not band-limited. Specify retrigger and tail
+  protection explicitly; rolls and quiet hits must not be rejected by a rigid
+  lockout. Detector filtering improves discrimination but cannot guarantee
+  separation of overlapping instruments.
+- Smart preparation: soundcheck worker uses pre-gate evidence to estimate the
+  target drum band, inter-hit bleed floor, quiet-hit separation and decay times.
+  Use bounded histograms/envelope summaries and robust quantiles; emit measured
+  evidence, confidence, parameters and reason codes. Split calibration/evaluation
+  passages. No song names, reference recordings or listener-entered per-song
+  offsets in the decision rule. Insufficient separation leaves auto-gating
+  bypassed with an explanation; a musician can still choose manual settings.
+  Freeze prepared settings for performance initially. Continuous learning,
+  FFT/ML detection, lookahead and oversampling are outside the first slice.
+
+### Ordered implementation and acceptance
+
+1. [x] Freeze detector/time definitions, parameter units/ranges, sample-rate
+   preparation, state transitions and numerical guards in focused unit tests.
+   Specify a finite range floor and a finite-duration smooth release reaching
+   that floor. Precompute coefficients/thresholds off the audio thread; no
+   per-sample log/exp/pow, allocations, locks, I/O or unbounded loops.
+2. [x] Implement the reusable core with a cheap bypass path. Preserve detector
+   history where valid across updates; audit current channel crossfades, which
+   temporarily process old and new branches, so unrelated EQ edits cannot reset
+   a gate and cut a transient. Reset only with defined source-epoch semantics.
+   Bound NaN/Inf, denormals and state recovery. If stereo is exposed, use a linked
+   detector and common gain; do not gate the two sides independently by default.
+3. [x] Extend strict configuration, preparation, show persistence, wire snapshots
+   and provider edits together. Existing shows load bypassed through explicit
+   version/migration policy; reject incompatible writes rather than silently
+   dropping fields. Expose gate mode, state, attenuation and detector freshness
+   separately from compressor gain reduction. Preserve review/permission guards.
+4. [ ] Add soundcheck preparation and causal block-stream evaluation. Compare
+   weak/strong hits, ringing tails, cymbal/snare bleed, rolls, retriggers, silent
+   inputs, varying noise and insufficient evidence. Measure missed intended hits,
+   false openings and tail attenuation; retain original signal as the reference
+   for preservation, not a commercial song. Do not tune by post-render scans.
+5. [x] Add a labelled Gate page/mode to the existing compressor-area controls:
+   column 5 threshold/attack, 6 hold/release, 7 range/hysteresis. Keep compressor
+   controls intact when its mode is selected. Detector band and manual/tom/auto
+   options live in the menu. Show open/hold/closing/closed and actual attenuation.
+   Do not require unverified hardware Shift events to operate the gate.
+6. [x] Benchmark baseline vs bypassed/basic/tom modes at 16/24/32/48 channels,
+   48 kHz and supported block sizes. Include all channels triggering together,
+   active tails and simultaneous configuration crossfades. Report added CPU time
+   per block, deadline margin, distribution/max, and fixed state bytes/channel
+   on the target Pi. Reserve a provisional added-cost budget of <=5% of the
+   block deadline at 48 channels; this is an acceptance target, not a measured
+   capacity claim. If exceeded, optimize or narrow enabled modes before adoption.
+7. [x] Run focused DSP/contract tests during work and the complete normal
+   production suite for the engine/schema integration. Keep long benchmarks and
+   listening renderers opt-in with a documented command. Listening/hardware
+   acceptance remains distinct; do not regenerate accepted mixes automatically.
+
+### Current implementation and remaining acceptance
+
+`src/gate.rs` owns the reusable prepared DSP and measured-summary preparation API.
+`channel_processing::Strip` applies it after EQ/before compression, preserving
+one shared gate history across configuration crossfades. Processing v5 carries gate config and
+separate state/attenuation readback; engine intent v3 persists it. Legacy intent
+loads bypassed and legacy writes cannot silently discard gate settings.
+Desk has the six labelled Gate controls, detector frequency/Q menu fields,
+reviewed edits and separate attenuation text. See [parameter and preparation
+contract](../reference/CHANNEL_PROCESSING.md#gate-extension-v5).
+
+The bounded `gate-prepare` CLI exports identified measured-summary proposals.
+Desk's Manual/Tom/Automatic Import menu uses existing local draft/review gates;
+Automatic shows confidence/reason and checks input and passage identities.
+
+Raw-cue capture, calibration-only detector selection and causal held-out WAV
+evaluation now supplement summary import. Cues identify isolated target/bleed
+passages; arbitrary mixtures remain deliberately ambiguous. The v2 file workflow
+rejects duplicate decoded PCM and changed second-read evidence. No device capture
+or accepted-mix rendering occurs. See the owning processing reference.
+
+Actual synthetic producer-to-Desk v5 acceptance now covers Manual and imported
+reviewed gate edits, correlated confirmed readback, unchanged other inputs,
+draft selection fences, read-only reconnect without replay, and stale refusal.
+Master speed/provider acceptance is still unfinished software, separately from
+physical/listening qualification.
+
+Final continuation production validation (Rust 1.97.1, shared build lock,
+`CARGO_INCREMENTAL=0`, `--locked -j1 --all-targets`): GigPies default **503 passed,
+22 ignored**; `hardware-host` **588 passed, 54 ignored**. Desk default **375 passed,
+28 ignored**; `native` **378 passed, 28 ignored**. All runs finished without
+failures. Focused Desk checks: controller flow **6**, Frontend output-failure
+isolation **1**, gate decoding/evidence consistency **2**. The actual v5 driver
+passed again against the rebuilt producer. Historical/exhaustive campaigns,
+physical devices and long benchmarks were intentionally skipped; no accepted
+mixes or audition renders were generated. The shared widget was unchanged in
+this continuation; its prior 13-test result is retained, not presented as a new run.
+
+Warnings-denied all-target Clippy passed for GigPies `hardware-host` and Desk
+both default/native; rustfmt checks passed from each canonical checkout. Closeout
+held the shared build lock, checked process executables/open file references,
+and removed **233** task-run test executables plus temporary logs: **22,308,847,616
+allocated bytes (20.78 GiB)** reclaimed. Applications, reusable build libraries,
+original ignored media and the supplied screenshot remain. Targets retain about
+4.8 GiB (GigPies) and 13 GiB (Desk) of applications/reusable libraries; free space
+is about 47 GiB. No source commits,
+publication, device activation, controller-memory changes or audition renders occurred.
+
+Continuation evidence (2026-10-30): focused gate integration **8 passed**.
+Causal 48 kHz stream: **5/5** intended hits preserved, worst energy change
+**−0.008905 dB**, tested ringing-tail change **0 dB**, isolated bleed **−24 dB**.
+Partitions 1/47/48/128/256/1024 samples produce identical output. Independent raw
+cue workflow: **8/8 hits**, **0/8 false-opening passages**, worst hit energy
+change **−0.213963 dB**. A single held-out bleed transient now refuses auto-gating
+instead of being hidden by p95. Existing strip timing benchmark below was not
+rerun: sample arithmetic is unchanged, and new capture/evaluation is control-side.
+
+Actual v5 test: build `cargo build --locked -j1 --example spectrum-source` in
+GigPies, then in Desk run `GP_GATE_SOURCE=/home/shome/p/gigpies/target/debug/examples/spectrum-source
+cargo test --locked -j1 --test gp07_frontend gate_v5_actual -- --ignored --nocapture`.
+Use the shared build lock and `CARGO_INCREMENTAL=0` for both commands. The test
+owns a temporary private endpoint and deterministic 16-input producer, cleans it
+on exit, and opens no hardware. It passed **1/1**; this is actual transport and
+frontend acceptance, beyond the frozen codec fixture.
+
+Software validation (2026-10-30): complete default and `hardware-host` normal
+production suites were run (497 and 582 cases respectively, with 22/54 opt-ins
+skipped). Frozen pre-gate admission-size comparisons initially failed; their
+original bytes were retained and the exact added state reservation was checked
+in focused reruns. Final feature-library run: **139 passed, 10 ignored**; corrected
+Brain fixtures: **12 passed**; gate/CLI integration: **4 passed**. These include the
+new identified-proposal unit/CLI cases added after the complete runs. No unresolved
+test failure remains. Warnings-denied all-target hardware-host Clippy passed.
+
+Desk: **371 default tests passed, 27 ignored** in the final run. The native suite
+passed **373, 27 ignored** before the last generic bank-projection regression was
+added; that regression passed in the final default run. The final unavailable-Master recording projection then passed all three focused
+keybed cases. Both all-target Clippy configurations (default/native) passed with
+warnings denied. Shared-widget
+suite: **13 passed**. Gate timing/retrigger/quiet rolls, crossfade preservation,
+allocation guards, v5/legacy persistence, prepared import/review, complete
+controller messages, Shift loss, rate independence, gain guards, output failure/
+coalescing and keybed identity/status cases are covered. Physical tests, historical
+auditions, exhaustive research and unrelated opt-in campaigns were intentionally
+skipped; only the gate overhead benchmark below was explicitly selected.
+
+Reproduce normal suites with `CARGO_INCREMENTAL=0 cargo test --locked -j1
+--all-targets` (add `--features hardware-host` in GigPies or `--features native`
+in Desk); focused CLI: `cargo test --locked -j1 --test gate`. No accepted mixes or
+controller memories were changed, and no hardware messages were sent.
+
+Closeout removed 22,521,180,160 allocated bytes (20.97 GiB) of task-run test
+executables, temporary widget output and disposable logs/fixtures. Original media,
+authored source, applications and useful build libraries remain. Normal build
+directories retain about 4.7 GiB (GigPies) and 13 GiB (Desk); no unrelated checkout
+or running application output was cleaned. Final free space is about 47 GiB.
+
+Validation benchmark (2026-10-30, Raspberry Pi 5 Model B Rev 1.1, Rust 1.97.1,
+release profile, 48 kHz): 20 warm-up blocks and 500 measured blocks per case.
+All strips trigger together, continue through tails, and retrigger. Crossfade
+cases request a change every block (more often than production admission allows).
+Coefficient preparation is outside timing; EQ and compressor are bypassed in
+all cases to isolate gate overhead. Baseline executes the same strip layout with
+the gate call disabled. Values below are microseconds; added p99 is
+the difference of independently timed p99 distributions, not a per-block pairing.
+
+| Inputs | Frames | Baseline median/p99 | Bypass Δp99 | Basic Δp99 | Tom Δp99 | XF baseline p99 | Basic XF Δp99 | Tom XF Δp99 | Tom XF max | Tom XF p99 margin |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16 | 48 | 5.65/5.67 | 1.63 | 5.44 | 7.20 | 10.30 | 8.37 | 12.04 | 26.39 | 97.77% |
+| 16 | 128 | 15.02/15.02 | 4.28 | 14.72 | 19.78 | 23.76 | 26.06 | 35.98 | 62.80 | 97.76% |
+| 16 | 256 | 30.00/30.00 | 10.05 | 31.20 | 40.65 | 47.17 | 47.72 | 66.46 | 115.28 | 97.87% |
+| 24 | 48 | 8.22/8.24 | 2.09 | 8.28 | 11.26 | 14.00 | 13.56 | 20.54 | 38.39 | 96.55% |
+| 24 | 128 | 21.85/21.89 | 6.09 | 23.35 | 30.54 | 36.31 | 37.28 | 50.98 | 89.17 | 96.73% |
+| 24 | 256 | 43.67/45.63 | 11.80 | 42.85 | 58.67 | 68.85 | 71.78 | 99.43 | 184.03 | 96.84% |
+| 32 | 48 | 10.78/10.78 | 2.89 | 11.13 | 14.69 | 18.45 | 20.13 | 27.41 | 48.65 | 95.41% |
+| 32 | 128 | 28.67/28.68 | 9.17 | 30.72 | 40.22 | 48.17 | 47.87 | 68.65 | 118.06 | 95.62% |
+| 32 | 256 | 57.31/59.19 | 16.24 | 57.59 | 77.20 | 90.31 | 94.50 | 131.54 | 222.29 | 95.84% |
+| 48 | 48 | 15.89/15.91 | 6.20 | 21.22 | 24.22 | 32.28 | 31.15 | 35.89 | 69.04 | 93.18% |
+| 48 | 128 | 42.31/44.09 | 11.83 | 42.89 | 59.41 | 70.46 | 72.43 | 101.02 | 172.81 | 93.57% |
+| 48 | 256 | 84.59/87.17 | 29.92 | 85.87 | 118.13 | 133.80 | 141.37 | 198.65 | 335.18 | 93.77% |
+
+At 48 channels, worst-mode incremental p99 uses **3.59%, 3.79%, 3.72%** of the
+48/128/256-frame deadlines (1.000/2.667/5.333 ms): below the provisional 5% target
+in this run. Gate state is **168 bytes/channel**, complete strip **1,144 bytes**
+(previous strip 672 bytes); admission reserves two strips per input. The benchmark
+is deliberately opt-in and does not establish a whole-engine/PA/FX/transport
+budget, sustained physical operation or clock lock. No audio was rendered.
+
+Reproduce: `CARGO_INCREMENTAL=0 cargo test --locked -j1 --release --lib
+ gate_benchmark -- --ignored --nocapture`.
+
 ## GP-PANEL — shared physical instrument panel
 
 State: **IN PROGRESS**. Owner: GigPies integration/shared presentation package;
@@ -830,6 +1096,61 @@ Preserve the existing GP-UI-COMPARE record and both contributor-plan edits.
 Outcome: compact Ratatui production consoles with reusable authored colour PUA
 material tiles, ordinary readable text and actual provider state. An actual
 terminal specimen must pass visual/cell acceptance before production migration.
+
+### Three-row keybed flow plan
+
+2026-10-30: screenshot inspected and user intent incorporated, including solo
+and mute in the status row. **Shared widget and Desk integration implemented;
+software/physical acceptance remains bounded below.** Contract: [three-row channel keybed](../reference/INSTRUMENT_PANEL.md#three-row-channel-keybed).
+This task owns the shared widget and Desk integration plan; no Lightdesk channel
+semantics are inferred. The inspection table records the pre-implementation gaps;
+the current checkpoint is under Controller/keybed implementation below.
+
+| Inspected implementation | Difference from requested flow |
+|---|---|
+| `shr-desk/src/midi.rs`, fixture decoder | Note-on produces numbered Select; fixture has 36 inputs and no explicit Master key. It is not a learned hardware map. |
+| `shr-desk/src/frontend.rs`, navigation and action dispatch | Uses 12-input banks and input-index selection; direct `Action::Select` is unavailable in real provider mode. Master EQ is a separate action path. |
+| `shr-desk/src/channel_panel.rs` | Selected-channel controls have fixed layout/hit areas; no persistent three-row keybed. Reserve space without clipping pots, EQ or review controls. |
+| `shr-desk/src/modules.rs::Recording` and `frontend/recorder.rs` | Take mapping/state and counters exist, with a dedicated Recorder page. They do not supply independent per-track arm/durability states or the requested keybed indicators. |
+| `shr-desk/src/frontend.rs`, mute action | Existing mute action can inform the corresponding readout after confirmation. Solo requires an owner/contract audit; selection and monitor routing are not solo evidence. |
+| GigPies `src/instrument-panel/` | Shared cell rendering is the widget owner; a new screenshot asset or copied consumer implementation is unnecessary. |
+
+Implement in dependency order:
+
+1. [x] Define stable-ID input-or-Master selection and independent R/S/M
+   projections. Audit confirmed mute and solo ownership, freshness and pending
+   semantics; identify any missing solo contract before claiming support.
+2. [ ] Build the pure three-row shared widget and cell hit map. Fit 24+Master,
+   including three simultaneous status characters on black keys, green selection
+   and monochrome fallback. Validate a specimen at the supported 160×49 geometry (45 content rows plus keybed/footer)
+   and minimum width; retain full identity/bank context in existing header/footer.
+3. [x] Connect Desk production selection through the common action path, keeping
+   draft/review guards, cancellation and generation fences. Master opens the
+   appropriate master context without granting permissions or changing audio.
+   Map the existing 12-input detail views to the same selected ID; add explicit
+   24-slot overview paging for larger configurations and dim unavailable slots.
+4. [x] Keep status refreshed when Recorder is closed. Audit polling/subscription
+   ownership, then project recording membership by stable ID and current take/
+   epoch. Show preparing/finalizing, stale and faults honestly. Connect confirmed
+   mute/solo without optimistic indicators or adding status-cell toggle actions.
+5. [ ] Test widget geometry/hits, selected channel 15, Master, simultaneous RSM,
+   selected-and-muted/soloed/recording, 16/24/32/48 input maps, bank transitions,
+   reordered inputs, stale/disconnected/fault state and blocked draft navigation.
+   Verify all original Channel, Master, EQ, FX, send and Recorder flows remain
+   reachable. A 24-slot UI fixture does not claim 24-track recorder acceptance.
+6. [ ] Inspect the real terminal layout and navigation. Keep learned physical
+   note mapping/device tests as a separate authorized acceptance step; fixture
+   note numbers and this screenshot are not hardware evidence.
+
+Additional flow direction: [EQ Shift and slow master speed control](../reference/INSTRUMENT_PANEL.md#rotary-and-master-strip-flow-direction).
+These bindings need verified physical input events. No compressor Shift action
+is agreed; Gate is implemented in a separate labelled mode under GP-GATE.
+
+Next acceptance: inspect the integrated terminal at 160×49 and qualify the
+physical controller profile. Shared widget, stable selection, paging and status
+projection are implemented; the detailed checkpoint below separates software
+from physical evidence. Original screenshots remain in ignored artifacts; no
+bitmap substitutes were generated.
 
 ### Concrete execution plan
 
@@ -1587,6 +1908,40 @@ executable, set `GP_DESK_SPECTRUM_TEST` to that exact executable, and run GigPie
 for authenticated software-only acceptance. Credentials and subprocess endpoints
 are private temporary test resources and are removed by the harness.
 
+### Controller/keybed implementation — 2026-10-30
+
+Continuation: `FeedbackWorker` now owns the explicit injected output on an
+independent thread. Frontend attaches/detaches it and publishes confirmed action
+projections in the normal pump, repainting across generations. Latest-state
+coalescing and bounded batches remain; blocked sends cannot block input or
+nonblocking detachment. Endpoint implementations must bound their own send time.
+No OS MIDI port or device memory was opened/changed. The pure speed model now
+integrates prior velocity through centre transitions, retains elapsed motion,
+and drops stale-input/application pending motion. Dead zone/max speed remain
+8% / ±0.5 dB/s. Dedicated provider Master target, coherent post-FX/pre-PA gain,
+persistence and speed-to-provider integration **remain unfinished software**.
+Selected-Master pan/mute remain explicitly unavailable, with no input fallback.
+
+
+Shared package 0.3.2 adds a three-row 24-slot-plus-Master character keybed. Desk
+consumes its checksum-verified package; Lightdesk remains unchanged at 0.3.1.
+Desk maps displayed slots to provider input IDs, preserves draft/review fences,
+projects fresh mute/recording evidence and shows unknown solo (no provider solo
+contract). PageUp/PageDown changes the display bank independently of 12-input
+detail views. The standard terminal reserves four rows for keybed plus footer
+and requires 160×49 cells. Original ignored screenshot media is preserved.
+
+Desk `controller_flow` supplies endpoint-qualified profiles, explicit held-Shift
+messages, alternate rotary CC normalization, two pad banks, release edges,
+relative gain guards, a tested Master speed model and a bounded/coalesced output
+transport. No hardware messages were sent. All physical bindings remain
+unqualified until captured. The frontend refuses Master gain/pan: the existing
+provider has no dedicated Master target. Speed-to-provider integration therefore
+remains open; it is not an implemented live Master strip. Gate mode/manual/tom/
+automatic-import actions are available through the controller menu. Physical
+feel/LED/Shift qualification remains open. Input context changes reset held
+controls; a known held Shift must release before a new context accepts rotations.
+
 ### Retained evidence and next action
 
 User authorized installing tools on 2026-10-11; no TV connection was required for
@@ -1607,9 +1962,12 @@ those requirements remain; do not archive it as a completed migration.
 
 ## GP-AUTO-LUFS — offline kick-led source hierarchy
 
-State: **IMPLEMENTED / software-validated; musical acceptance pending**.
-Owner: GigPies. Scope authorized 2026-10-28: offline automixer rules, kick 2 LU
-above bass and all other individual sources at least 1 LU below bass.
+State: **IMPLEMENTED / software-validated; musical policy superseded for current auditions**.
+Owner: GigPies. Historical scope authorized 2026-10-28: offline automixer rules,
+kick 2 LU above bass and all other individual sources at least 1 LU below bass.
+The user has removed this hierarchy from the current mixing intent; it remains
+an optional implemented policy, not an active requirement. Current intent and
+listening feedback are owned by GP-AUTO-ENSEMBLE below.
 
 Implementation and usage: [owning balance guide](../guides/BALANCE_PASS.md#kick-led-lufs-hierarchy),
 `src/automix/hierarchy.rs`. Reuse production channel DSP/routing and integrated
@@ -1627,11 +1985,13 @@ Acceptance:
   Python production checks: 50 passed. CLI defaults/non-overwrite, formatting and
   all-target Clippy with warnings denied pass. Private renders, auditions and
   hardware qualification were intentionally not run.
-- [ ] Musical acceptance on selected material, including bass definition, kick impact
-  and vocals below bass; no listener verdict inferred from LUFS.
 
-Next action: audition a selected recording with the explicit policy and review
-bass tone before final loudness placement; physical activation and live automation are separate from this offline rule.
+The former listening gate requiring vocals below bass is superseded. No listener
+verdict is inferred from LUFS.
+
+Next action: retain this optional capability; do not apply it to current auditions
+unless explicitly selected again. Physical activation and live automation remain
+separate from this offline rule.
 
 ## GP-AUTO-BASS-LOW — observed low energy and definition
 
@@ -1654,7 +2014,8 @@ and local evidence folder were unavailable here; no new song outcome is claimed.
   453 Rust tests passed, 20 historical/opt-in tests skipped; 50 Python tests passed.
   Formatting, all-target Clippy with warnings denied, publication index and
   knowledge validation pass.
-- [ ] Listening on actual material, then remeasure the GP-AUTO-LUFS 2 LU / 1 LU hierarchy.
+- [ ] Listening on actual material against current musical intent; no kick/bass/vocal
+  LUFS hierarchy is required for current auditions.
 
 Next action: obtain an available selected source for musical acceptance, with
 explicit tonal intent; no automatic source normalization,
@@ -1689,12 +2050,141 @@ subject to the repository's existing authorization rules. Do not infer a live
 rollout from successful offline work; [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance)
 owns later live integration, with PA behavior in SHR PA and wet DSP in SHR FX.
 
-The user's accepted balance intent remains **kick 2 LU above bass; every other
-individual source at least 1 LU below bass**. This includes snare and vocals; do
-not silently impose a conventional vocal-first mix. It is a contribution-level
-musical policy, not a transient, peak or whole-ensemble dominance guarantee.
-If intelligibility or a technical guard conflicts with that policy, report the
-conflict and retain a safe candidate rather than rewrite the musical objective.
+**Current balance intent (user reconfirmed 2026-10-30): the previous musical
+hierarchy constraints are removed. The balance is even, with vocals already
+raised; there is no required kick-over-bass offset or vocal-below-bass ceiling.**
+“Even” describes the requested balance, not a new equal-LUFS target for every
+source. Do not reinstate the historical 2 LU / 1 LU policy from old plans,
+command defaults or validation records. Technical safety protections are separate
+from these removed musical constraints.
+
+**Automation requirement (user reconfirmed 2026-10-30): source levels must be
+calculated from soundcheck evidence and a reusable musical objective, without
+per-song listener instructions.** V6 is an accepted listening checkpoint for these
+three recordings, not a calibration/reference target or universal +1 dB rule.
+The user explicitly rejected using these songs as reference targets and requested
+measurement-driven spectral calculation against an explicit target curve. Its existing vocal gain stays in
+those settings; do not repeatedly apply it or treat it as an implemented automatic
+policy. Earlier V5 +3/+5 dB lead adjustments were manual artistic decisions, not
+outputs of a reproducible automatic level calculation. Backing balance remains
+unresolved by the algorithm; do not substitute another hand-picked gain step.
+
+### Calculated musical balance — required completion work
+
+The [2026-10-30 decision-path audit](../archive/studies/AUTOMIX_DECISION_AUDIT_2026-10-30.md)
+traces source settings, calibration, tone/dynamics, balance, FX, rendering and
+listening provenance. Existing E0–E6 validation does not establish unattended
+musical balance. The default balance path preserves faders, the experimental
+path omits backing-vocal moves, and the ensemble fader path implements only an
+explicit hierarchy. These are implementation gaps, not requests for the listener
+to provide per-channel target dB values.
+
+Next action: implement a measured level-decision slice for lead and backing vocals
+within the ensemble, with an explicit reusable objective and traceable calculations;
+then extend that contract across the band. Keep V6 as a listening checkpoint,
+not a calibration target, hard-coded answer or unseen qualification recording.
+
+- [ ] **Source/control provenance:** distinguish measured calibration, preset,
+  inherited fader, operator override and solver-selected gain. No inherited offset
+  is silently accepted as the desired balance. Preserve genuine operator choices
+  explicitly; grouping must distinguish direct/room captures, doubles and separate
+  singers. Track processing stage and source identity for each measurement.
+- [ ] **Activity and context:** measure each performance and its actual simultaneous
+  accompaniment after current channel processing; inspect direct voice separately
+  from dedicated/shared returns. Cover quiet/strong phrases, sparse/dense sections,
+  solo backing entries and overlap with the lead. A first lead channel's activity
+  cannot stand in for every singer. Missing/bleed-dominated evidence must not boost
+  an idle microphone or be treated as measured silence of the singer.
+- [ ] **A reusable objective:** define measurable broadband contribution,
+  articulation/competition and phrase-coverage terms, separately for lead and
+  backing performances. Select and document numerical targets through development
+  evidence and independent listening qualification, not per-song guesses or raw
+  V6 fader matching. Equal standing does not mean equal input RMS/LUFS or equal
+  fader positions. Spectral proxies must not be called proven audibility.
+- [ ] **Calculated actions:** derive gain candidates from target-versus-measured
+  errors; evaluate a bounded joint choice for the whole mix, including competing
+  sources and backing ensemble sum. Separate persistent level deficiency from
+  excessive dynamics, tonal competition and wetness. Account for nonlinear DSP
+  and post-fader returns; a simple dB subtraction is only valid for a compatible
+  linear level metric with fixed context. Record observations, objective, chosen
+  delta, constraints/confidence and predicted/resulting metrics for every move.
+- [ ] **Automatic completion:** one soundcheck decision workflow supplies the
+  reusable policy and decisions; it must not require the listener to enter an EQ
+  target, a backing offset or another +1 dB after each attempt. Insufficient
+  evidence should retain a safe state and report the specific missing capture,
+  rather than claim mixing success or silently preserve a bad preset as optimal.
+- [ ] **Validation:** focused regressions must cover artificially raised/lowered
+  input levels in the linear case, inherited backing-fader offsets, changed singer
+  counts/coherent groups, sparse phrases, bleed, quiet words, dense accompaniment,
+  post-fader FX, missing evidence and bounded repeatability. Verify both correction
+  of a known level error and preservation of a balanced case. Freeze policy before
+  held-out passages and reserve unseen sessions for generalization. V6 preference
+  is development evidence; acceptance must not depend on song names or exact gains.
+- [ ] **Live contract in GP-AUTO:** bounded source-frame observations and asynchronous
+  decisions, confidence gating, deadbands and controlled gain ramps, current-state
+  revisions and manual override. Soundcheck data must suffice; no dependence on
+  future whole-song audio, completed WAV exports or blocking render checks. Keep
+  audio running independently, avoid gain chasing and retain the existing limiter
+  without using it as the musical-balance objective. PA/acoustic acceptance remains
+  separate from electrical mix evidence.
+
+
+### Reference-free spectral calculation, 2026-10-30
+
+User-authorized next experiment: calculate a mix from measured channel spectra
+and an explicit spectral curve; do not use the three audition songs as reference
+profiles. The initial implementation is `scripts/spectral_balance.py`, reusing
+production `ensemble-analyze` observations. The owning
+[balance guide](../guides/BALANCE_PASS.md#formula-driven-spectral-candidate) defines
+the formula, bounded search, preservation, model limitations and reproducible
+commands. Existing V6 controls are the starting state, not target fader values.
+
+Measurements include all channel stages and simultaneous rest-of-mix spectra;
+compaction retains raw/routed spectra, identities and duration-weighted coherent
+mix powers. The solver fits the vertical position of an equal-power-per-octave
+curve, selects supported fader/EQ reductions, and emits settings plus a per-channel
+spectral report and decision record. It does not invoke the removed hierarchy,
+reference learning, remastering or post-render audio scans. The vocal/backing
+prominence and live-control checklist above remains open; a spectral candidate
+must not be misreported as completion of those different requirements.
+
+Validation: 17 focused spectral/streaming regressions and the complete normal
+Python suite (67 passed); normal Rust production suite (490 passed, 21 existing
+opt-in tests ignored); complete temporary publication index (780 entries) and
+whitespace checks passed. The spectral target is octave-width weighted, so splitting
+a frequency band cannot change the fitted reference level. Strong-coherence,
+silence, identity, level-scale, dynamic-processing and EQ-capacity guards are tested.
+
+All 64 routed channels across the three local sessions were measured on their full
+native timelines. The calculated changes are:
+
+| Session | Formula-selected changes from V6 |
+|---|---|
+| Complainiacs | Kick fader -0.5 dB; bass bell about 205 Hz/-1 dB; first electric guitar bell about 205 Hz/-0.5 dB |
+| Catbite | Bass bell about 110 Hz/-1 dB |
+| Dark Ride | Kick fader -0.5 dB plus 50 Hz/-0.5 dB bell; first bass path bell about 110 Hz/-1 dB |
+
+All added bells use Q 0.8. Vocals, effects, other controls and fixed final output
+gains are retained. These are the outputs of the same formula and guards, not
+hand-entered song corrections. Numerical excess-loss predictions fall from
+4.265 to 1.782, 2.386 to 1.436 and 1.660 to 0.289 respectively; they are not musical
+quality ratings or post-render measurements. V7 calculated auditions and channel
+spectral reports are ready in ignored `listen/` and
+`artifacts/calculated-mix/`. The listener subsequently accepted V7 as much better. No post-render
+audio scans, historical/exhaustive campaigns, playback or hardware tests ran.
+V7 is the accepted listening checkpoint; no audition recording is a solver
+reference target. V6 settings remain reproducible from the frozen measurement.
+
+The listener-requested final mix is V8: +1 dB on every `lead_vocal`
+and `backing_vocal` fader, including the whisper double, from V7. Vocal room,
+all EQ, effects/send controls, other faders and fixed output gains are unchanged.
+This is an explicit listener adjustment, not a newly calculated universal vocal
+rule. Its settings are checked for that exact delta; no reanalysis, post-render
+audio scans or new production-suite run is needed for this settings-only change.
+Current output paths/settings are recorded in ignored `artifacts/full-production.json`;
+On 2026-10-30 the listener accepted V8 for all three songs as the best result
+and suitable as final. V8 supersedes V7 as the accepted final listening result;
+this does not establish live automation or hardware acceptance.
 
 ### Repository audit and reuse
 
@@ -1741,7 +2231,8 @@ archived report or let missing media prevent synthetic/software progress.
    quantities defined by R1/R2. Also report common-window energy comparisons, active
    occupancy and per-section distributions. A hit or masked subset shorter than the
    standard window is an event energy metric, not a new kind of LUFS. Preserve the
-   user's whole-source hierarchy while exposing its section/activity limitations.
+   explicitly selected optional whole-source hierarchy while exposing its
+   section/activity limitations; current auditions do not select that policy.
 4. **Context.** Use fixed raw/baseline activity/event masks, quiet/strong strata,
    attacks/sustains/fades, supported pitch/register and simultaneous competitors.
    Compare coherent source groups and the actual remaining mix, including signed
@@ -1792,7 +2283,7 @@ are ours and must survive the indicated tests.
 | Drum room / vocal room / acoustic ambience | Direct/room relationship, late energy, stereo/mono behavior, sustained bleed and decay | Preserve intended space; use bounded tonal/level proposals with direct-source context. No dereverberation or extra FX inferred from a name; no per-room equal-loudness normalization |
 | Electric rhythm / lead guitar | Low contamination versus register support; existing 100–400 body / 800–3200 presence; 2–6 kHz emphasis; chords, sustained notes, palm-muted events, fades, vocal/bass overlap | Extend `expert`/`tone`, retain multi-path identity and existing decay protection. Broad static relief, explicit dynamics relief and later time-selective cuts. Protect low-register body, pick definition and distortion character; no exact technique claims from sparse features |
 | Acoustic guitar | Low-body versus handling/proximity energy, 1–5 kHz articulation, upper string noise, stereo/pickup/mic relationship, quiet fingerstyle/strums | Preserve resonance, quiet articulation and natural decay; distinguish intermittent noise from sustained tone before HPF, EQ or dynamic candidates. Do not use electric-guitar settings by default |
-| Lead / backing vocals | Phrase activity, low/plosive events, body, roughly 1–4 kHz articulation, 4–10 kHz sibilance, breaths, quiet words and competing guitars/returns | Explicit tone/compression policies; event-sensitive de-essing later. Protect vowels, consonants, breath and quiet phrases; cymbal bleed must not become a sibilance detector. Resolve competition within the user's hierarchy; report conflicts instead of raising vocals above bass silently |
+| Lead / backing vocals | Phrase activity, low/plosive events, body, roughly 1–4 kHz articulation, 4–10 kHz sibilance, breaths, quiet words and competing guitars/returns | Explicit tone/compression policies; event-sensitive de-essing later. Protect vowels, consonants, breath and quiet phrases; cymbal bleed must not become a sibilance detector. Resolve competition against current musical intent; no vocal-below-bass ceiling applies to current auditions |
 | Keys, synths, piano, strings, winds and other declared sources | Register, attack/sustain, stereo content, broad-band support, intentional bass/bright voicing and competing roles | Current `Other` needs an explicit family/capture/profile binding. Generic measurements always available; add supported family rules with fixtures, starting from representative available material. Unknown or unsupported sources preserve sound and report which evidence/profile is missing |
 | Generated returns / printed effects | Send-linked timing, wet/dry level, spectral/tail competition, processing already printed into source | Observe existing generated FX in composition. Reuse the owning FX APIs for allowed changes. Never count a return as a second independent instrument or silently double-process a printed effect |
 
@@ -1832,8 +2323,9 @@ candidate families from the role table. Keep baseline event masks and note suppo
 validate quiet hits, overlapping hits and low-end competition in the same mix.
 Use controlled EQ-versus-compressor comparisons to explain proposed processing.
 Expose the existing bass low objective through the shared request without silently
-enabling it in legacy policies. Integrate the user's 2 LU / 1 LU hierarchy after
-processing; retain separate processing-only and level-only evidence.
+enabling it in legacy policies. Support an explicitly selected optional hierarchy after
+processing; retain separate processing-only and level-only evidence. The historical
+2 LU / 1 LU policy is not the current audition objective.
 Gate: end-to-end synthetic band example detects and improves a known fault while
 preserving a matched no-fault example, ghosts/fundamentals and all technical budgets.
 
@@ -1857,16 +2349,16 @@ families remain visible as unsupported, not marked done by generic analysis alon
 
 **E5 — whole-band coordinator and fixed FX verification.**
 Select source candidates on training evidence, then evaluate the assembled mix.
-First enforce protected constraints and the user hierarchy, then improve declared
-tone/competition objectives, then prefer smaller changes. Do not let one weighted
+First enforce technical protections and any explicitly selected musical policy,
+then improve declared tone/competition objectives, then prefer smaller changes. Do not let one weighted
 aggregate cancel a failed hard constraint or a regression on another role. Diagnose
 whether a conflict calls for source tone, competing-source relief or fader change.
 Retain simultaneous source/rest-of-mix spectral overlap as a labelled proxy; do not
 claim a psychoacoustic audibility model. No automatic panning, time shifts or source
 removal. Generalize hierarchy measurements to declared instrument groups and
 existing FX with explicit meter-stage semantics; preserve the original per-channel
-mode and its results. Multi-mic grouping must not silently change what the user's
-hierarchy means. If mapping is ambiguous, require identity resolution before moves.
+mode and its results. Multi-mic grouping must not silently change what an
+explicitly selected hierarchy means. If mapping is ambiguous, require identity resolution before moves.
 
 Include a bounded auditory-model feasibility experiment using R9: compare the
 simple overlap proxy with an auditory-filter/partial-loudness approach on controlled
@@ -2190,9 +2682,10 @@ Final validation uses Rust 1.97.1 and `Cargo.lock`, serialized with
   three previously unseen qualification sessions. Frozen requests, original source
   hashes, BWF identities, per-role observations and reproducible commands remain in
   ignored `artifacts/automix-validation.json` (records keyed by their former relative paths).
-- Requests preserve established routing and declare the accepted 2 LU/1 LU
-  hierarchy with the existing 6 dB fader bound. Related vocal/room and kit-ambience
-  paths are grouped coherently. Unknown bleed and processing history remain
+- Historical validation requests preserved established routing and declared the
+  then-selected 2 LU/1 LU hierarchy with the existing 6 dB fader bound. This
+  musical policy is superseded for current auditions; these are historical results.
+  Related vocal/room and kit-ambience paths are grouped coherently. Unknown bleed and processing history remain
   explicit; no source-specific tone fault or dynamic-event identity is invented.
 - Source observation found 54/5/0 full-scale PCM samples across these three
   routed sessions. The first two preparations retained their baselines under
@@ -2211,8 +2704,8 @@ Final validation uses Rust 1.97.1 and `Cargo.lock`, serialized with
   rejected by the listener as an unsuitable comparison, then retired. This is
   not an A/B preference or approval of the rejected proposal.
 - The revised full-production auditions cover Complainiacs, Catbite and Dark Ride.
-  `listen/` contains three `*-full-mix-v5.wav` files and three `*-before.wav`
-  references. Every reference was rebuilt and verified with added channel/master
+  V5 produced three full mixes alongside three `*-before.wav` references;
+  the current revision is identified in the balance intent above and `listen/README.txt`. Every reference was rebuilt and verified with added channel/master
   filters, static/dynamic EQ, compression and FX disabled; the former references
   had inherited filters, and Dark Ride also had legacy EQ/compression. Those
   misleading comparators and the previous full mixes are retired.

@@ -546,7 +546,28 @@ fn fixture(name: &str, value: &impl serde::Serialize) {
         std::fs::create_dir_all("tests/fixtures/brain-v1").unwrap();
         std::fs::write(&path, &text).unwrap();
     }
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    let original = std::fs::read_to_string(&path).unwrap();
+    let mut expected: serde_json::Value = serde_json::from_str(&original).unwrap();
+    if let Some(old_bytes) = expected
+        .pointer("/resources/admission/estimated_bytes")
+        .and_then(|v| v.as_u64())
+    {
+        let current_bytes = value["resources"]["admission"]["estimated_bytes"]
+            .as_u64()
+            .unwrap();
+        if old_bytes != current_bytes {
+            // Immutable pre-gate corpus used 672-byte strips; current strips are
+            // 1144 bytes. Admission reserves two strips per input. All other
+            // producer fields must still match the original bytes exactly.
+            let inputs = expected["authority"]["inputs"].as_array().unwrap().len() as u64;
+            expected["resources"]["admission"]["estimated_bytes"] =
+                (old_bytes + inputs * 944).into();
+        }
+    }
+    assert_eq!(
+        serde_json::to_string_pretty(&expected).unwrap() + "\n",
+        text
+    );
 }
 #[test]
 fn producer_dynamic_topologies_scope_grants_and_held_flow() {

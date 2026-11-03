@@ -146,8 +146,15 @@ impl RenderedSnapshot {
         if self.capability_version == 2 {
             let topology = self.topology.as_ref().ok_or("topology missing")?;
             let resources = self.resources.as_ref().ok_or("resources missing")?;
+            let admission = topology.validate(resources.render_budget)?;
+            // Historical GP07 v2/v4 producers used 672 bytes per strip. Read their
+            // immutable evidence; runtime restore always admits the current state size.
+            let mut legacy_admission = admission.clone();
+            legacy_admission.estimated_bytes -= topology.inputs.len()
+                * (std::mem::size_of::<crate::channel_processing::Strip>() - 672)
+                * 2;
             if resources.render_budget != crate::topology::ResourceBudget::default()
-                || resources.admission != topology.validate(resources.render_budget)?
+                || (resources.admission != admission && resources.admission != legacy_admission)
                 || resources.snapshot_assembly_bytes != crate::snapshot_pages::ASSEMBLY_BYTES
                 || resources.live_writer_capacity != 4
                 || resources.reply_history_per_writer != 64
@@ -629,7 +636,16 @@ impl OfflineEngine {
     pub fn persisted_intent(&mut self) -> Result<EngineIntent> {
         let snapshot = self.authority.snapshot()?;
         Ok(EngineIntent {
-            version: 2,
+            version: if self
+                .mixer
+                .processing_observations()
+                .iter()
+                .any(|o| !o.1.gate.is_default())
+            {
+                3
+            } else {
+                2
+            },
             show_id: snapshot.show_id,
             send_taps: Some(
                 self.mixer
@@ -667,10 +683,11 @@ impl OfflineEngine {
         Self::restore_intent(intent, epoch, frame)
     }
     pub fn restore_intent(intent: &EngineIntent, epoch: Counter, frame: u64) -> Result<Self> {
-        if ![1, 2].contains(&intent.version)
+        if ![1, 2, 3].contains(&intent.version)
             || intent.processing.len() != intent.topology.inputs.len()
             || (intent.version == 1 && intent.send_taps.is_some())
-            || (intent.version == 2 && intent.send_taps.is_none())
+            || (intent.version >= 2 && intent.send_taps.is_none())
+            || (intent.version < 3 && intent.processing.iter().any(|c| !c.gate.is_default()))
         {
             return Err("intent version/shape".into());
         }
@@ -935,6 +952,7 @@ impl OfflineEngine {
                     transition_remaining_frames: remaining,
                     ready: remaining == 0,
                     gain_reduction_mdb: gr,
+                    gate: self.mixer.gate_observation(i),
                 })
                 .collect(),
         })
@@ -971,7 +989,15 @@ impl OfflineEngine {
         fresh: bool,
     ) -> Result<ProcessingReply> {
         r.validate()?;
-        if r.version != self.processing_version() {
+        if (r.version != self.processing_version()
+            && !(self.processing_version() == 4 && r.version == 5))
+            || (r.version < 5
+                && self
+                    .mixer
+                    .processing_observations()
+                    .iter()
+                    .any(|o| !o.0.gate.is_default() || !o.1.gate.is_default()))
+        {
             return Ok(ProcessingReply::new(
                 r,
                 "final",
@@ -1957,13 +1983,13 @@ impl<'de> Deserialize<'de> for EngineIntent {
             .ok_or_else(|| serde::de::Error::custom("intent version"))?;
         let count = match version {
             1 => 5,
-            2 => 6,
+            2 | 3 => 6,
             _ => return Err(serde::de::Error::custom("intent version")),
         };
         if object.len() != count
             || object
                 .keys()
-                .any(|k| !old.contains(&k.as_str()) && !(version == 2 && k == "send_taps"))
+                .any(|k| !old.contains(&k.as_str()) && !(version >= 2 && k == "send_taps"))
         {
             return Err(serde::de::Error::custom("intent fields"));
         }

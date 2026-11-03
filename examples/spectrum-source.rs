@@ -8,18 +8,31 @@ fn main() -> Result<(), String> {
     let a: Vec<_> = std::env::args().collect();
     if a.len() != 5 {
         return Err(
-            "spectrum-source PRIVATE_DIRECTORY SHOW_UUID EPOCH tones|sequence|hot|rta-sequence"
+            "spectrum-source PRIVATE_DIRECTORY SHOW_UUID EPOCH tones|sequence|hot|rta-sequence|gate"
                 .into(),
         );
     }
     let epoch = a[3].parse().map_err(|_| "epoch")?;
-    if !matches!(a[4].as_str(), "tones" | "sequence" | "hot" | "rta-sequence") {
+    if !matches!(
+        a[4].as_str(),
+        "tones" | "sequence" | "hot" | "rta-sequence" | "gate"
+    ) {
         return Err("mode".into());
     }
-    let t = EngineTopology::legacy();
+    let t = if a[4] == "gate" {
+        EngineTopology::software(16, 2, 0)?
+    } else {
+        EngineTopology::legacy()
+    };
     let mut capture = vec![0.; 48 * t.capture_channels];
     let mut playback = vec![0.; 48 * t.playback_channels];
-    let mut owner = LocalAudio::bind(Path::new(&a[1]), "audio.sock", &a[2], Counter(epoch))?;
+    let mut owner = LocalAudio::bind_configured(
+        Path::new(&a[1]),
+        "audio.sock",
+        &a[2],
+        Counter(epoch),
+        t.clone(),
+    )?;
     let start = Instant::now();
     let mut noise = 0x1234_5678u32;
     // Bounded deterministic software input for inspecting an actual broadband FFT.

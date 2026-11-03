@@ -71,7 +71,7 @@ impl ProcessingRequest {
         RequestContext::request(&self.authority_request())
     }
     pub fn validate(&self) -> Result<()> {
-        if self.contract != CONTRACT || ![2, 3, 4].contains(&self.version) {
+        if self.contract != CONTRACT || ![2, 3, 4, 5].contains(&self.version) {
             return Err("version".into());
         }
         self.authority_request().encode()?;
@@ -81,6 +81,9 @@ impl ProcessingRequest {
             }
             input_index(input)?;
             config.validate()?;
+            if self.version < 5 && !config.gate.is_default() {
+                return Err("gate requires processing v5".into());
+            }
         }
         Ok(())
     }
@@ -102,8 +105,12 @@ impl ProcessingRequest {
                 "body",
             ],
         )?;
-        if v["contract"] != CONTRACT || !matches!(v["version"].as_u64(), Some(2..=4)) {
+        if v["contract"] != CONTRACT || !matches!(v["version"].as_u64(), Some(2..=5)) {
             return Err("version".into());
+        }
+        if v["version"].as_u64().is_some_and(|v| v < 5) && v["body"]["config"].get("gate").is_some()
+        {
+            return Err("gate requires processing v5".into());
         }
         let r: Self = serde_json::from_value(v).map_err(|e| e.to_string())?;
         r.validate()?;
@@ -126,7 +133,7 @@ impl UnsupportedRequest {
         Self::decode_for(bytes, 2)
     }
     pub fn decode_for(bytes: &[u8], supported_version: u32) -> Result<Option<Self>> {
-        if ![2, 3, 4].contains(&supported_version) {
+        if ![2, 3, 4, 5].contains(&supported_version) {
             return Err("provider version".into());
         }
         #[derive(Deserialize)]
@@ -186,7 +193,7 @@ impl UnsupportedRequest {
             command,
         };
         authority.encode()?;
-        if o.version == supported_version {
+        if o.version == supported_version || (supported_version == 4 && o.version == 5) {
             return Ok(None);
         }
         Ok(Some(Self {
@@ -222,6 +229,8 @@ pub struct Channel {
     pub transition_remaining_frames: u32,
     pub ready: bool,
     pub gain_reduction_mdb: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<crate::gate::Observation>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -264,6 +273,12 @@ impl ProcessingSnapshot {
         for (i, c) in self.channels.iter().enumerate() {
             if input_index(&c.input)? != i {
                 return Err("inventory".into());
+            }
+            if c.gate.is_some() != (c.ready && !self.faulted && !c.target.gate.is_default())
+                || c.gate.is_some_and(|g| g.attenuation_mdb > 90000)
+                || (self.faulted && c.gate.is_some())
+            {
+                return Err("gate observation".into());
             }
             c.current.validate()?;
             c.target.validate()?;
@@ -319,7 +334,7 @@ impl ProcessingReply {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        if self.contract != CONTRACT || ![2, 3, 4].contains(&self.version) {
+        if self.contract != CONTRACT || ![2, 3, 4, 5].contains(&self.version) {
             return Err("version".into());
         }
         self.context.validate()?;
@@ -359,8 +374,17 @@ impl ProcessingReply {
             "final" if self.reason.is_none() => {
                 let s = self.snapshot.as_ref().ok_or("snapshot")?;
                 s.validate()?;
+                if self.version < 5
+                    && s.channels.iter().any(|c| {
+                        !c.current.gate.is_default()
+                            || !c.target.gate.is_default()
+                            || c.gate.is_some()
+                    })
+                {
+                    return Err("gate requires processing v5".into());
+                }
                 if s.monitor_tap
-                    != if self.version == 4 {
+                    != if self.version >= 4 {
                         PER_SEND_TAP
                     } else {
                         MONITOR_TAP
@@ -447,17 +471,18 @@ impl ProcessingReply {
                 ],
             )?;
             for c in s["channels"].as_array().ok_or("channels")? {
-                keys(
-                    c,
-                    &[
-                        "input",
-                        "current",
-                        "target",
-                        "transition_remaining_frames",
-                        "ready",
-                        "gain_reduction_mdb",
-                    ],
-                )?;
+                let mut fields = vec![
+                    "input",
+                    "current",
+                    "target",
+                    "transition_remaining_frames",
+                    "ready",
+                    "gain_reduction_mdb",
+                ];
+                if c.get("gate").is_some() {
+                    fields.push("gate");
+                }
+                keys(c, &fields)?;
             }
         }
         let r: Self = serde_json::from_value(v).map_err(|e| e.to_string())?;
@@ -468,7 +493,7 @@ impl ProcessingReply {
         self.validate()?;
         let b = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         if b.len()
-            > if self.version == 4 {
+            > if self.version >= 4 {
                 crate::snapshot_pages::ASSEMBLY_BYTES
             } else {
                 65536

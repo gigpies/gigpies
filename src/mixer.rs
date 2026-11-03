@@ -537,6 +537,15 @@ impl Mixer {
         }
         Ok(())
     }
+    pub fn gate_observation(&self, input: usize) -> Option<crate::gate::Observation> {
+        if self.fault {
+            None
+        } else {
+            self.processing
+                .get(input)
+                .and_then(|s| s.gate_observation(self.clock))
+        }
+    }
     pub fn processing_observations(
         &self,
     ) -> Vec<(

@@ -22,7 +22,7 @@ The generated font is a local deployment artifact, not proprietary artwork.
 
 Run `python3 scripts/package_panel.py` after shared source changes to refresh
 both authorized consumers' immutable-checksum Cargo directory packages. Consumers
-use exact `=0.3.1` from the `shr-panel` source, locally replaced by `vendor/`;
+use exact versions (Desk `=0.3.2` with keybed; unchanged Lightdesk `=0.3.1`) from the `shr-panel` source, locally replaced by `vendor/`;
 there is no registry upload or sibling path dependency. The `.invalid` index is
 intentionally non-networked: builds must use the included source replacement.
 Run Cargo from each consumer root so it reads that root's `.cargo/config.toml`.

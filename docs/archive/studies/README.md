@@ -22,3 +22,5 @@ Historical context only. [Current documentation](../../README.md) · [Archive](.
 - [Source preservation and evidence for intervention](SOURCE_PRESERVATION.md)
 - [Source rules and soundcheck advice](SOURCE_RULES.md)
 - [Guitar correction when the ending fades](TONE_DECAY.md)
+
+- [Automix decision-path review, 2026-10-30](AUTOMIX_DECISION_AUDIT_2026-10-30.md)

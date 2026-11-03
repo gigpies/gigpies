@@ -5,6 +5,106 @@ Lightdesk expose explicit Ratatui entry points over their existing provider
 workers. Providers retain authority. Full physical-control migration is tracked
 in [GP-PANEL](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-panel--shared-physical-instrument-panel).
 
+## Three-row channel keybed
+
+Design contract agreed 2026-10-30; shared widget 0.3.2 and Desk adapter implemented.
+Physical display/input qualification remains pending. The local user
+reference is `artifacts/screenschot-midi-keys-ctrl.png`. This is a compact on-screen
+strip that can sit within the console, not a requirement to attach a keyboard.
+It shows 24 channel keys plus a separate Master key in exactly three character
+rows. Pressing/clicking a key selects its target. Selection never toggles REC,
+solo or mute. Physical MIDI mapping is a separate learned binding.
+
+The sketch has channel labels 1–24 represented by repeating units digits,
+followed by `M` for Master. Channel 15 is green-selected. Red `R` marks appear
+under channels 1–22; these are illustrative states, not a required recording
+configuration. Preserve the piano-key silhouette and compact character layout.
+The other local image, `artifacts/architecture.png`, is a historical conceptual
+architecture sketch; its “planned” labels do not establish current implementation
+or hardware acceptance.
+
+| Row | Meaning |
+|---|---|
+| 1 | Channel identity / Master label, within the keyboard outline |
+| 2 | Independent fixed positions `RSM`: recording, solo, mute; simultaneous states remain visible |
+| 3 | Key bodies and divisions completing the keyboard silhouette |
+
+Each key needs room for all three status characters, including black keys.
+Use green key fill for selection in this widget; keep readable text and a
+non-colour selected marker in the label cell for monochrome fallback. Existing
+blue interaction focus elsewhere remains unchanged. `M` in row 1 means Master;
+`M` in row 2 means mute. Do not multiplex or blink between R/S/M. An inactive
+flag is a blank in its reserved position; unavailable/stale state uses `?`,
+and a recording fault uses `!` in the R position. Preparing/finalizing uses
+`P`/`F` there. These conventions are implemented by the shared character widget.
+The existing header/footer supplies the full selected channel number/name,
+bank range and detailed state; no fourth keybed row is required.
+
+Reserve three rows above the existing footer/status area in regular Desk views.
+Reflow the surrounding layout rather than cover controls. Review/modal views
+retain priority and their existing navigation rules: selection cannot silently
+retarget an open draft or confirmation. The minimum supported terminal geometry
+must fit the strip and existing controls; smaller windows show the existing
+resize requirement rather than drop states or truncate keys.
+
+The 24 slots are a display bank, not engine capacity. Map slots to authoritative
+stable input IDs. With fewer inputs, unused keys are visibly unavailable. With
+more, bank navigation exposes successive groups of 24, with Master anchored at
+the right. Full channel identity must disambiguate repeated digits. Use an
+explicit input-or-Master selection target; Master is never input 25. Reconcile
+the existing 12-channel detail/meter pages with the selected stable ID rather
+than globally replacing every bank size with 24.
+
+Project status from provider-confirmed state independently of selection:
+
+- `R` means that this input belongs to the fresh active take's mapping while
+  recording. Validate take identity, source epoch and freshness; it is not an
+  armed flag or proof of individual-track durability. Existing take counters and
+  fault details remain on the Recorder page. Master has no R indication unless
+  a separate supported master-recording contract exists.
+- `S` means confirmed channel solo under a defined provider solo contract.
+  Do not infer it from the monitor source, selected channel or a local action.
+  Audit the owning solo implementation before connecting it; missing support
+  stays unavailable, not falsely off.
+- `M` means confirmed channel/master mute for the corresponding target. Do not
+  substitute talkback or monitor mute. Pending commands do not become confirmed
+  status; stale or missing evidence does not become an inactive blank.
+
+Status cells are readouts. Existing reviewed actions own recording and other
+changes. Selection must preserve provider permissions, generation fences and
+edit cancellation/review behavior. Mouse, ordinary keyboard navigation and any
+subsequently learned MIDI keys feed the same semantic selection path. No MIDI
+anchor note, velocity action, hold action or hardware qualification is inferred
+from the drawing. Implementation and acceptance are owned by
+[GP-PANEL](../development/MODULE_IMPLEMENTATION_PLAN.md#three-row-keybed-flow-plan).
+
+## Rotary and master-strip flow direction
+
+Operator direction, 2026-10-30; explicit profile/semantic bindings are implemented
+in Desk, with physical bindings still unqualified. EQ columns 1–4
+retain frequency above gain. With verified Shift held, the upper rotary edits
+Q and the lower rotary edits gain in 0.1 dB decoded steps without acceleration.
+Shift decoding must cover the actual device's down/up messages and alternate
+encoder messages; it is not yet a qualified Desk input path.
+
+The proposed pitch-strip master control requests a gain-change speed, not an
+absolute fader position. Center stops movement; either side raises/lowers gain;
+return to center stops at the resulting gain. The operator explicitly requires
+**a slow maximum speed**, even at full displacement. The provisional software model uses a quadratic curve, 8% dead zone and
+maximum 0.5 dB/s, with a 250 ms stale-input stop. The provider Master gain target
+and production speed integration are still absent; hands-on feel remains pending. Disconnect/context loss
+must stop movement. Return-to-center behavior must be verified for the preset.
+
+Current compressor columns are 5: threshold/attack, 6: ratio/release, and
+7: knee/makeup (upper/lower). All six parameters already have ordinary controls;
+no additional Shift function is agreed. Column 8 remains pan/level for the
+labelled selected target. The pitch-strip proposal independently targets Master.
+Processing v5 adds a default-bypassed channel gate; analysis activity gates and
+transport fades remain distinct. Implementation and remaining acceptance are in
+[GP-GATE](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-gate--lightweight-channel-gates-and-tom-decay-control).
+The implemented labelled Gate mode reuses columns 5–7 for threshold/attack,
+hold/release and range/hysteresis; compressor controls remain in Compressor mode.
+
 ## Rendering contract
 
 The selected Desk Channel has a bounded, opt-in material path described below.

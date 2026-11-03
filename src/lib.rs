@@ -41,6 +41,8 @@ pub mod module_wire;
 
 /// Versioned fixed-storage channel EQ and dynamics.
 pub mod channel_processing;
+pub mod gate;
+pub mod gate_preparation;
 /// Strict GP07 processing extension.
 pub mod processing_wire;
 

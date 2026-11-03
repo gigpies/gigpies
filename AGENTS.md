@@ -10,6 +10,20 @@ are developed in `../shr-pa`, with the finished PA module intended for integrati
 here. Keep module tasks and algorithms in their owning project; avoid parallel
 implementations in GigPies. Track integration and hardware acceptance separately.
 
+## Automixing objective
+
+Automixing must calculate source and ensemble levels from measured soundcheck
+signals and a reusable musical objective. The user must not have to tune each
+song or prescribe per-source dB corrections for the system to work. Inherited
+faders, role presets and hand-picked audition changes are not calculated balance.
+Keep their provenance explicit; never promote an approved audition offset into a
+universal rule. Do not use the current audition songs as calibration/reference
+targets: the user explicitly chose a formula-driven spectral target instead. Listening feedback is development/acceptance evidence for the
+algorithm, not a required runtime control loop. Review lead and backing vocals
+separately in their actual ensemble context. No fixed kick/bass/vocal hierarchy
+applies unless explicitly selected. Track the remaining decision-system work in
+GP-AUTO-ENSEMBLE and its bounded live integration in GP-AUTO.
+
 ## Product capacity and clock direction
 
 The processing engine includes modular PA processing, alongside channel DSP,

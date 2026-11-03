@@ -149,11 +149,25 @@ fn fixture(name: &str, value: &Value) {
         )
         .unwrap();
     }
-    let saved: Value = serde_json::from_slice(
+    let mut saved: Value = serde_json::from_slice(
         &std::fs::read(path).expect("explicitly generate producer atomic fixtures"),
     )
     .unwrap();
-    assert_eq!(&saved, value);
+    // Historical producer bytes retain their original 672-byte strip reservation.
+    // Only the exact additional gate storage is normalized; other drift still fails.
+    if let Some(snapshot) = saved.get_mut("raw")
+        && let Some(n) = snapshot["topology"]["inputs"].as_array().map(Vec::len)
+    {
+        let extra = n * (std::mem::size_of::<crate::channel_processing::Strip>() - 672) * 2;
+        let field = &mut snapshot["resources"]["admission"]["estimated_bytes"];
+        if let Some(old) = field.as_u64() {
+            let actual = value["raw"]["resources"]["admission"]["estimated_bytes"].as_u64();
+            if actual == Some(old + extra as u64) {
+                *field = serde_json::json!(old + extra as u64);
+            }
+        }
+    }
+    assert_eq!(&saved, value, "fixture {name}");
 }
 #[test]
 fn atomic_producer_fixtures() {

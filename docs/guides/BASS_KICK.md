@@ -14,9 +14,10 @@ it cannot reconstruct absent attack or harmonics, and this pass does not synthes
 them. Source changes or a separately selected nonlinear treatment need their own
 review when rebalancing existing content is insufficient.
 
-The [kick-led loudness policy](BALANCE_PASS.md#kick-led-lufs-hierarchy) sets bass
-2 LU below kick and other individual sources at least 1 LU below bass. Run that
-measurement after tone decisions: LUFS positioning and spectral definition solve
+The optional legacy [kick-led loudness policy](BALANCE_PASS.md#kick-led-lufs-hierarchy) sets bass
+2 LU below kick and other individual sources at least 1 LU below bass. That
+hierarchy is not the current audition intent. Only when explicitly selected, run
+that measurement after tone decisions: LUFS positioning and spectral definition solve
 different problems. Neither measurement establishes that bass is unmasked in the
 ensemble or translates to a particular loudspeaker.
 

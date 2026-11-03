@@ -27,6 +27,11 @@ static ALLOC: Guard = Guard;
 fn public_process_has_no_heap_allocation_or_retirement() {
     let mut m = Mixer::default();
     let config = gigpies::channel_processing::Config {
+        gate: gigpies::gate::Config {
+            bypass: false,
+            detector_hz: 180,
+            ..Default::default()
+        },
         eq_bypass: false,
         band1_gain_mdb: -3000,
         band2_gain_mdb: 6000,
@@ -84,6 +89,11 @@ fn configurable_profiles_have_no_render_allocation_or_retirement() {
         )
         .unwrap();
         let config = gigpies::channel_processing::Config {
+            gate: gigpies::gate::Config {
+                bypass: false,
+                detector_hz: 180,
+                ..Default::default()
+            },
             eq_bypass: false,
             band4_gain_mdb: 6000,
             compressor_bypass: false,

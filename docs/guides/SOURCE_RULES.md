@@ -316,6 +316,15 @@ native timeline. DSP runs continuously from frame zero, including passage gaps. 
 uses only complete loudness blocks inside declared training passages; gaps and
 held-out passages never contribute to its target levels.
 
+Automatic musical balance must derive levels from measured source/ensemble
+context and a reusable objective. An accepted listening revision is development
+evidence, not a universal vocal gain offset. The current ensemble correction path
+supports explicit tone objectives and an optional hierarchy; it does not yet
+calculate general lead/backing prominence. The
+[owning ensemble card](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-auto-ensemble--observation-led-whole-band-automixing)
+tracks the required calculated-level workflow and qualification. Existing audition
+settings retain their accepted sound without being promoted into automatic rules.
+
 Static trials support kick, bass, snare, toms, electric/acoustic guitars,
 lead/backing vocals, hi-hat, piano, keys, synth, strings and winds with explicit
 profiles. Overheads and rooms require the reviewed capture declaration
@@ -340,7 +349,9 @@ baseline; `candidate.json` retains the rejected proposal for review. Successful
 preparation also uses the production renderer and delivery checker in `export/`.
 Common delivery attenuation is reported by that renderer and is not tone repair.
 
-The optional request `hierarchy` uses the existing loudness policy fields:
+The optional request `hierarchy` uses the existing loudness policy fields. The
+legacy values below are not the current audition intent; omit `hierarchy` when
+no musical hierarchy is requested:
 `kick_to_bass_lu: 2`, `bass_to_others_lu: 1`, `max_fader_change_db: 6`.
 Every channel requires a declared performance identity. Independent channel mode
 is the default; `grouped_hierarchy: true` explicitly changes the unit to each

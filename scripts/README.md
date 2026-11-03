@@ -10,6 +10,7 @@ Put one-off session/render runners and generated results under ignored `artifact
 | `balance_excerpts.py`, `listening_checkpoint.py` | Exact parent-sample excerpts and verified listening checkpoints |
 | `verify_delivery.py` | Independent final PCM true-peak verification with local FFmpeg/libsoxr; no playback or audio output |
 | `ensemble_review.py`, `snare_context.py` | Descriptive ensemble and source-context review |
+| `spectral_balance.py` | Explicit formula-driven spectral proposals from saved production observations; no reference recordings or playback; [contract](../docs/guides/BALANCE_PASS.md) |
 | `preset_experiment.py` | Explicit historical preset experiments; no automatic media downloads |
 | `snare_bleed_evidence.py`, `snare_temporal_evidence.py` | Opt-in saved-evidence audits; no processing selection or playback |
 | `play_pair.py` | Explicit two-clip playback with preflight; never run by normal tests with a real player |
