@@ -48,6 +48,15 @@ read-only unless the user explicitly authorizes changes there. Avoid path depend
 Distinguish planned, implemented, offline-validated and hardware-verified behavior.
 Update focused documentation alongside behavior. Preserve original drafts in docs/archive.
 
+Before introducing or upgrading a dependency, check its current maintained upstream
+release and migration notes against the pinned toolchain and supported targets.
+Do not copy a version from an old example or rely on remembered versions. Prefer
+the current compatible stable release; document a concrete compatibility reason
+and revisit condition when retaining an older version. Keep manifest and lockfile
+updates together. For authorized dependency maintenance, carry reviewed updates
+through current-base CI and merge, combining compatible pending updates when that
+avoids repeated stale-branch cycles. Do not bypass required CI or reviews.
+
 Keep third-party recordings, source archives, private sessions and generated audio out
 of Git and releases. Preserve local source notices. No automatic media downloads in CI.
 No audio, MIDI, DMX, service or host-audio changes without authorization for that session.
