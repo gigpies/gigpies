@@ -744,6 +744,17 @@ hardware deadline or explain the two late wet packets. Bounded first/last late
 packet witnesses now retain source/output/admission frames without changing
 deadlines. Keep the failure open until an equal-load diagnostic explains it;
 do not infer acceptance from CLI exit status or a later intermittent pass.
+The diagnostic repeat at `c153548` reproduced two late groups for source frame
+633360, rejected exactly at output/source frame634128. A preceding8.598ms gap
+between source-tick records was followed by catch-up: those768 source frames
+advanced in9.489ms of observed tick-to-tick wall time. This identifies compressed
+deadline headroom, not the sole cause or a one-way network delay. Raw recording
+again matched1,436,784 frames per input exactly. Next: correlate bounded Brain
+receive/process/send timestamps with provider admission and scheduler gaps at the
+same load; keep the768-frame deadline and60s synthetic cap. The full Desk gate/FX/
+REC lifecycle, both active Brain ASRC crossings,60s trial and owned fault/reconnect
+cases remain unrun in this session. Normal validation passed503 default and588
+hardware-host tests (22/54 opt-ins skipped), formatting and warning-denied Clippy.
 
 The priority is the current authenticated QUIC/media graph, including four FX
 auxes, raw recording and Brain duplex crossings. The accepted October 3 GPA1 UDP
