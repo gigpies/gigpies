@@ -14,7 +14,7 @@ hound = "=3.5.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
 sha2 = "=0.10.9"
-rtrb = "=0.4.0"
+rtrb = "=0.4.1"
 rubato = { version = "=5.0.1", default-features = false }
 socket2 = "=0.6.5"
 alsa = { version = "=0.12.1", optional = true }

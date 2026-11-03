@@ -21,7 +21,7 @@ jobs:
       issues: write
     steps:
       - name: Notify failure or recovery
-        uses: gigpies/gigpies/.github/actions/ci-alerts@14e5fa8adf91ebfd2054924a90078aaa40e62824
+        uses: gigpies/gigpies/.github/actions/ci-alerts@47be1e2e4ad3064669e47507774117ddf32ad0bb
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           recipient: PaolaShultz
