@@ -44,7 +44,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 build --release --locked -j1 ${{ matrix.features }}
   automation:
-    uses: gigpies/.github/.github/workflows/quality.yml@80d76c2b710d90e55f4f95ecea192c514f471fe6
+    uses: gigpies/.github/.github/workflows/quality.yml@98f341243ff8913017ad77f557ff550a7cd614e8
   gate:
     name: Required CI
     if: ${{ always() }}
