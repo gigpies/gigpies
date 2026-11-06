@@ -2934,7 +2934,10 @@ impl LocalAudio {
             let (_, _, _, receipt) =
                 self.graph_boundary_command(frame, (permit, action, fences, None), |graph, p| {
                     let available = p.1.is_none() || graph.mixer.remote_fx.is_none();
-                    let valid = p.2.iter().all(|f| f.valid());
+                    let valid = p.2.iter().all(|f| f.valid())
+                        && p.1
+                            .as_ref()
+                            .is_none_or(|r| !r.restore || graph.mixer.mixer.outputs_quiesced());
                     let receipt = graph
                         .mixer
                         .commit_external(&p.0, |_| if !available || !valid { -3 } else { 0 });
@@ -2954,6 +2957,16 @@ impl LocalAudio {
     }
     #[cfg(feature = "hardware-host")]
     pub(crate) fn take_remote_fx_completion(&mut self) -> Result<Option<(u64, bool)>> {
+        let retained = self.graph_command(None, |graph, p| {
+            if let Some(r) = &graph.mixer.remote_fx
+                && r.restore
+            {
+                *p = Some(r.result.map(|v| (r.ticket, v)));
+            }
+        })?;
+        if let Some(result) = retained {
+            return Ok(result);
+        }
         let packet = self.graph_command(None, |graph, p| {
             if graph
                 .mixer
@@ -2970,6 +2983,21 @@ impl LocalAudio {
             Some(p) => Ok(Some((p.ticket, p.result.unwrap_or(false)))),
             None => Ok(None),
         }
+    }
+
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn release_fx_restore(&mut self, ticket: u64) -> Result<()> {
+        let _retired = self.graph_command((ticket, None), |graph, p| {
+            if graph
+                .mixer
+                .remote_fx
+                .as_ref()
+                .is_some_and(|r| r.restore && r.ticket == p.0)
+            {
+                std::mem::swap(&mut graph.mixer.remote_fx, &mut p.1);
+            }
+        })?;
+        Ok(())
     }
 
     /// Controller-side preparation against a source-issued future boundary. The

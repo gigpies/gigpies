@@ -43,6 +43,7 @@ struct Snapshot {
     unconsumed_wet: usize,
 }
 struct Commit {
+    bundle: Option<Box<crate::host::fx_palette::PreparedBundle>>,
     ticket: u64,
     bus: usize,
     frame: u64,
@@ -86,7 +87,7 @@ struct Core {
     policy: Option<super::policy::PolicyFence>,
     stranded_token: Option<PreparedToken>,
     was_closed: bool,
-    transition_ticket: Option<usize>,
+    transition_ticket: [bool; 4],
     observation_pending: bool,
 }
 impl Core {
@@ -112,7 +113,7 @@ impl Core {
             || Instant::now() >= self.deadline
             || self.policy.as_ref().is_some_and(|policy| !policy.valid());
         if gap || (closed && !self.was_closed) || !valid {
-            self.transition_ticket = None;
+            self.transition_ticket = [false; 4];
             if self.state.ticket != 0
                 && self.shared.acknowledged.load(Ordering::Acquire) != self.state.ticket
             {
@@ -142,6 +143,9 @@ impl Core {
                 || !valid
                 || p.closure != closure
                 || p.generation != self.state.generation[p.bus]
+                || p.bundle
+                    .as_ref()
+                    .is_some_and(|b| b.generations != self.state.generation)
                 || Instant::now() >= p.deadline
                 || block.frame > p.frame
                 || self.shared.cancel.load(Ordering::Acquire) == p.ticket;
@@ -150,6 +154,11 @@ impl Core {
                 let permitted = self.shared.permit.load(Ordering::Acquire) == p.ticket;
                 let result = if refuse || !permitted {
                     Err(-1)
+                } else if let Some(bundle) = &mut p.bundle {
+                    let [a, b, c, d] = &mut self.owners;
+                    bundle
+                        .publish([a, b, c, d])
+                        .map(|requests| self.requests = requests)
                 } else if p.panic {
                     self.owners[p.bus].reset_bounded().map_err(|_| -1)
                 } else if let Some(token) = &mut p.token {
@@ -195,15 +204,23 @@ impl Core {
                 self.state.outcome = if result.is_ok() { 1 } else { 2 };
                 if result.is_ok() {
                     self.state.committed_ticket = p.ticket;
-                    self.state.generation[p.bus] += 1;
-                    self.transition_ticket = Some(p.bus);
-                    if p.panic {
-                        if let Ok(status) = self.owners[p.bus].status_bounded() {
-                            self.settings[p.bus] = status.current;
-                            self.requests[p.bus] = None;
+                    if let Some(bundle) = &p.bundle {
+                        for i in 0..4 {
+                            self.state.generation[i] += 1;
                         }
+                        self.settings = bundle.settings;
+                        self.transition_ticket = [true; 4];
                     } else {
-                        self.settings[p.bus] = p.settings;
+                        self.state.generation[p.bus] += 1;
+                        self.transition_ticket[p.bus] = true;
+                        if p.panic {
+                            if let Ok(status) = self.owners[p.bus].status_bounded() {
+                                self.settings[p.bus] = status.current;
+                                self.requests[p.bus] = None;
+                            }
+                        } else {
+                            self.settings[p.bus] = p.settings;
+                        }
                     }
                 }
                 // Capacity was reserved before consuming this commit.
@@ -247,7 +264,7 @@ impl Core {
         for (i, owner) in self.owners.iter_mut().enumerate() {
             if let Ok(status) = owner.status_bounded() {
                 self.state.status[i] = status;
-                if status.fault != 0 && self.transition_ticket == Some(i) {
+                if status.fault != 0 && self.transition_ticket[i] {
                     self.state.outcome = 2;
                     self.state.refusal = 12;
                     self.state.refusal_native_code = status.fault as i32;
@@ -260,8 +277,8 @@ impl Core {
                     && status.current == self.settings[i]
                 {
                     self.state.applied[i] = self.state.generation[i];
-                    if self.transition_ticket == Some(i) {
-                        self.transition_ticket = None;
+                    if self.transition_ticket[i] {
+                        self.transition_ticket[i] = false;
                     }
                 }
             } else {
@@ -334,6 +351,8 @@ impl Core {
 }
 
 struct Pending {
+    configs: Option<[wire::Configuration; 4]>,
+    bundle: bool,
     ticket: u64,
     bus: usize,
     frame: u64,
@@ -474,6 +493,7 @@ impl Execution {
             snapshot.status[i] = owner.status()?;
         }
         let empty_commit = || Commit {
+            bundle: None,
             ticket: 0,
             bus: 0,
             frame: 0,
@@ -522,7 +542,7 @@ impl Execution {
             policy,
             stranded_token: None,
             was_closed: false,
-            transition_ticket: None,
+            transition_ticket: [false; 4],
             observation_pending: false,
         };
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
@@ -667,6 +687,28 @@ impl Execution {
                     {
                         return Err("FX aux stale/busy preparation".into());
                     }
+                    mutation.validate_restore()?;
+                    let bundle_configs = mutation
+                        .restore
+                        .as_ref()
+                        .map(|r| r.saved.validate())
+                        .transpose()?;
+                    let bundle = if let Some(configs) = &bundle_configs {
+                        let r = mutation.restore.as_ref().unwrap();
+                        if r.expected_generations.map(|v| v.0) != self.snapshot.generation
+                            || self.snapshot.generation != self.snapshot.applied
+                        {
+                            return Err("FX restore stale generations".into());
+                        }
+                        Some(Box::new(crate::host::fx_palette::PreparedBundle::prepare(
+                            self.preparers.each_ref(),
+                            self.snapshot.status,
+                            self.snapshot.generation,
+                            configs,
+                        )?))
+                    } else {
+                        None
+                    };
                     let bus = mutation.bus;
                     let status = self.snapshot.status[bus];
                     if mutation.expected_generation.0 != self.snapshot.generation[bus]
@@ -712,14 +754,16 @@ impl Execution {
                     // Validate every settings request, including a sends-only edit.
                     let prepared = config
                         .as_ref()
+                        .filter(|_| bundle.is_none())
                         .map(|c| self.preparers[bus].prepare(&c.settings))
                         .transpose()?;
-                    let token = if settings != self.configs[bus].settings {
+                    let token = if bundle.is_none() && settings != self.configs[bus].settings {
                         prepared
                     } else {
                         None
                     };
                     let commit = Commit {
+                        bundle,
                         ticket: ticket.0,
                         bus,
                         frame: apply_frame.0,
@@ -738,6 +782,8 @@ impl Execution {
                         .map_err(|_| "FX aux commit capacity")?;
                     self.last_ticket = ticket.0;
                     self.pending = Some(Pending {
+                        configs: bundle_configs,
+                        bundle: mutation.restore.is_some(),
                         ticket: ticket.0,
                         bus,
                         frame: apply_frame.0,
@@ -796,6 +842,11 @@ impl Execution {
             && self.snapshot.outcome != 0
         {
             if self.snapshot.committed_ticket == p.ticket
+                && let Some(configs) = p.configs.take()
+            {
+                self.configs = configs;
+            }
+            if self.snapshot.committed_ticket == p.ticket
                 && let Some(config) = p.config.take()
             {
                 self.configs[p.bus] = config;
@@ -828,7 +879,11 @@ impl Execution {
                 self.configs[p.bus] = config;
             }
             completed = Some((Counter(p.ticket), Counter(p.frame)));
-            if self.snapshot.generation[p.bus] == self.snapshot.applied[p.bus] {
+            if if p.bundle {
+                self.snapshot.generation == self.snapshot.applied
+            } else {
+                self.snapshot.generation[p.bus] == self.snapshot.applied[p.bus]
+            } {
                 self.shared.acknowledged.store(p.ticket, Ordering::Release);
                 self.pending = None;
             }
@@ -837,7 +892,10 @@ impl Execution {
         observation.next_frame = Counter(self.snapshot.next.unwrap_or(0));
         for (i, bus) in observation.buses.iter_mut().enumerate() {
             if self.snapshot.status[i].transition == 0
-                && self.pending.as_ref().is_none_or(|p| p.bus != i)
+                && self
+                    .pending
+                    .as_ref()
+                    .is_none_or(|p| !p.bundle && p.bus != i)
             {
                 if self.configs[i].settings != self.snapshot.status[i].current {
                     self.configs[i].tempo = None;
@@ -1265,6 +1323,8 @@ mod tests {
             // without a later quantum supplying a witness accidentally.
             let ticket = 91;
             execution.pending = Some(Pending {
+                bundle: false,
+                configs: None,
                 ticket,
                 bus: 0,
                 frame: 48,
@@ -1280,6 +1340,7 @@ mod tests {
                 execution
                     .commits
                     .push(Commit {
+                        bundle: None,
                         ticket,
                         bus: 0,
                         frame: 48,
@@ -1401,6 +1462,7 @@ mod tests {
         execution.refresh();
         for ticket in 1..=17 {
             let commit = Commit {
+                bundle: None,
                 ticket,
                 bus: 0,
                 frame: ticket * 48,
@@ -1437,6 +1499,7 @@ mod tests {
         let mut config = execution.configs[0].clone();
         config.settings.time_ms = 2.;
         let mutation = crate::fx_aux_wire::Mutation {
+            restore: None,
             bus: 0,
             map_revision: execution.descriptor.map_generation,
             library_sha256: execution.hash.clone(),
@@ -1491,5 +1554,117 @@ mod tests {
         }
         execution.refresh();
         assert!(execution.snapshot.closed_blocks >= 9);
+    }
+    #[test]
+    #[ignore = "GP_FX_LIBRARY approved actual four-owner bundle failure/retirement acceptance"]
+    fn actual_bundle_cancel_stale_owner_loss_and_application_interruption() {
+        for mode in 0..5 {
+            let (mut execution, mut lanes) = setup();
+            block(&mut lanes, 0);
+            execution.refresh();
+            let mut configs = execution.configs.clone();
+            for (i, c) in configs.iter_mut().enumerate() {
+                c.settings.time_ms = 30. + i as f64;
+                c.returns = Some(crate::fx_aux_wire::Returns::silent_monitors(2));
+            }
+            let saved = crate::fx_saved::Saved {
+                format: "gigpies-fx-intent".into(),
+                version: 1,
+                show_id: "11111111-1111-4111-8111-111111111111".into(),
+                library_sha256: execution.hash.clone(),
+                inputs: crate::topology::EngineTopology::software(16, 2, 0)
+                    .unwrap()
+                    .inputs,
+                monitors: vec!["monitor-1".into(), "monitor-2".into()],
+                configurations: configs
+                    .each_ref()
+                    .map(|c| serde_json::to_string(c).unwrap()),
+            };
+            let mut mutation = crate::fx_aux_wire::Mutation {
+                bus: 0,
+                map_revision: execution.descriptor.map_generation,
+                library_sha256: execution.hash.clone(),
+                expected_generation: Counter(0),
+                configuration_json: Some(saved.configurations[0].clone()),
+                panic: false,
+                owner_binding: Some(wire::binding(&execution.descriptor, &execution.hash).unwrap()),
+                restore: Some(Box::new(crate::fx_aux_wire::Restore {
+                    version: 1,
+                    saved,
+                    expected_generations: [Counter(0); 4],
+                })),
+            };
+            if mode == 0 {
+                mutation.restore.as_mut().unwrap().expected_generations[3] = Counter(1);
+            }
+            let response = execution
+                .command(wire::Command::Prepare {
+                    ticket: Counter(1),
+                    descriptor: execution.descriptor.clone(),
+                    mutation,
+                    apply_frame: Counter(480),
+                })
+                .unwrap()
+                .unwrap();
+            if mode == 0 {
+                assert!(matches!(response, wire::Message::Refused { .. }));
+            } else {
+                assert!(matches!(response, wire::Message::Prepared { .. }));
+                if mode == 1 {
+                    execution
+                        .command(wire::Command::Cancel { ticket: Counter(1) })
+                        .unwrap();
+                } else {
+                    execution
+                        .command(wire::Command::Permit {
+                            ticket: Counter(1),
+                            descriptor: execution.descriptor.clone(),
+                            apply_frame: Counter(480),
+                        })
+                        .unwrap();
+                }
+                if mode == 2 {
+                    execution.close();
+                }
+            }
+            for frame in (48..=480).step_by(48) {
+                block(&mut lanes, frame);
+            }
+            if mode == 3 {
+                block(&mut lanes, 576);
+            }
+            // gap during application: never confirmed
+            else {
+                for frame in (528..=1536).step_by(48) {
+                    block(&mut lanes, frame);
+                }
+            }
+            execution.refresh();
+            if mode == 4 {
+                assert_eq!(execution.snapshot.generation, [1; 4]);
+                assert_eq!(execution.snapshot.applied, [1; 4]);
+                for (i, c) in configs.iter().enumerate() {
+                    assert_eq!(execution.snapshot.status[i].current, c.settings);
+                }
+            } else if mode == 3 {
+                assert_eq!(execution.snapshot.outcome, 2);
+                assert!(
+                    execution
+                        .snapshot
+                        .status
+                        .iter()
+                        .all(|s| s.accepted_request == 1)
+                );
+            } else {
+                assert!(
+                    execution
+                        .snapshot
+                        .status
+                        .iter()
+                        .all(|s| s.accepted_request == 0)
+                );
+            }
+            execution.finish();
+        }
     }
 }

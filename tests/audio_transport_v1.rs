@@ -378,6 +378,7 @@ mod assembly {
             }
             let frame = next + 48;
             let mutation = gigpies::fx_aux_wire::Mutation {
+                restore: None,
                 bus: 0,
                 map_revision: descriptor.map_generation,
                 library_sha256: hash.clone(),

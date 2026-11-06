@@ -99,6 +99,7 @@ pub mod meter_wire;
 pub mod spectrum;
 
 pub mod fx_aux_wire;
+pub mod fx_saved;
 
 /// Stable byte-to-hex representation for persisted and wire digest identities.
 pub mod hash;

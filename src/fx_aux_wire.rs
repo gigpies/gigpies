@@ -3,6 +3,25 @@ use crate::{control_model, show::Counter};
 use serde::{Deserialize, Serialize};
 pub const CONTRACT: &str = "GP-FX-aux";
 pub const BUSES: usize = 4;
+/// Publication preflight is audited against this exact approved owner artifact.
+pub const BUNDLE_LIBRARY: &str = "cefa625b6aee8a742aa83e54d02d26ce3edef0d9907d22856488fe1517a6ae56";
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    pub version: u32,
+    pub size: u32,
+    pub algorithm: u32,
+    pub bypass: u32,
+    pub time_ms: f64,
+    pub amount: f64,
+    pub damping: f64,
+    pub rate_hz: f64,
+    pub gain: f64,
+    pub seed: u32,
+    pub reserved: u32,
+}
+
 /// Host routing after the shared wet owner, before Main-only gain.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,6 +56,8 @@ impl Returns {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mutation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<Box<Restore>>,
     pub bus: usize,
     pub map_revision: Counter,
     pub library_sha256: String,
@@ -45,6 +66,50 @@ pub struct Mutation {
     pub panic: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_binding: Option<String>,
+}
+/// One authority transaction; the first-bus fields must agree with this bundle.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Restore {
+    pub version: u32,
+    pub saved: crate::fx_saved::Saved,
+    pub expected_generations: [Counter; 4],
+}
+impl Mutation {
+    pub fn edits(&self) -> Vec<Self> {
+        match &self.restore {
+            None => vec![self.clone()],
+            Some(r) => (0..4)
+                .map(|bus| Self {
+                    restore: None,
+                    bus,
+                    map_revision: self.map_revision,
+                    library_sha256: self.library_sha256.clone(),
+                    expected_generation: r.expected_generations[bus],
+                    configuration_json: Some(r.saved.configurations[bus].clone()),
+                    panic: false,
+                    owner_binding: self.owner_binding.clone(),
+                })
+                .collect(),
+        }
+    }
+    pub fn validate_restore(&self) -> Result<(), String> {
+        if let Some(r) = &self.restore {
+            r.saved.validate()?;
+            if r.version != 1
+                || self.library_sha256 != BUNDLE_LIBRARY
+                || self.bus != 0
+                || self.panic
+                || self.expected_generation != r.expected_generations[0]
+                || self.configuration_json.as_ref() != Some(&r.saved.configurations[0])
+                || self.library_sha256 != r.saved.library_sha256
+                || r.expected_generations.iter().any(|v| v.0 == u64::MAX)
+            {
+                return Err("FX restore bundle shape".into());
+            }
+        }
+        Ok(())
+    }
 }
 pub fn request(
     value: &serde_json::Value,
@@ -61,6 +126,8 @@ pub fn request(
     let mutation = if read {
         if o.get("body") != Some(&serde_json::json!({}))
             && o.get("body") != Some(&serde_json::json!({"return_routing":true}))
+            && o.get("body")
+                != Some(&serde_json::json!({"return_routing":true,"saved_intent":true}))
         {
             return Err("FX aux read body".into());
         }
@@ -89,6 +156,7 @@ pub fn request(
         {
             return Err("FX aux mutation bounds".into());
         }
+        m.validate_restore()?;
         Some(m)
     };
     o.insert("contract".into(), serde_json::json!("C-AUDIO"));
@@ -108,6 +176,19 @@ pub(crate) fn snapshot_compatibility(
     request: &serde_json::Value,
     mut snapshot: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    if (request["body"]["saved_intent"] != true || snapshot["available"] != true)
+        && let Some(o) = snapshot.as_object_mut()
+    {
+        o.remove("restore_ready");
+    }
+    if request["body"]["saved_intent"] == true && snapshot["available"] == true {
+        snapshot["restore_version"] =
+            serde_json::json!(if snapshot["library_sha256"] == BUNDLE_LIBRARY {
+                1
+            } else {
+                0
+            });
+    }
     if request["body"]["return_routing"] == true {
         return Ok(snapshot);
     }
@@ -166,5 +247,69 @@ mod tests {
         v["body"]["bus"] = json!(3);
         v["body"]["panic"] = json!(false);
         assert!(request(&v, 2).is_err());
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Configuration {
+    pub settings: Settings,
+    pub sends: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns: Option<crate::fx_aux_wire::Returns>,
+    #[serde(default)]
+    pub tempo: Option<Tempo>,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tempo {
+    pub bpm: f64,
+    pub denominator: u32,
+    pub modifier: u32,
+}
+
+impl Configuration {
+    pub fn validate_saved(&self, inputs: usize, monitors: usize) -> Result<(), String> {
+        let s = &self.settings;
+        if s.version != 2
+            || s.size != 64
+            || s.reserved != 0
+            || s.algorithm == 0
+            || s.algorithm >= 32
+            || s.bypass > 1
+            || [s.time_ms, s.amount, s.damping, s.rate_hz, s.gain]
+                .iter()
+                .any(|x| !x.is_finite())
+            || self.sends.len() != inputs
+            || self
+                .sends
+                .iter()
+                .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
+        {
+            return Err("FX saved settings/sends".into());
+        }
+        self.returns
+            .as_ref()
+            .ok_or("saved FX requires every return")?
+            .validate(monitors)?;
+        if let Some(t) = &self.tempo {
+            let factor = match t.modifier {
+                0 => 1.,
+                1 => 1.5,
+                2 => 2. / 3.,
+                _ => return Err("FX tempo modifier".into()),
+            };
+            let time = 240000. / t.bpm / f64::from(t.denominator) * factor;
+            if !matches!(s.algorithm, 1 | 8)
+                || !t.bpm.is_finite()
+                || !(30.0..=300.0).contains(&t.bpm)
+                || ![1, 2, 4, 8, 16, 32, 64].contains(&t.denominator)
+                || !(1.0..=2000.0).contains(&time)
+                || (time - s.time_ms).abs() > 1e-9
+            {
+                return Err("FX saved tempo/time".into());
+            }
+        }
+        Ok(())
     }
 }

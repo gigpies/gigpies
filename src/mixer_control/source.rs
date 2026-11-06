@@ -260,6 +260,8 @@ impl SourceState {
                 .as_ref()
                 .is_none_or(|a| self.accepts_admission(a));
         let busy = self.busy();
+        #[cfg(feature = "hardware-host")]
+        let busy = busy || self.remote_fx.as_ref().is_some_and(|r| r.restore);
         let expired = permit
             .expires
             .is_some_and(|d| std::time::Instant::now() >= d);
@@ -530,6 +532,7 @@ impl SourceState {
 #[cfg(feature = "hardware-host")]
 #[derive(Debug)]
 pub(crate) struct RemoteFxSends {
+    pub restore: bool,
     pub ticket: u64,
     pub frame: u64,
     pub sends: crate::mixer::PreparedFxSends,
@@ -546,7 +549,8 @@ impl SourceState {
             return;
         }
         let frame = self.mixer.frame();
-        if self.closure.closed()
+        if (p.restore && !self.mixer.outputs_quiesced())
+            || self.closure.closed()
             || p.cancelled.load(Ordering::Acquire)
             || p.fences.iter().any(|f| !f.valid())
             || std::time::Instant::now() >= p.expires
@@ -574,7 +578,7 @@ mod remote_send_tests {
     use sha2::{Digest, Sha256};
     #[test]
     fn clocked_remote_sends_refuse_cancel_expiry_and_closed_sessions_without_retirement() {
-        for mode in 0..5 {
+        for mode in 0..7 {
             let mut engine = OfflineEngine::new(
                 "11111111-1111-4111-8111-111111111111",
                 Counter(9),
@@ -606,6 +610,7 @@ mod remote_send_tests {
                 )
                 .unwrap();
             source.remote_fx = Some(RemoteFxSends {
+                restore: mode >= 5,
                 ticket: 7,
                 frame: 0,
                 sends,
@@ -615,6 +620,9 @@ mod remote_send_tests {
                 cancelled,
                 result: None,
             });
+            if mode == 6 {
+                source.mixer.quiesce();
+            }
             if mode == 3 {
                 writer.close_audio();
             }
@@ -627,14 +635,17 @@ mod remote_send_tests {
                     source.advance_remote_fx();
                 }
             });
-            assert_eq!(source.remote_fx.as_ref().unwrap().result, Some(mode == 0));
+            assert_eq!(
+                source.remote_fx.as_ref().unwrap().result,
+                Some(mode == 0 || mode == 6)
+            );
             assert_eq!(
                 source.mixer.fx_sends(0).unwrap(),
-                vec![if mode == 0 { 0.75 } else { 0. }; 8]
+                vec![if mode == 0 || mode == 6 { 0.75 } else { 0. }; 8]
             );
             assert_eq!(
                 source.mixer.fx_returns(0).unwrap(),
-                if mode == 0 {
+                if mode == 0 || mode == 6 {
                     crate::fx_aux_wire::Returns {
                         main: 0.,
                         monitors: vec![0.25, 0.75],
@@ -645,7 +656,28 @@ mod remote_send_tests {
             );
             // The slot and allocating prepared payload survive both outcomes
             // until controller code takes them; repeated ticks cannot reapply.
+            if mode == 6 {
+                let permit = ExternalPermit::new(source.closure.clone(), 9, 0, 8, true);
+                let mut called = false;
+                let receipt = source.commit_external(&permit, |mixer| {
+                    called = true;
+                    mixer.rearm().unwrap();
+                    0
+                });
+                assert!(!called);
+                assert_ne!(receipt.code, 0);
+                assert!(source.mixer.outputs_quiesced());
+            }
             let retired = source.remote_fx.take().unwrap();
+            if mode == 6 {
+                let permit = ExternalPermit::new(source.closure.clone(), 9, 0, 9, true);
+                let receipt = source.commit_external(&permit, |mixer| {
+                    mixer.rearm().unwrap();
+                    0
+                });
+                assert_eq!(receipt.code, 0);
+                assert!(!source.mixer.outputs_quiesced());
+            }
             assert_eq!(retired.ticket, 7);
         }
     }

@@ -173,14 +173,18 @@ these controls when unsupported, without retrying a mutation. Both updated ends
 are required for the remote extension; no fallback can claim applied routing.
 Core saved-mix persistence is unchanged: it does not save these FX aux settings
 or routes. Process restart starts with silent monitor returns. GP-SHOW owns
-future saved-show integration.
+the separate saved-intent and restore contract below.
 
-Desk integration remains **unimplemented** in this backend change. Desk must opt
-into readback, enumerate the advertised monitor IDs, distinguish shared owner wet
-gain from Main-only return gain, provide independent per-aux monitor controls,
-retain untouched routing on edits, and settle against correlated acceptance plus
-fresh exact source targets/owner generations. Show current versus pending/refused/
-UNKNOWN and disarmed state; reconnect must not replay edits or rearm outputs.
+Desk consumes this extension through its existing FX aux review workflow:
+[operator controls](../../../shr-desk/docs/FX.md),
+[consumer contract](../../../shr-desk/docs/CONTROL_CONTRACT.md#four-aux-independent-return-routing).
+It enumerates configured monitors, separates shared wet-processing gain from
+Main-only gain, preserves untouched routing and requires correlated acceptance
+plus fresh exact applied targets and owner state. Explicit legacy reads keep
+older palette/send providers usable without claiming routing support. Read errors
+do not trigger fallback, mutation retries, writer grants or output rearm.
+The [GP-FX card](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-fx--writable-owner-effects-in-the-console)
+records integration validation and limitations.
 Physical output mapping, listening, feedback/speaker protection and sustained
 hardware performance remain separate GP-H1 acceptance.
 
@@ -284,3 +288,71 @@ library fallback. Run `cargo test --features hardware-host --lib gp21` normally.
 Actual artifact tests require `GP21_FX_LIBRARY` and their documented `--ignored`
 selection; corpus generation requires explicit `GP21_FIXTURE_OUTPUT` as well.
 These tests are synthetic and never open a physical device.
+
+## Saved four-aux intent and reviewed restore
+
+`gigpies-fx-intent:1` is a separately owned portable file, bounded to 256 KiB.
+It contains `format`, `version`, `show_id`, `library_sha256`, ordered `inputs`
+(the existing exact ID/capture-slot/physical-port identity tuples), logical
+`monitors` and exactly four `configurations` strings. Each string requires exact
+`settings`, `sends`, `tempo` (including explicit null), and `returns`; its limit
+remains 32 KiB. Unknown/duplicate members, missing fields, corrupt/truncated data,
+unsupported versions and incompatible identities refuse. Legacy C-SHOW/core/
+composed files have no FX intent: loading them never invents defaults.
+
+A C-SHOW C-FX module may reference the SHA256 of canonical compact serialized
+intent. Core/composed files remain separate. Paths, endpoints, authority state,
+generations, arm/mute execution, DSP history, talkback holds and recorder execution
+are not saved. Only current settled authoritative configuration may be captured.
+Input replacement changes any member of its identity tuple. Physical-port labels
+retain the producer’s nonempty, at-most-128-byte strings and compare exactly,
+including case and spaces; they do not supply device-path configuration. Monitors are existing
+logical `monitor-N` identities in the show namespace; this model cannot identify
+a new performer/device hidden behind unchanged logical IDs. Physical output routing
+remains machine-local and is not restored or treated as a monitor UUID.
+
+Probe with `{"return_routing":true,"saved_intent":true}`. Available replies add
+`restore_version` (1 for the exact audited approved library, otherwise 0) and
+`restore_ready`, fresh observed output quiescence with a usable source epoch.
+A faulted/quiesced clock needs the existing explicit recovery; a healthy ticking
+source with fully muted outputs can restore without reopening output. Older
+providers refuse the probe; there is no mutation probe or automatic fallback.
+
+A normal `fx_aux_configure` envelope may add `restore` with exactly `version:1`,
+`saved` (the entire portable payload), and four decimal-string
+`expected_generations`. Existing bus/configuration/generation fields must exactly
+match bus 0 of the bundle. One request, reservation, source boundary and correlated
+completion cover all four; no sequential UI edits implement restore. All existing
+writer/lease/revision/epoch/map/library/remote-owner bindings still apply. Local
+publication and remote permission/application recheck output quiescence. The
+remote source retains a rearm interlock through completion. Remote bundle restore
+requires the production autonomous source executor; the older controller-driven
+remote compatibility harness refuses it. Safety gates and human
+holds are preserved, and outputs remain closed. Rearm is separate and reviewed.
+
+All four native preparations and routing admissions precede publication. Audited
+publication is enabled only for library SHA256
+`cefa625b6aee8a742aa83e54d02d26ce3edef0d9907d22856488fe1517a6ae56`.
+The audit used `shr-fx/src/c_api_v2.rs` at owner revision
+`e01d3aa89a908c7ef12b0b4430e2ff1cb2b13998`; the live file matched that revision
+(byte SHA256 `75fa0105a68288e80eb42894e3803b2fe0368fe71007f57fd9a6f4c60edecc76`).
+Preflight checks every owner revision, request-counter capacity and settled/fault
+state and transfers retired objects into reserved wrappers before any target
+publication. Typed ownership establishes valid disjoint tokens with fixed 48 kHz /
+48-frame shape. Calls cannot interleave with process/reset. This discharges the
+approved ABI's argument/stale/duplicate/capacity/settings refusal conditions;
+an unexpected post-preflight native failure is UNKNOWN, never a rollback claim.
+There are at most four active, four retired and four prepared 8 MiB objects
+(96 MiB native bound plus owner/routing storage). Queues/deadlines are unchanged.
+All preparation, JSON, file I/O and native destruction remain off audio.
+
+Prepublication cancellation releases authority and retires tokens. After remote
+permit, source interruption, native fault, owner replacement or missing completion
+is UNKNOWN. Desk confirms only a correlated acceptance followed by fresh exact
+configuration, host generations and settled owner readback for every aux. Matching
+values alone cannot recover lost historical completion. Explicit reconciliation
+and a new review are required; reconnect never replays, regrants or rearms.
+
+[GP-SHOW](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-show--audio-scenes-and-operator-recovery)
+owns validation and remaining work. [Desk usage](../../../shr-desk/docs/FX.md#saved-fx-intent)
+owns the operator controls. No hardware qualification is implied.

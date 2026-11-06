@@ -1,24 +1,9 @@
 //! Serialized native-f64 SHR FX palette owner. No DSP is duplicated here.
 use libloading::Library;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{ffi::c_void, path::Path, sync::Arc};
 type Result<T> = std::result::Result<T, String>;
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Settings {
-    pub version: u32,
-    pub size: u32,
-    pub algorithm: u32,
-    pub bypass: u32,
-    pub time_ms: f64,
-    pub amount: f64,
-    pub damping: f64,
-    pub rate_hz: f64,
-    pub gain: f64,
-    pub seed: u32,
-    pub reserved: u32,
-}
+pub use crate::fx_aux_wire::Settings;
 #[repr(C)]
 #[derive(Clone, Copy, Default, Serialize)]
 pub struct Capabilities {
@@ -272,6 +257,40 @@ impl Owner {
             capabilities: self.capabilities,
         }
     }
+    /// Preflight the audited v2 publication conditions without publishing a target.
+    /// The caller holds all four owners exclusively until the complete bundle is
+    /// published. Retired storage transfers into a reserved control-owned wrapper.
+    pub(crate) fn preflight_token(
+        &mut self,
+        token: Option<&PreparedToken>,
+        revision: u64,
+        retired: &mut PreparedToken,
+    ) -> std::result::Result<Option<u64>, i32> {
+        let status = self.status_bounded().map_err(|_| -1)?;
+        if status.revision != revision {
+            return Err(-4);
+        }
+        if status.transition != 0
+            || status.fault != 0
+            || status.current != status.target
+            || matches!(status.request_state, 1 | 2)
+        {
+            return Err(-2);
+        }
+        if !retired.pointer.is_null() || !Arc::ptr_eq(&self._library, &retired.library) {
+            return Err(-2);
+        }
+        if let Some(token) = token {
+            if token.pointer.is_null() || !Arc::ptr_eq(&self._library, &token.library) {
+                return Err(-1);
+            }
+            let request = status.accepted_request.checked_add(1).ok_or(-5)?;
+            self.take_retired(retired);
+            Ok(Some(request))
+        } else {
+            Ok(None)
+        }
+    }
     /// Publish external storage; the caller retains its wrapper for off-thread
     /// destruction even on success. No Arc decrement occurs in this method.
     pub(crate) fn publish_token(
@@ -439,6 +458,131 @@ impl Drop for Owner {
         self.cancel();
         if !self.handle.is_null() {
             unsafe { (self.destroy)(self.handle) };
+        }
+    }
+}
+
+/// Fixed four-owner publication storage; all allocation and destruction is on
+/// the controller. Only the hash-audited bundle path may construct this packet.
+pub(crate) struct PreparedBundle {
+    tokens: [Option<PreparedToken>; 4],
+    retired: [PreparedToken; 4],
+    revisions: [u64; 4],
+    pub(crate) generations: [u64; 4],
+    pub(crate) settings: [Settings; 4],
+}
+impl PreparedBundle {
+    pub(crate) fn prepare(
+        preparers: [&Preparer; 4],
+        status: [Status; 4],
+        generations: [u64; 4],
+        configs: &[crate::fx_aux_wire::Configuration; 4],
+    ) -> Result<Self> {
+        let mut tokens = std::array::from_fn(|_| None);
+        for i in 0..4 {
+            if status[i].transition != 0
+                || status[i].fault != 0
+                || matches!(status[i].request_state, 1 | 2)
+                || generations[i] == u64::MAX
+            {
+                return Err("FX restore requires four settled owners".into());
+            }
+            let token = preparers[i].prepare(&configs[i].settings)?;
+            if configs[i].settings != status[i].current {
+                tokens[i] = Some(token);
+            }
+        }
+        Ok(Self {
+            tokens,
+            retired: std::array::from_fn(|i| preparers[i].empty_token()),
+            revisions: status.map(|s| s.revision),
+            generations,
+            settings: configs.each_ref().map(|c| c.settings),
+        })
+    }
+    pub(crate) fn publish(
+        &mut self,
+        owners: [&mut Owner; 4],
+    ) -> std::result::Result<[Option<u64>; 4], i32> {
+        let mut requests = [None; 4];
+        for i in 0..4 {
+            requests[i] = owners[i].preflight_token(
+                self.tokens[i].as_ref(),
+                self.revisions[i],
+                &mut self.retired[i],
+            )?;
+        }
+        // For the audited artifact all refusal predicates have been discharged.
+        // No process/reset/query from another execution context can interleave.
+        for i in 0..4 {
+            if let Some(token) = &mut self.tokens[i]
+                && let Err(code) =
+                    owners[i].publish_token(token, requests[i].unwrap(), self.revisions[i])
+            {
+                return Err(-10000 + code); // unexpected partial application is UNKNOWN
+            }
+        }
+        Ok(requests)
+    }
+}
+
+#[cfg(test)]
+mod bundle_tests {
+    use super::*;
+    #[test]
+    #[ignore = "GP_FX_LIBRARY approved actual owner; no device or network"]
+    fn actual_bundle_refuses_before_any_publication_and_applies_all() {
+        let path = std::path::PathBuf::from(std::env::var_os("GP_FX_LIBRARY").unwrap());
+        let mut owners: [Owner; 4] = std::array::from_fn(|_| Owner::load(&path).unwrap());
+        let preparers = owners.each_ref().map(Owner::preparer);
+        let initial = owners.each_mut().map(|o| o.status().unwrap());
+        let configs = std::array::from_fn(|i| {
+            let mut settings = initial[i].current;
+            settings.time_ms = 30. + i as f64;
+            crate::fx_aux_wire::Configuration {
+                settings,
+                sends: vec![0.; 4],
+                returns: Some(crate::fx_aux_wire::Returns::silent_monitors(2)),
+                tempo: None,
+            }
+        });
+        let mut bundle =
+            PreparedBundle::prepare(preparers.each_ref(), initial, [0; 4], &configs).unwrap();
+        let mut other = initial[3].current;
+        other.time_ms = 50.;
+        owners[3].prepare(&other).unwrap();
+        owners[3].publish(1, 0).unwrap();
+        let mut result = None;
+        crate::remote::assert_no_allocations(|| {
+            result = Some(bundle.publish(owners.each_mut()));
+        });
+        assert!(result.unwrap().is_err());
+        for o in &mut owners[..3] {
+            assert_eq!(o.status().unwrap().accepted_request, 0);
+        }
+        for _ in 0..21 {
+            for o in &mut owners {
+                o.process(&[0.; 96], &mut [0.; 96]);
+            }
+        }
+        // Deliberately leave retirement occupied: preflight must transfer it.
+        let status = owners.each_mut().map(|o| o.status().unwrap());
+        let mut bundle =
+            PreparedBundle::prepare(preparers.each_ref(), status, [0; 4], &configs).unwrap();
+        let mut result = None;
+        crate::remote::assert_no_allocations(|| {
+            result = Some(bundle.publish(owners.each_mut()));
+        });
+        let requests = result.unwrap().unwrap();
+        for _ in 0..21 {
+            for o in &mut owners {
+                o.process(&[0.; 96], &mut [0.; 96]);
+            }
+        }
+        for i in 0..4 {
+            let s = owners[i].status().unwrap();
+            assert_eq!(s.current, configs[i].settings);
+            assert_eq!(Some(s.applied_request), requests[i]);
         }
     }
 }

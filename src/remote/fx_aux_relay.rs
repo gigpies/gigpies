@@ -55,7 +55,16 @@ impl HostAuthority {
             json!({"contract":owner::CONTRACT,"version":1,"command":c}),
         ));
     }
-    fn aux_finish(&mut self, p: Pending, state: &str, reason: Option<String>) {
+    fn aux_finish(&mut self, p: Pending, mut state: &str, mut reason: Option<String>) {
+        if p.mutation.restore.is_some() {
+            // Retire the source's disarm interlock only after completion/refusal.
+            if let Err(error) = self.provider.release_fx_restore(p.ticket) {
+                state = "unknown";
+                reason = Some(format!("FX source retirement uncertain: {error}"));
+                p.cancelled
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
         p.cancelled
             .store(true, std::sync::atomic::Ordering::Release);
         let v = Self::aux_reply(
@@ -73,6 +82,11 @@ impl HostAuthority {
         let mut v = Self::aux_reply(r, "snapshot", None, None);
         v["revision"] = json!(self.provider.brain_snapshot().revision);
         v["available"] = json!(false);
+        v["restore_ready"] = json!(
+            self.provider.engine().outputs_quiesced()
+                && self.provider.engine().clock_status().state
+                    != crate::clock_domain::ClockState::Quiesced
+        );
         if let Some(o) = &self.aux.observation
             && self.aux_current(o)
             && self
@@ -121,8 +135,9 @@ impl HostAuthority {
             if let Some(p) = &self.aux.pending
                 && self.provider.frame() < p.frame.saturating_add(240)
             {
-                v["buses"][p.mutation.bus]["applied_generation"] =
-                    json!(p.mutation.expected_generation);
+                for m in p.mutation.edits() {
+                    v["buses"][m.bus]["applied_generation"] = json!(m.expected_generation);
+                }
             }
         }
         Ok(v)
@@ -266,40 +281,43 @@ impl HostAuthority {
                     .pending
                     .as_ref()
                     .ok_or("FX aux unexpected completion")?;
-                let b = &observation.buses[p.mutation.bus];
-                if !p.permitted
-                    || !p.source_applied
-                    || p.ticket != ticket.0
-                    || p.frame != apply_frame.0
-                    || b.generation.0 != p.mutation.expected_generation.0 + 1
-                    || observation.next_frame.0 <= p.frame
-                {
-                    return Err("FX aux applied boundary mismatch".into());
-                }
-                let actual: owner::Configuration =
-                    serde_json::from_str(&b.configuration_json).map_err(|e| e.to_string())?;
-                if let Some(c) = &p.mutation.configuration_json {
-                    let target: owner::Configuration =
-                        serde_json::from_str(c).map_err(|e| e.to_string())?;
-                    if serde_json::to_value(&actual).map_err(|e| e.to_string())?
-                        != serde_json::to_value(target).map_err(|e| e.to_string())?
+                let mut settled = true;
+                for mutation in p.mutation.edits() {
+                    let b = &observation.buses[mutation.bus];
+                    if !p.permitted
+                        || !p.source_applied
+                        || p.ticket != ticket.0
+                        || p.frame != apply_frame.0
+                        || b.generation.0 != mutation.expected_generation.0 + 1
+                        || observation.next_frame.0 <= p.frame
                     {
-                        return Err("FX aux applied target mismatch".into());
+                        return Err("FX aux applied boundary mismatch".into());
                     }
+                    let actual: owner::Configuration =
+                        serde_json::from_str(&b.configuration_json).map_err(|e| e.to_string())?;
+                    if let Some(c) = &mutation.configuration_json {
+                        let target: owner::Configuration =
+                            serde_json::from_str(c).map_err(|e| e.to_string())?;
+                        if serde_json::to_value(&actual).map_err(|e| e.to_string())?
+                            != serde_json::to_value(target).map_err(|e| e.to_string())?
+                        {
+                            return Err("FX aux applied target mismatch".into());
+                        }
+                    }
+                    if !mutation.panic
+                        && self.provider.engine_mut().fx_sends(mutation.bus).as_ref()
+                            != Some(&actual.sends)
+                    {
+                        return Err("FX aux source send readback mismatch".into());
+                    }
+                    if !mutation.panic
+                        && let Some(returns) = &actual.returns
+                        && self.provider.engine().fx_returns(mutation.bus).as_ref() != Some(returns)
+                    {
+                        return Err("FX return source readback mismatch".into());
+                    }
+                    settled &= b.generation == b.applied_generation;
                 }
-                if !p.mutation.panic
-                    && self.provider.engine_mut().fx_sends(p.mutation.bus).as_ref()
-                        != Some(&actual.sends)
-                {
-                    return Err("FX aux source send readback mismatch".into());
-                }
-                if !p.mutation.panic
-                    && let Some(returns) = &actual.returns
-                    && self.provider.engine().fx_returns(p.mutation.bus).as_ref() != Some(returns)
-                {
-                    return Err("FX return source readback mismatch".into());
-                }
-                let settled = b.generation == b.applied_generation;
                 self.aux.observation = Some(observation);
                 self.aux.observed_at = now;
                 self.aux.pending.as_mut().unwrap().brain_applied = settled;
@@ -352,28 +370,49 @@ impl HostAuthority {
                 return Err("FX aux Brain owner unavailable".into());
             }
             let o = self.aux.observation.as_ref().unwrap();
-            let b = &o.buses[m.bus];
-            if m.owner_binding.as_deref()
-                != Some(owner::binding(&o.descriptor, &o.library_sha256)?.as_str())
-                || m.library_sha256 != o.library_sha256
-                || m.map_revision != o.descriptor.map_generation
-                || m.expected_generation.0 == u64::MAX
-                || m.expected_generation != b.generation
-                || (!m.panic && b.generation != b.applied_generation)
-            {
-                return Err("FX aux stale/busy basis".into());
-            }
-            if let Some(c) = &m.configuration_json {
-                let c: owner::Configuration = serde_json::from_str(c).map_err(|e| e.to_string())?;
-                if let Some(r) = &c.returns {
-                    r.validate(self.provider.topology().monitors)?;
+            if let Some(restore) = &m.restore {
+                if self.source_clock_status.is_none() {
+                    return Err("FX restore requires production source execution".into());
                 }
-                if c.sends.len() != self.provider.topology().inputs.len()
-                    || c.sends
-                        .iter()
-                        .any(|v| !v.is_finite() || !(0.0..=1.).contains(v))
+                restore.saved.compatible(
+                    &r.show_id,
+                    &o.library_sha256,
+                    &self.provider.topology().inputs,
+                    self.provider.topology().monitors,
+                )?;
+                if self.provider.engine().clock_status().state
+                    == crate::clock_domain::ClockState::Quiesced
+                    || !self.provider.engine().outputs_quiesced()
                 {
-                    return Err("FX aux sends".into());
+                    return Err("FX restore requires disarmed and quiesced source".into());
+                }
+            }
+            for edit in m.edits() {
+                let m = &edit;
+                let b = &o.buses[m.bus];
+                if m.owner_binding.as_deref()
+                    != Some(owner::binding(&o.descriptor, &o.library_sha256)?.as_str())
+                    || m.library_sha256 != o.library_sha256
+                    || m.map_revision != o.descriptor.map_generation
+                    || m.expected_generation.0 == u64::MAX
+                    || m.expected_generation != b.generation
+                    || (!m.panic && b.generation != b.applied_generation)
+                {
+                    return Err("FX aux stale/busy basis".into());
+                }
+                if let Some(c) = &m.configuration_json {
+                    let c: owner::Configuration =
+                        serde_json::from_str(c).map_err(|e| e.to_string())?;
+                    if let Some(r) = &c.returns {
+                        r.validate(self.provider.topology().monitors)?;
+                    }
+                    if c.sends.len() != self.provider.topology().inputs.len()
+                        || c.sends
+                            .iter()
+                            .any(|v| !v.is_finite() || !(0.0..=1.).contains(v))
+                    {
+                        return Err("FX aux sends".into());
+                    }
                 }
             }
             let descriptor = o.descriptor.clone();
@@ -480,6 +519,15 @@ impl HostAuthority {
             || (!p.permitted && frame >= p.frame)
             || (self.source_clock_status.is_none() && !p.source_applied && frame > p.frame)
         {
+            let reason = format!(
+                "FX aux owner/deadline/source boundary lost: owner_current={valid} permitted={} now={now}/{} frame={frame}/{} reservation={}",
+                p.permitted,
+                p.deadline,
+                p.frame,
+                self.provider
+                    .engine_mut()
+                    .external_matches(&p.request, &p.fingerprint)
+            );
             self.provider
                 .engine_mut()
                 .cancel_fx_external(&p.request, &p.fingerprint);
@@ -494,11 +542,7 @@ impl HostAuthority {
                 );
             }
             let state = if p.permitted { "unknown" } else { "rejected" };
-            self.aux_finish(
-                p,
-                state,
-                Some("FX aux owner/deadline/source boundary lost".into()),
-            );
+            self.aux_finish(p, state, Some(reason));
             return Ok(());
         }
         if p.prepared && !p.permitted {
@@ -512,19 +556,26 @@ impl HostAuthority {
                         .audio_fence(),
                 ];
                 let mut sends = crate::mixer::PreparedFxSends::default();
-                if let Some(c) = &p.mutation.configuration_json {
-                    let c: owner::Configuration =
-                        serde_json::from_str(c).map_err(|e| e.to_string())?;
-                    if let Some(r) = &c.returns {
-                        sends.set_returns(self.provider.topology().monitors, p.mutation.bus, r)?;
+                for mutation in p.mutation.edits() {
+                    if let Some(c) = &mutation.configuration_json {
+                        let c: owner::Configuration =
+                            serde_json::from_str(c).map_err(|e| e.to_string())?;
+                        if let Some(r) = &c.returns {
+                            sends.set_returns(
+                                self.provider.topology().monitors,
+                                mutation.bus,
+                                r,
+                            )?;
+                        }
+                        sends.set(
+                            self.provider.topology().inputs.len(),
+                            mutation.bus,
+                            &c.sends,
+                        )?;
                     }
-                    sends.set(
-                        self.provider.topology().inputs.len(),
-                        p.mutation.bus,
-                        &c.sends,
-                    )?;
                 }
                 let action = crate::mixer_control::source::RemoteFxSends {
+                    restore: p.mutation.restore.is_some(),
                     ticket: p.ticket,
                     frame: p.frame,
                     sends,
@@ -596,16 +647,18 @@ impl HostAuthority {
             && !p.source_applied
             && frame == p.frame
         {
-            if let Some(c) = &p.mutation.configuration_json {
-                let c: owner::Configuration = serde_json::from_str(c).map_err(|e| e.to_string())?;
-                if let Some(r) = &c.returns {
+            let edits = p.mutation.edits();
+            for mutation in edits {
+                if let Some(c) = &mutation.configuration_json {
+                    let c: owner::Configuration =
+                        serde_json::from_str(c).map_err(|e| e.to_string())?;
+                    if let Some(r) = &c.returns {
+                        self.provider.engine_mut().set_fx_returns(mutation.bus, r)?;
+                    }
                     self.provider
                         .engine_mut()
-                        .set_fx_returns(p.mutation.bus, r)?;
+                        .set_fx_sends(mutation.bus, &c.sends)?;
                 }
-                self.provider
-                    .engine_mut()
-                    .set_fx_sends(p.mutation.bus, &c.sends)?;
             }
             p.source_applied = true;
         }

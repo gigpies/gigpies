@@ -88,7 +88,7 @@ as `ecd471e`; this maintenance does not authorize T3 or physical activation.
 | [GP-PANEL](#gp-panel--shared-physical-instrument-panel) | GigPies shared UI; Desk/Lightdesk consumers | IN PROGRESS: real-terminal proof and initial production adapters; acceptance gates remain |
 | [GP-METER](#gp-meter--measured-audio-on-the-real-desk) | GigPies lead; SHR Desk consumer | IMPLEMENTED / software-validated; owner-artifact P4 BLOCKED: supply reviewed manifest |
 | [GP-FX](#gp-fx--writable-owner-effects-in-the-console) | GigPies lead; SHR FX provider, SHR Desk consumer | SOFTWARE VALIDATED: four Brain auxes and Desk controls; physical acceptance separate |
-| [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) | GigPies lead; SHR Desk consumer | PLANNED: define scene contents, safes and reviewed recall before implementation |
+| [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) | GigPies lead; SHR Desk consumer | IN PROGRESS: bounded saved FX intent and reviewed disarmed restore |
 | [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | GigPies | IN PROGRESS: E0–E6 software validated; E7 recording checks complete, source review and musical qualification open |
 | [GP-AUTO-BASS-LOW](#gp-auto-bass-low--observed-low-energy-and-definition) | GigPies | IMPLEMENTED / software-validated: independent low-energy objective and source-stage guards; musical acceptance pending |
 | [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: optional legacy hierarchy; superseded for current auditions |
@@ -494,7 +494,7 @@ when needed and run /home/shome/Documents/knowledge/.zk/validate.sh.
 
 ## GP-FX — writable owner effects in the console
 
-State: SOFTWARE VALIDATED (2026-10-30). Owner clarification: four stereo FX auxes,
+State: SOFTWARE VALIDATED (2026-11-06). Owner clarification: four stereo FX auxes,
 each with per-input post-fader/post-mute sends, one selected wet effect and a
 return to Main. The backend extension below adds independent wet sends to the
 existing configurable monitor buses, which still have no return to Main. This does not expose SHR FX's standalone A/B slot rack.
@@ -505,7 +505,7 @@ mono monitor. New monitor routes default silent; the shared SHR FX wet gain and
 owner/tail semantics remain intact. The tap, strict opt-in contract, compatibility,
 source readback and later Desk requirements are specified in
 [REMOTE_FX_CONTROL](../reference/REMOTE_FX_CONTROL.md#independent-wet-return-routing-opt-in-readback-extension-1).
-This backend change does not implement Desk controls or saved shows. GP-H1 local
+Desk consumer acceptance is recorded below; saved shows remain separate. GP-H1 local
 T0–T2 acceptance remains complete; no extraction or T3 work was restarted.
 
 Implementation/evidence for this extension uses canonical rpi5 `main` at
@@ -562,14 +562,82 @@ validation used the original checkout and branch. The subsequent user-authorized
 commit/push preparation passed all 67 publication-policy tests; versioned commit
 and push guards remain enabled.
 
-Exact remaining work: Desk must implement the opt-in routing snapshot and the
-independent controls/settlement described in the reference; existing palette and
-input-send controls do not supply these new monitor controls. GP-SHOW still owns
-saved aux/return persistence. GP-H1 retains separately authorized T3 distributed
-timing/headroom and physical mapping, protection, listening and sustained-load
-qualification. No physical activation, two-node traffic, queue/deadline changes,
-host tuning or deployment are part of this extension. Source commit/push was
-separately authorized after software validation.
+Desk return controls (November 6, canonical rpi5, uncommitted software work):
+implemented against backend `60b1fb95b1fdb3a47e70ffef1a177ab2ad70b4e4`
+and Desk base `383d0f5c40827f12c044981fbae279488ea130ec`. No backend production
+behavior or effect owner was changed. The production Frontend now exposes
+Main-only and every configured monitor return for each of four auxes through
+existing keyboard/controller/menu actions, with a moving monitor window and
+complete reviewed targets. Shared SHR FX wet gain remains separate. Strict opt-in
+decoding validates version, ordered identities, dimensions and finite levels.
+Explicit legacy read preserves older palette/send workflows; transport/auth errors
+never imply legacy support and mutations are not capability probes.
+
+Settlement requires correlated acceptance followed by fresh exact applied targets,
+host generation and owner state, including source/epoch/map/library/session fences.
+Route-only changes need not advance DSP requests. Reconnect stays read-only,
+never replays, grants or rearms; unknown outcomes require explicit reconciliation
+and new review. Source/owner replacement invalidates old reviews. Pending,
+refused, UNKNOWN, stale and disarmed states remain visible. Actual testing also
+exposed and fixed Desk's stale raw-telemetry dispatch: an old observation is now
+consumed without renewing freshness, rather than misclassified as a mutation reply.
+
+Bounded acceptance uses the unchanged approved GP-H1 artifacts (all nine hashes
+rechecked). Actual Desk Frontend keys/review/confirmation reach applied return
+readback through local and authenticated loopback remote providers, with all four
+auxes at Main 0.95, monitor-1 0.05 and monitor-2 0.10. The local source harness
+checks 192 independent Main/monitor samples; remote acceptance checks 17,568 Main
+samples and matching monitor outputs with zero native input/output drops.
+Untouched settings/sends/other auxes and unchanged DSP request IDs are checked.
+Read-only reconnect preserves the applied routes. Frozen actual producer snapshots
+and exact reproduction commands live in Desk's
+[fixture README](../../../shr-desk/tests/fixtures/gp-fx-aux/v1/README.md).
+The final headless 16-input Frontend episode also passed all 24 reviewed edits,
+including existing palette, send, tempo, bypass, panic and cancellation paths.
+Snapshot SHA256: local
+`f6f993e05e3dfaf0324fd0e9e9cfdfb185578b29f4851b13b4c7e2105c55dac0`;
+remote `f25c38ed0460ff82c65c1fce86ba9cc299da01517a8f33408e58da031840836e`.
+These are local software results, not hardware or two-node acceptance.
+
+Four existing actual-owner regressions also passed: local authority/refusal/panic/
+disarmed recovery/rearm and independent samples, clocked remote publication during
+controller stall, four-aux source/Brain samples/loss, and PA/FX/raw REC with exact
+PCM24 tails and epoch rearm. They preserve dry/Main-at-default/raw REC and the
+operator-monitor semantics. Normal Frontend tests exercise rendered controls with
+0/1/3/5/17/64 monitors and every aux, untouched-field preservation, stale/UNKNOWN/
+refused/pending/disarmed displays; transport tests cover lost completion, wrong
+target/owner, malformed reads, explicit legacy mode and replacement fences.
+
+Desk validation uses Rust 1.97.1, locked dependencies, one build job,
+`CARGO_INCREMENTAL=0`, normal targets and the nonblocking shared build lock.
+Complete normal all-target suites passed: **default 383 tests / 29 ignored;
+native 386 tests / 29 ignored**, zero failures. Native checks used CPU lavapipe
+with display variables removed. Both all-target Clippy configurations passed with
+warnings denied. Both release builds and formatting checks passed.
+GigPies' six focused FX integration tests and hardware-host library/tests Clippy
+with warnings denied also passed. Its production backend is unchanged, so its
+complete normal default/hardware-host suite results above remain the backend
+baseline; this task added only opt-in acceptance harnesses. Unchanged historical,
+exhaustive, audition and unrelated actual-provider opt-ins were skipped.
+
+Desk task closeout: all tools were idle; the shared lock, Git state, processes,
+open files/maps, inode/hardlink identities and repository/runtime symlinks were
+checked. Removed 82 exact task-run test executables and three temporary logs,
+reclaiming **9,234,976,768 allocated bytes (8.60 GiB)**.
+The two actual producer snapshots (about 34 KiB), reusable source/tests/docs,
+approved module artifacts and required runtime executables remain. No cleaned
+output was rebuilt. No scratch workspace or one-use helper was retained.
+Normal targets retain approximately 13 GiB (Desk) and 9.8 GiB (GigPies) of reusable
+dependencies/debug and runtime artifacts; approximately 41 GiB is free.
+
+Persistence dependency: [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) owns the separate saved FX payload, bundle restore and Desk lifecycle; the return-control acceptance above did not validate persistence.
+GP-H1 retains separately authorized T3 distributed timing/headroom and physical
+mapping, protection, listening and sustained-load qualification. Local T0–T2
+acceptance remains complete. No physical activation, playback, two-node traffic,
+queue/deadline changes, host tuning, commits, publication or deployment occurred
+in this Desk task. Owning consumer usage and contract details are in
+[Desk FX](../../../shr-desk/docs/FX.md) and
+[Desk control contract](../../../shr-desk/docs/CONTROL_CONTRACT.md).
 
 | Dependency | Owner / deliverable | Acceptance |
 |---|---|---|
@@ -697,11 +765,180 @@ exhaustive research, load benchmarks, device activation and listening are exclud
 
 ## GP-SHOW — audio scenes and operator recovery
 
-State: PLANNED. Outcome: browse/preview/cancel/recall a bounded audio scene with
-explicit safes, revision checks and truthful readback. Next: define saved versus
-machine-only state and retained human holds. Exclude automatic unmute, resumed
-recording/talkback and implicit cross-system lighting actions. Test atomic refusal,
-interrupted recall, reconnect and recovery against actual providers.
+State: IN PROGRESS overall. The first bounded slice is implemented and software-
+validated: portable four-aux FX intent and reviewed, output-quiesced restore through
+the production SHR Desk Frontend. Full audio scenes remain open. This task's new validation must stand on its own; GP-FX and GP-H1
+acceptance above is baseline evidence only.
+
+Implementation uses a separate `gigpies-fx-intent:1` file, with exactly four complete
+configurations (all owner settings, tempo, input sends, Main and configured monitor
+returns). Show UUID, exact audited library identity, ordered input IDs/capture slots/
+physical-port labels and logical monitor IDs establish compatibility. No automatic
+remap or legacy defaults. Current producer monitors are logical `monitor-N` buses
+within the show namespace, not persistent device/person UUIDs. A changed count or
+logical identity is incompatible. Physical output repatching does not rename the
+logical monitor. Reusing every identity for a different musician/physical device is
+not detectable by this producer model; no physical identity qualification is claimed.
+Input ID, capture slot or physical-port replacement refuses even at unchanged count.
+Physical-port labels preserve the producer’s nonempty, at-most-128-byte strings
+(including spaces/case); they are compared exactly, not normalized or treated as
+machine device-path configuration.
+
+C-SHOW remains compatibility metadata; its optional C-FX module can reference the
+canonical payload SHA256. Existing core/composed intent is independent and excludes
+FX. Neither loading nor this restore invokes startup-only composed restoration.
+Runtime histories/tails, grants/leases/epochs/generations, pending work, armed state,
+held talkback, recorder execution, credentials and device paths are unrepresentable
+in the saved payload. The file directory is machine-local configuration.
+
+A single existing FX authority request carries the complete bundle. Local and remote
+preparation validate all four before publication. Publication preflight is restricted
+to the approved GP-H1 FX library hash; the audited native ABI refuses invalid pointers,
+stale/duplicate request or revision, pending/retired/transition capacity and incompatible
+rate/block shape. Typed token provenance fixes pointers/rate/block; serialized owners,
+checked counters/revisions, settled status and reserved retirement wrappers discharge
+all refusal conditions before the first publish. No native allocation/destruction or
+JSON occurs on the source boundary. An unexpected native failure after this preflight
+is uncertainty, never atomic-refusal or rollback evidence.
+
+One bundle is outstanding; four prepared tokens plus four active and four retired
+objects bound native storage at 96 MiB, plus existing owner structures and bounded
+routing/configuration storage. Existing queue capacities, deadlines and DSP owners
+are unchanged. Cancellation before publication retires prepared storage on control;
+postpermit interruption/owner loss may leave partial application and is UNKNOWN.
+Remote source publication retains a quiescence interlock until completion/retirement,
+so concurrent rearm cannot pass its boundary while restoration is pending. Remote
+bundles require the production autonomous source executor; controller-driven remote
+compatibility execution refuses this new operation.
+
+Desk provides explicit capability probe, sixteen file slots, save/replace, select,
+load, full current/saved review, cancel and separate confirmation through existing
+semantic menu/controller/input and paginated review. Slot capacity is a bounded UI
+library, not an input/monitor product limit. Loading only reads the file. Save uses
+fresh settled authoritative readback and durable temporary-write/fsync/rename/directory-
+fsync; errors after replacement report durability uncertainty. Confirmation requires
+an explicit FX grant, fresh identity/revision/lease and quiesced outputs, then correlated
+acceptance plus exact fresh four-aux targets/generations/settlement. Lost completion
+never becomes success from matching values. Reconnect is read-only; rearm remains a
+separate reviewed action. Core mix, PA, lighting, recording, talkback and human holds
+are outside this transaction.
+
+Validation (2026-11-06, canonical rpi5; current uncommitted source, not baseline):
+
+| Final normal all-target suite | Passed | Ignored opt-ins | Binaries |
+| --- | ---: | ---: | ---: |
+| GigPies default | 559 | 22 | 77 |
+| GigPies hardware-host | 694 | 85 | 80 |
+| SHR Desk default | 388 | 30 | 41 |
+| SHR Desk native | 391 | 30 | 41 |
+
+All four all-target Clippy gates (`-D warnings`), all four release builds and both
+format checks passed. Every Cargo gate used Rust 1.97.1, `--locked -j1`,
+`CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1`, normal targets and the shared nonblocking
+`flock -xn /home/shome/p/.gigpies-build.lock`. Commands were `cargo +1.97.1 test
+--locked -j1 --all-targets`, `cargo +1.97.1 clippy --locked -j1 --all-targets --
+-D warnings` and `cargo +1.97.1 build --locked -j1 --release`, adding the indicated
+feature before `--`. Native tests unset DISPLAY/WAYLAND_DISPLAY and explicitly
+selected `/usr/share/vulkan/icd.d/lvp_icd.json` with both VK_DRIVER_FILES and
+VK_ICD_FILENAMES. Focused saved-contract tests passed in both repositories (two
+each), including complete non-null tempo and producer-compatible long/cased/spaced
+port labels; all four complete gates were rerun after that compatibility correction.
+
+All nine approved GP-H1 artifact hashes match. Publication regression tests
+(6 GigPies, 9 Desk), complete-index/HEAD guards (804/568 entries), changed/untracked
+worktree policy checks (16/21 files), 98 relative file links and 55 anchors passed.
+No dependency, sibling owner or approved artifact was changed. Source branches
+remain `main`; no commits/publication, worktrees or delegated sessions were used.
+
+Frozen source evidence: GigPies HEAD `60b1fb95b1fdb3a47e70ffef1a177ab2ad70b4e4`
+and Desk HEAD `383d0f5c40827f12c044981fbae279488ea130ec`, each with the preserved
+uncommitted implementation. SHA256 tree digests over sorted unique Git-known plus
+untracked nonignored `src/`, `tests/`, Cargo.toml and Cargo.lock files (feed each
+relative UTF-8 path, NUL, then its binary SHA256) are:
+
+- GigPies, 589 files: `978ed625b504f1039c02490e3d7115157a68051a2c00db21a311d3bbf65af784`.
+- Desk, 484 files: `dc62f9dab3faae93416e8a9c6d6513fdb0a74e7344698f9c4b900897816e11e7`.
+- Release Desk driver `target/release/deps/fx_aux_actual-dfadab3e07e1c7f8`:
+  `23be39162b5ac6bba2182348b0f81e18d34b6647b7b1f7199f6761d7f6057af1`.
+
+Final actual-provider software acceptance: all sixteen selected episodes have passing
+results on the frozen release binaries. The production Frontend exercised save →
+change all four → load/full paginated rendered preview → cancel without mutation,
+then new preview → explicit single-bundle restore → correlated exact settled
+four-aux readback, followed by read-only reconnect without replay/grant/rearm.
+Local source checked **94,848 silent output samples** with nonzero synthetic capture;
+authenticated loopback checked **499,200 silent output samples**, 2,584 Brain blocks,
+zero source-egress refusals/drops, zero late wet packets, zero native input/output
+drops and no source gap. Both preserved core/composed intent and Disarmed output
+state. No runtime safety state was read from disk. Existing independent-return
+actual workflows also passed. Release engine harness
+`target/release/deps/gigpies-0fe0a176ba2ad145` SHA256 is
+`9cddabac5b6236f950df6844bf90acf70ab9042af89f9b0b6dbd9031c8e65a08`.
+
+There was **one failed final TLS attempt**, immediately following harness compilation:
+source gap 99,168 → 99,648, 10 source-egress offer refusals and two late wet packets.
+Generation changed 2 → 3 before confirmation, so the stale bundle review was refused;
+the owner’s last ticket remained 8 (the preceding individual edits). All 1,352,832
+observed output samples stayed silent and core intent was unchanged. The fresh,
+bounded run above used identical binaries and unchanged bounds and passed. The
+underlying transient scheduling/encoder stall was not isolated; the failure is
+retained as a timing limitation, not erased by the passing run. This is functional
+software acceptance, not timing robustness or hardware qualification.
+
+Earlier debug loopback attempts also refused after source-egress pressure caused
+source gaps/owner-generation changes (one diagnostic: 34 egress refusals / 5,862
+encoded packets, first source gap 43,488 → 43,632). Those failures are not acceptance.
+Production deadlines and queue bounds were unchanged. Earlier stale-driver schema,
+transient cancellation-wait state and compile/Clippy failures were corrected; final
+normal gates passed with those fixes. No automatic retry/replay was added.
+
+Reproduction: in GigPies, use the same shared nonblocking lock and Cargo environment
+above, set `GP_FX_LIBRARY` to the manifest’s approved FX library and
+`GP_FX_DESK_TEST_EXE` to the recorded absolute Desk release driver, unset fixture-output
+variables, and run each name separately with `cargo +1.97.1 test --locked -j1
+--release --features hardware-host --lib NAME -- --ignored --nocapture --test-threads=1`:
+
+```
+actual_saved_fx_tls_frontend_and_silence
+actual_bundle_refuses_before_any_publication_and_applies_all
+actual_bundle_cancel_stale_owner_loss_and_application_interruption
+actual_frontend_saved_fx_local_samples
+actual_frontend_returns_local_samples
+actual_four_aux_tls_brain_controls_and_samples
+actual_aux_authority_boundary_samples_failed_edit_and_panic
+actual_clocked_remote_aux_applies_during_controller_stall
+actual_four_aux_source_brain_roundtrip_and_loss
+actual_owner_reserved_window_preserves_continuity_without_output_service
+actual_owner_gap_and_output_pressure_keep_exact_frame_witnesses
+actual_owner_idle_refusal_retains_cause_without_source_or_controller_service
+actual_owner_policy_revocation_does_not_need_controller_or_media_poll
+actual_owner_proxy_disconnect_closes_without_controller_service
+actual_owner_retirement_backpressure_preserves_closure
+actual_owner_control_stall_closure_and_retirement
+```
+
+Unchanged historical/exhaustive/audition opt-ins were skipped. No physical activation,
+audible playback, two-node traffic or GP-H1 T3 ran. No backend restart, DSP-owner
+duplication, host tuning, queue enlargement, deadline relaxation or error suppression
+was used. All nine approved artifact hashes and both frozen source digests were
+rechecked after acceptance and remained unchanged.
+
+
+Closeout: with tools idle, inspected processes, the shared lock, executable/fd/map
+references and Git status. Removed 450 passed disposable normal-test harnesses
+across two validation passes and 65 task logs, reclaiming **45,525,807,104 allocated
+bytes cumulatively**. Some harnesses were rebuilt for the final compatibility fix;
+this is cumulative deletion, not a claimed net reduction from the starting disk.
+Final free space is 40 GiB. No saved-FX or remote temporary fixture directories
+remain. Retained deliverables are source/tests, the owning docs and existing return
+fixtures, approved artifacts, required runtime/release executables and reusable
+acceptance drivers. Normal targets retain about 10 GiB (GigPies) and 14 GiB (Desk)
+of runtime, diagnostics and useful shared build caches. Existing uncommitted work
+and user data were preserved. No rebuild was performed to verify cleanup.
+
+Remaining full-scene work: core/PA safe selection and review semantics, scene library
+beyond this FX slice, coordinated cross-module transactions and separately authorized
+physical qualification. No automatic startup recall, full live recall or GP-H1 T3.
 
 ## GP-AUTO — live soundcheck and bounded assistance
 

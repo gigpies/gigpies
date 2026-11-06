@@ -2,27 +2,10 @@
 use super::*;
 use crate::fx_aux_wire as wire;
 #[cfg(feature = "hardware-host")]
-use crate::host::fx_palette::{Owner, Settings};
+pub use crate::fx_aux_wire::Configuration;
+#[cfg(feature = "hardware-host")]
+use crate::host::fx_palette::Owner;
 use serde_json::{Value, json};
-#[cfg(feature = "hardware-host")]
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Configuration {
-    pub settings: Settings,
-    pub sends: Vec<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub returns: Option<crate::fx_aux_wire::Returns>,
-    #[serde(default)]
-    pub tempo: Option<Tempo>,
-}
-#[cfg(feature = "hardware-host")]
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Tempo {
-    pub bpm: f64,
-    pub denominator: u32,
-    pub modifier: u32,
-}
 #[cfg(feature = "hardware-host")]
 struct Bus {
     owner: Owner,
@@ -61,21 +44,26 @@ pub(super) struct Observation {
 }
 #[cfg(feature = "hardware-host")]
 struct PreparedCommand {
+    edits: Vec<PreparedEdit>,
+    restore: bool,
+    observation: Observation,
+}
+#[cfg(feature = "hardware-host")]
+struct PreparedEdit {
     bus: usize,
     panic: bool,
     token: Option<crate::host::fx_palette::PreparedToken>,
     sends: crate::mixer::PreparedFxSends,
     owner_request: Option<u64>,
     revision: u64,
-    observation: Observation,
 }
 #[cfg(feature = "hardware-host")]
 pub(super) struct Pending {
     request: crate::control_model::Request,
     fingerprint: String,
     mutation: wire::Mutation,
-    config: Option<Configuration>,
-    token: Option<crate::host::fx_palette::PreparedToken>,
+    configs: Vec<Option<Configuration>>,
+    tokens: Vec<Option<crate::host::fx_palette::PreparedToken>>,
     frame: u64,
     client: Option<u64>,
 }
@@ -239,51 +227,71 @@ impl LocalAudio {
                 if !fresh || self.fx_aux_pending.is_some() {
                     return Err("FX aux fresh read required or busy".into());
                 }
-                let rack = self.fx_aux.as_mut().ok_or("FX aux unavailable")?;
-                let bus = &mut rack.buses[m.bus];
-                let status = bus.status;
-                if m.owner_binding.is_some()
-                    || m.library_sha256 != rack.hash
-                    || m.map_revision.0 != self.engine.topology().map_revision
-                    || m.expected_generation.0 != bus.generation
-                    || (!m.panic && (bus.applied != bus.generation || status.transition != 0))
-                    || bus.generation == u64::MAX
-                {
-                    return Err("FX aux stale/busy identity".into());
+                if let Some(restore) = &m.restore {
+                    restore.saved.compatible(
+                        &self.show,
+                        &m.library_sha256,
+                        &self.topology().inputs,
+                        self.topology().monitors,
+                    )?;
+                    if self.engine.clock_status().state == crate::clock_domain::ClockState::Quiesced
+                        || !self.engine.outputs_quiesced()
+                    {
+                        return Err("FX restore requires disarmed and quiesced source".into());
+                    }
                 }
-                let config: Option<Configuration> = m
-                    .configuration_json
-                    .as_ref()
-                    .map(|s| serde_json::from_str(s).map_err(|e| e.to_string()))
-                    .transpose()?;
-                let mut token = None;
-                if let Some(c) = &config {
-                    if let Some(r) = &c.returns {
-                        r.validate(self.engine.topology().monitors)?;
-                    }
-                    if c.sends.len() != bus.config.sends.len()
-                        || c.sends
-                            .iter()
-                            .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+                let mut configs = Vec::with_capacity(4);
+                let mut tokens = Vec::with_capacity(4);
+                for edit in m.edits() {
+                    let m = &edit;
+                    let rack = self.fx_aux.as_mut().ok_or("FX aux unavailable")?;
+                    let bus = &mut rack.buses[m.bus];
+                    let status = bus.status;
+                    if m.owner_binding.is_some()
+                        || m.library_sha256 != rack.hash
+                        || m.map_revision.0 != self.engine.topology().map_revision
+                        || m.expected_generation.0 != bus.generation
+                        || (!m.panic && (bus.applied != bus.generation || status.transition != 0))
+                        || bus.generation == u64::MAX
                     {
-                        return Err("FX aux sends shape/range".into());
+                        return Err("FX aux stale/busy identity".into());
                     }
-                    if let Some(t) = &c.tempo
-                        && (!matches!(c.settings.algorithm, 1 | 8)
-                            || (bus.preparer.delay_time(t.bpm, t.denominator, t.modifier)?
-                                - c.settings.time_ms)
-                                .abs()
-                                > 1e-9)
-                    {
-                        return Err("FX tempo/time mismatch".into());
+                    let config: Option<Configuration> = m
+                        .configuration_json
+                        .as_ref()
+                        .map(|s| serde_json::from_str(s).map_err(|e| e.to_string()))
+                        .transpose()?;
+                    let mut token = None;
+                    if let Some(c) = &config {
+                        if let Some(r) = &c.returns {
+                            r.validate(self.engine.topology().monitors)?;
+                        }
+                        if c.sends.len() != bus.config.sends.len()
+                            || c.sends
+                                .iter()
+                                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+                        {
+                            return Err("FX aux sends shape/range".into());
+                        }
+                        if let Some(t) = &c.tempo
+                            && (!matches!(c.settings.algorithm, 1 | 8)
+                                || (bus.preparer.delay_time(t.bpm, t.denominator, t.modifier)?
+                                    - c.settings.time_ms)
+                                    .abs()
+                                    > 1e-9)
+                        {
+                            return Err("FX tempo/time mismatch".into());
+                        }
+                        // Validation/preparation precedes any reservation or sounding change.
+                        // Always validate, even when only sends changed. The token
+                        // is caller-owned and can be discarded here off the source.
+                        let prepared = bus.preparer.prepare(&c.settings)?;
+                        if c.settings != bus.config.settings {
+                            token = Some(prepared);
+                        }
                     }
-                    // Validation/preparation precedes any reservation or sounding change.
-                    // Always validate, even when only sends changed. The token
-                    // is caller-owned and can be discarded here off the source.
-                    let prepared = bus.preparer.prepare(&c.settings)?;
-                    if c.settings != bus.config.settings {
-                        token = Some(prepared);
-                    }
+                    configs.push(config);
+                    tokens.push(token);
                 }
                 use sha2::{Digest, Sha256};
                 let fingerprint = crate::hash::hex(Sha256::digest(
@@ -315,8 +323,8 @@ impl LocalAudio {
                     request: r.clone(),
                     fingerprint,
                     mutation: m,
-                    token,
-                    config,
+                    tokens,
+                    configs,
                     frame,
                     client,
                 });
@@ -343,6 +351,10 @@ impl LocalAudio {
         let mut value = Self::fx_aux_reply(r, "snapshot", None, None);
         value["revision"] = json!(self.brain_snapshot().revision);
         value["available"] = json!(false);
+        value["restore_ready"] = json!(
+            self.engine.outputs_quiesced()
+                && self.engine.clock_status().state != crate::clock_domain::ClockState::Quiesced
+        );
         #[cfg(feature = "hardware-host")]
         if let Some(rack) = &mut self.fx_aux {
             let mut buses = Vec::new();
@@ -422,31 +434,45 @@ impl LocalAudio {
         }
         let mut p = self.fx_aux_pending.take().unwrap();
         let control = self.fx_aux.as_ref().ok_or("FX aux owner lost")?;
-        let b = &control.buses[p.mutation.bus];
-        let mut sends = crate::mixer::PreparedFxSends::default();
-        if let Some(config) = &p.config {
-            if let Some(r) = &config.returns {
-                sends.set_returns(self.engine.topology().monitors, p.mutation.bus, r)?;
+        let mut edits = Vec::with_capacity(4);
+        for ((mutation, config), token) in p
+            .mutation
+            .edits()
+            .into_iter()
+            .zip(&p.configs)
+            .zip(&mut p.tokens)
+        {
+            let b = &control.buses[mutation.bus];
+            let mut sends = crate::mixer::PreparedFxSends::default();
+            if let Some(config) = config {
+                if let Some(r) = &config.returns {
+                    sends.set_returns(self.engine.topology().monitors, mutation.bus, r)?;
+                }
+                sends.set(
+                    self.engine.topology().inputs.len(),
+                    mutation.bus,
+                    &config.sends,
+                )?;
             }
-            sends.set(
-                self.engine.topology().inputs.len(),
-                p.mutation.bus,
-                &config.sends,
-            )?;
+            edits.push(PreparedEdit {
+                bus: mutation.bus,
+                panic: mutation.panic,
+                owner_request: if token.is_some() {
+                    b.status.accepted_request.checked_add(1)
+                } else {
+                    None
+                },
+                revision: b.status.revision,
+                token: token.take(),
+                sends,
+            });
         }
         let mut command = PreparedCommand {
-            bus: p.mutation.bus,
-            panic: p.mutation.panic,
-            owner_request: if p.token.is_some() {
-                b.status.accepted_request.checked_add(1)
-            } else {
-                None
-            },
-            revision: b.status.revision,
-            token: p.token.take(),
-            sends,
+            edits,
+            restore: p.mutation.restore.is_some(),
             observation: control.prepare_observation(),
         };
+        let mut uncertain = false;
         let result = if !self.engine.external_matches(&p.request, &p.fingerprint)
             || self
                 .engine
@@ -475,6 +501,7 @@ impl LocalAudio {
             command = returned;
             let receipt = receipt.ok_or("FX source missing")?;
             let code = receipt.code;
+            uncertain = code < -10000;
             let outcome = self.engine.finish_external(receipt)?;
             if outcome.kind == "applied" && code == 0 {
                 Ok(())
@@ -492,26 +519,34 @@ impl LocalAudio {
         if command.observation.valid.iter().all(|valid| *valid) {
             control.finish_observation(command.observation, self.engine.frame())?;
         }
-        let b = &mut control.buses[p.mutation.bus];
-        if applied {
-            if let Some(c) = p.config {
-                b.config = c;
-            }
-            if p.mutation.panic {
-                b.owner_request = None;
-                if b.config.settings != b.status.current {
-                    b.config.settings = b.status.current;
-                    b.config.tempo = None;
+        for (edit, config) in command.edits.iter().zip(p.configs) {
+            let b = &mut control.buses[edit.bus];
+            if applied {
+                if let Some(c) = config {
+                    b.config = c;
                 }
-            } else {
-                b.owner_request = command.owner_request;
+                if edit.panic {
+                    b.owner_request = None;
+                    if b.config.settings != b.status.current {
+                        b.config.settings = b.status.current;
+                        b.config.tempo = None;
+                    }
+                } else {
+                    b.owner_request = edit.owner_request;
+                }
+                b.generation += 1;
+                b.settle_frame = p.frame.saturating_add(240);
             }
-            b.generation += 1;
-            b.settle_frame = p.frame.saturating_add(240);
         }
         let reply = Self::fx_aux_reply(
             &p.request,
-            if applied { "accepted" } else { "rejected" },
+            if applied {
+                "accepted"
+            } else if uncertain {
+                "unknown"
+            } else {
+                "rejected"
+            },
             result.err(),
             applied.then_some(p.frame),
         );
@@ -604,34 +639,57 @@ impl Rack {
         command: &mut PreparedCommand,
         source: &mut crate::mixer_control::source::SourceState,
     ) -> crate::mixer_control::source::ExternalReceipt {
-        let b = &mut self.buses[command.bus];
         let receipt = source.commit_external(permit, |mixer| {
-            if command.panic {
-                return if b.owner.reset_bounded().is_ok() {
-                    0
-                } else {
-                    -20
+            if command.restore && !mixer.outputs_quiesced() {
+                return -25;
+            }
+            // Whole-bundle refusal precedes any native target or routing change.
+            for edit in &mut command.edits {
+                let b = &mut self.buses[edit.bus];
+                if edit.panic {
+                    continue;
+                }
+                let Ok(status) = b.owner.status_bounded() else {
+                    return -21;
                 };
-            }
-            let Ok(status) = b.owner.status_bounded() else {
-                return -21;
-            };
-            if status.revision != command.revision || status.transition != 0 {
-                return -22;
-            }
-            if !mixer.accepts_fx_sends(&command.sends) {
-                return -24;
-            }
-            if let Some(token) = &mut command.token {
-                let Some(request) = command.owner_request else {
-                    return -23;
-                };
-                if let Err(code) = b.owner.publish_token(token, request, command.revision) {
-                    return code;
+                if status.revision != edit.revision || status.transition != 0 {
+                    return -22;
+                }
+                if !mixer.accepts_fx_sends(&edit.sends) {
+                    return -24;
+                }
+                if command.restore {
+                    match b.owner.preflight_token(
+                        edit.token.as_ref(),
+                        edit.revision,
+                        &mut command.observation.retired[edit.bus],
+                    ) {
+                        Ok(request) => edit.owner_request = request,
+                        Err(code) => return code,
+                    }
                 }
             }
-            let applied = mixer.apply_fx_sends(&mut command.sends);
-            debug_assert!(applied);
+            for edit in &mut command.edits {
+                let b = &mut self.buses[edit.bus];
+                if edit.panic {
+                    if b.owner.reset_bounded().is_err() {
+                        return -20;
+                    }
+                    continue;
+                }
+                if let Some(token) = &mut edit.token {
+                    let Some(request) = edit.owner_request else {
+                        return -23;
+                    };
+                    if let Err(code) = b.owner.publish_token(token, request, edit.revision) {
+                        // With the audited artifact and exclusive preflight this
+                        // is an invariant failure, not an atomic refusal.
+                        return if command.restore { -10000 + code } else { code };
+                    }
+                }
+                let applied = mixer.apply_fx_sends(&mut edit.sends);
+                debug_assert!(applied);
+            }
             0
         });
         self.observe(&mut command.observation);
@@ -1012,3 +1070,7 @@ mod actual_tests {
         drop(p);
     }
 }
+
+#[cfg(all(test, feature = "hardware-host"))]
+#[path = "fx_aux_frontend_tests.rs"]
+mod frontend_tests;

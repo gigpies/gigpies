@@ -1,9 +1,6 @@
 //! Four Brain-owned palette instances on the Stagebox source timeline.
 use super::{MediaDescriptor, MediaRole, Result};
-use crate::{
-    host::fx_palette::{Owner, Settings},
-    show::Counter,
-};
+use crate::{host::fx_palette::Owner, show::Counter};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -22,23 +19,7 @@ pub fn binding(d: &MediaDescriptor, hash: &str) -> Result<String> {
         serde_json::to_vec(&(d, hash)).map_err(|e| e.to_string())?,
     )))
 }
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Configuration {
-    pub settings: Settings,
-    pub sends: Vec<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub returns: Option<crate::fx_aux_wire::Returns>,
-    #[serde(default)]
-    pub tempo: Option<Tempo>,
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Tempo {
-    pub bpm: f64,
-    pub denominator: u32,
-    pub modifier: u32,
-}
+pub use crate::fx_aux_wire::{Configuration, Tempo};
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BusState {
@@ -105,6 +86,8 @@ struct Bus {
     owner_request: Option<u64>,
 }
 struct Pending {
+    bundle: Option<Box<crate::host::fx_palette::PreparedBundle>>,
+    configs: Option<[Configuration; 4]>,
     ticket: u64,
     mutation: crate::fx_aux_wire::Mutation,
     config: Option<Configuration>,
@@ -254,6 +237,35 @@ impl BrainAux {
                     {
                         return Err("FX aux stale/busy preparation".into());
                     }
+                    mutation.validate_restore()?;
+                    let configs = mutation
+                        .restore
+                        .as_ref()
+                        .map(|r| r.saved.validate())
+                        .transpose()?;
+                    let bundle = if let Some(configs) = &configs {
+                        let restore = mutation.restore.as_ref().unwrap();
+                        let mut statuses = [crate::host::fx_palette::Status::default(); 4];
+                        for (i, (status, bus)) in
+                            statuses.iter_mut().zip(&mut self.buses).enumerate()
+                        {
+                            if restore.expected_generations[i].0 != bus.generation
+                                || bus.generation != bus.applied
+                            {
+                                return Err("FX bundle stale generation".into());
+                            }
+                            *status = bus.owner.status()?;
+                        }
+                        let preparers = self.buses.each_ref().map(|b| b.owner.preparer());
+                        Some(Box::new(crate::host::fx_palette::PreparedBundle::prepare(
+                            preparers.each_ref(),
+                            statuses,
+                            self.buses.each_ref().map(|b| b.generation),
+                            configs,
+                        )?))
+                    } else {
+                        None
+                    };
                     let b = &mut self.buses[mutation.bus];
                     b.owner.reclaim();
                     let status = b.owner.status()?;
@@ -294,7 +306,7 @@ impl BrainAux {
                     let prepared = config
                         .as_ref()
                         .is_some_and(|c| c.settings != b.config.settings);
-                    let token = if prepared {
+                    let token = if prepared && bundle.is_none() {
                         Some(
                             b.owner
                                 .preparer()
@@ -304,6 +316,8 @@ impl BrainAux {
                         None
                     };
                     self.pending = Some(Pending {
+                        bundle,
+                        configs,
                         ticket: ticket.0,
                         mutation: mutation.clone(),
                         config,
@@ -415,39 +429,58 @@ impl BrainAux {
             if !p.permitted {
                 self.refuse_pending("FX aux absent permit");
             } else {
-                let b = &mut self.buses[p.mutation.bus];
-                let result = (|| -> std::result::Result<(), &'static str> {
-                    if p.mutation.panic {
-                        b.owner.reset_bounded()?;
-                        b.owner_request = None;
-                        let s = b.owner.status_bounded()?;
-                        if b.config.settings != s.current {
-                            b.config.settings = s.current;
-                            b.config.tempo = None;
+                if let Some(bundle) = &mut p.bundle {
+                    let [a, b, c, d] = &mut self.buses;
+                    let result =
+                        bundle.publish([&mut a.owner, &mut b.owner, &mut c.owner, &mut d.owner]);
+                    match result {
+                        Ok(requests) => {
+                            for (i, config) in p.configs.as_mut().unwrap().iter_mut().enumerate() {
+                                std::mem::swap(&mut self.buses[i].config, config);
+                                self.buses[i].generation += 1;
+                                self.buses[i].owner_request = requests[i];
+                            }
+                            p.applied = true;
                         }
-                    } else {
-                        if let Some(token) = &mut p.token {
-                            let s = b.owner.status_bounded()?;
-                            let id = s
-                                .accepted_request
-                                .checked_add(1)
-                                .ok_or("FX request exhausted")?;
-                            b.owner
-                                .publish_token(token, id, s.revision)
-                                .map_err(|_| "FX aux publish refused")?;
-                            b.owner_request = Some(id);
+                        Err(_) => {
+                            self.refuse_pending("FX bundle publication refused or uncertain");
                         }
-                        // Keep the retired Vec in the occupied pending slot;
-                        // only poll/command on the controller may destroy it.
-                        let prepared = p.config.as_mut().ok_or("FX aux configuration")?;
-                        std::mem::swap(&mut b.config, prepared);
                     }
-                    b.generation += 1;
-                    p.applied = true;
-                    Ok(())
-                })();
-                if let Err(e) = result {
-                    self.refuse_pending(e);
+                } else {
+                    let b = &mut self.buses[p.mutation.bus];
+                    let result = (|| -> std::result::Result<(), &'static str> {
+                        if p.mutation.panic {
+                            b.owner.reset_bounded()?;
+                            b.owner_request = None;
+                            let s = b.owner.status_bounded()?;
+                            if b.config.settings != s.current {
+                                b.config.settings = s.current;
+                                b.config.tempo = None;
+                            }
+                        } else {
+                            if let Some(token) = &mut p.token {
+                                let s = b.owner.status_bounded()?;
+                                let id = s
+                                    .accepted_request
+                                    .checked_add(1)
+                                    .ok_or("FX request exhausted")?;
+                                b.owner
+                                    .publish_token(token, id, s.revision)
+                                    .map_err(|_| "FX aux publish refused")?;
+                                b.owner_request = Some(id);
+                            }
+                            // Keep the retired Vec in the occupied pending slot;
+                            // only poll/command on the controller may destroy it.
+                            let prepared = p.config.as_mut().ok_or("FX aux configuration")?;
+                            std::mem::swap(&mut b.config, prepared);
+                        }
+                        b.generation += 1;
+                        p.applied = true;
+                        Ok(())
+                    })();
+                    if let Err(e) = result {
+                        self.refuse_pending(e);
+                    }
                 }
             }
         }
@@ -474,10 +507,16 @@ impl BrainAux {
         {
             self.refuse_pending("FX aux preparation deadline");
         }
-        if let Some(p) = self.pending.as_ref().filter(|p| p.applied)
-            && self.buses[p.mutation.bus].owner.status()?.fault != 0
-        {
-            self.refuse_pending("FX aux owner fault after publication");
+        if let Some(p) = self.pending.as_ref().filter(|p| p.applied) {
+            let mut fault = false;
+            for (i, bus) in self.buses.iter_mut().enumerate() {
+                if p.bundle.is_some() || i == p.mutation.bus {
+                    fault |= bus.owner.status()?.fault != 0;
+                }
+            }
+            if fault {
+                self.refuse_pending("FX aux owner fault after publication");
+            }
         }
         if let Some((ticket, reason)) = self.refused.take() {
             if let Some(p) = self.pending.take() {
@@ -498,7 +537,14 @@ impl BrainAux {
             let ticket = Counter(p.ticket);
             let apply_frame = Counter(p.frame);
             let b = &observation.buses[p.mutation.bus];
-            if b.generation == b.applied_generation {
+            if if p.bundle.is_some() {
+                observation
+                    .buses
+                    .iter()
+                    .all(|b| b.generation == b.applied_generation)
+            } else {
+                b.generation == b.applied_generation
+            } {
                 self.pending = None;
             }
             return Ok(Some(Message::Completed {
