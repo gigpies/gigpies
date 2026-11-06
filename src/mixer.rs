@@ -50,6 +50,7 @@ enum Change {
 #[derive(Debug, Clone)]
 pub struct Prepared {
     changes: Vec<Vec<Change>>,
+    master: Change,
     processing: Option<(usize, crate::channel_processing::Prepared)>,
     send: Option<(usize, usize, crate::sends_wire::Tap)>,
 }
@@ -68,6 +69,7 @@ impl Prepared {
         }
         Ok(Self {
             changes: vec![vec![Change::Keep; 4 + monitors]; inputs],
+            master: Change::Keep,
             processing: Some((input, prepared)),
             send: None,
         })
@@ -84,6 +86,7 @@ impl Prepared {
         }
         Ok(Self {
             changes: vec![vec![Change::Keep; 4 + monitors]; inputs],
+            master: Change::Keep,
             processing: None,
             send: Some((input, monitor, tap)),
         })
@@ -97,11 +100,25 @@ impl Prepared {
         }
         let mut p = Self {
             changes: vec![vec![Change::Keep; 4 + monitors]; inputs],
+            master: Change::Keep,
             processing: None,
             send: None,
         };
         let mut seen = vec![vec![false; 3 + monitors]; inputs];
         for e in edits {
+            if e.target == (Target::MasterGain {}) {
+                if !matches!(p.master, Change::Keep) {
+                    return Err("duplicate master".into());
+                }
+                let Value::Integer(n) = e.value else {
+                    return Err("master range".into());
+                };
+                if !(-60000..=6000).contains(&n) {
+                    return Err("master range".into());
+                }
+                p.master = Change::Ramp(10_f64.powf(n as f64 / 20000.));
+                continue;
+            }
             let (input, slot) = target_slot(&e.target, inputs, monitors)?;
             if seen[input][slot] {
                 return Err("duplicate target".into());
@@ -141,9 +158,13 @@ impl Prepared {
     pub fn freeze_for(inputs: usize, monitors: usize, scope: crate::control_model::Scope) -> Self {
         let mut p = Self {
             changes: vec![vec![Change::Keep; 4 + monitors]; inputs],
+            master: Change::Keep,
             processing: None,
             send: None,
         };
+        if scope == crate::control_model::Scope::Foh {
+            p.master = Change::Freeze;
+        }
         for row in &mut p.changes {
             match scope {
                 crate::control_model::Scope::Foh => row[..4].fill(Change::Freeze),
@@ -160,6 +181,7 @@ impl Prepared {
 }
 fn target_slot(target: &Target, inputs: usize, monitors: usize) -> Result<(usize, usize)> {
     let (input, slot) = match target {
+        Target::MasterGain {} => return Err("master is not an input".into()),
         Target::Fader { input } => (input, 0),
         Target::Pan { input } => (input, 1),
         Target::Mute { input } => (input, 2),
@@ -358,6 +380,7 @@ pub struct Mixer {
     retired: Option<Pending>,
     armed: bool,
     output_gain: Ramp,
+    master_gain: Ramp,
     topology: crate::topology::EngineTopology,
 }
 /// Preallocated, coherent observation of one completed source quantum. Storage
@@ -365,6 +388,8 @@ pub struct Mixer {
 #[derive(Debug, Clone)]
 pub(crate) struct SourceObservation {
     pub frame: u64,
+    pub master_current: f64,
+    pub master_target: f64,
     pub faulted: bool,
     pub output: OutputObservation,
     pub fx_aux_enabled: bool,
@@ -385,6 +410,8 @@ impl SourceObservation {
     pub fn new(mixer: &Mixer) -> Self {
         let mut value = Self {
             frame: mixer.frame(),
+            master_current: mixer.master_gain.at(mixer.frame()),
+            master_target: mixer.master_gain.target,
             faulted: mixer.faulted(),
             output: mixer.output_observation(),
             fx_aux_enabled: !mixer.fx_sends.is_empty(),
@@ -448,6 +475,7 @@ impl Mixer {
             topology,
             armed: true,
             output_gain: Ramp::fixed(1.),
+            master_gain: Ramp::fixed(1.),
         })
     }
     /// Optional aux provisioning is control-side. Preserve the published core
@@ -665,6 +693,7 @@ impl Mixer {
         // Prepare all candidates before mutation; full intent may exceed the wire
         // transaction's 64-target bound, so provision one validated strip at a time.
         let mut changes = vec![vec![Change::Keep; 4 + self.monitor_count()]; self.input_count()];
+        let mut master = Change::Keep;
         let mut seen = std::collections::BTreeSet::new();
         for edit in edits {
             if !seen.insert(edit.target.clone()) {
@@ -675,6 +704,9 @@ impl Mixer {
                 self.monitor_count(),
                 std::slice::from_ref(edit),
             )?;
+            if !matches!(p.master, Change::Keep) {
+                master = p.master;
+            }
             for (row, new) in changes.iter_mut().zip(p.changes) {
                 for (old, new) in row.iter_mut().zip(new) {
                     if !matches!(new, Change::Keep) {
@@ -694,11 +726,18 @@ impl Mixer {
                 }
             }
         }
+        if let Change::Ramp(v) = master {
+            self.master_gain = Ramp::fixed(v);
+        }
         for (strip, prepared) in self.processing.iter_mut().zip(prepared) {
             strip.apply(prepared, self.clock);
         }
         self.quiesce();
         Ok(())
+    }
+    /// Evaluated after mixer commit, before PA, once on coherent dry + wet Main.
+    pub(crate) fn master_gain_at(&self, frame: u64) -> f64 {
+        self.master_gain.at(frame)
     }
     pub fn quiesce(&mut self) {
         self.armed = false;
@@ -938,6 +977,8 @@ impl Mixer {
     }
     pub(crate) fn observe_into(&self, observation: &mut SourceObservation) {
         observation.frame = self.clock;
+        observation.master_current = self.master_gain.at(self.clock);
+        observation.master_target = self.master_gain.target;
         observation.faulted = self.fault;
         observation.output = self.output_observation();
         observation.fx_aux_enabled = !self.fx_sends.is_empty();
@@ -1029,6 +1070,19 @@ impl Mixer {
             if let Some(p) = self.pending.as_ref()
                 && p.frame == self.clock
             {
+                let current = self.master_gain.at(self.clock);
+                match p.prepared.master {
+                    Change::Keep => (),
+                    Change::Freeze => self.master_gain = Ramp::fixed(current),
+                    Change::Ramp(target) => {
+                        self.master_gain = Ramp {
+                            start: current,
+                            target,
+                            begin: self.clock,
+                            end: self.clock + RAMP_FRAMES,
+                        }
+                    }
+                }
                 for (row, changes) in self.ramps.iter_mut().zip(&p.prepared.changes) {
                     for (r, c) in row.iter_mut().zip(changes) {
                         let current = r.at(self.clock);
@@ -1328,5 +1382,41 @@ mod meter_tap_tests {
         let (processed, valid) = m.meter_samples();
         assert!(valid.iter().all(|v| *v));
         assert!((0..48).all(|f| processed[f * 8] == 0.5));
+    }
+}
+
+#[cfg(test)]
+mod master_contract_tests {
+    use super::*;
+    #[test]
+    fn exact_master_range_and_strict_identity_are_independent_of_inputs() {
+        for n in [-60000, -59999, 0, 5999, 6000] {
+            Prepared::edits(&[Edit {
+                target: Target::MasterGain {},
+                value: Value::Integer(n),
+            }])
+            .unwrap();
+        }
+        for n in [-60001, 6001, i32::MIN, i32::MAX] {
+            assert!(
+                Prepared::edits(&[Edit {
+                    target: Target::MasterGain {},
+                    value: Value::Integer(n)
+                }])
+                .is_err()
+            );
+        }
+        assert!(
+            serde_json::from_str::<Target>(r#"{"parameter":"master_gain","input":"input-01"}"#)
+                .is_err()
+        );
+        assert!(
+            serde_json::from_str::<Target>(r#"{"parameter":"master_gain","monitor":"monitor-1"}"#)
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::to_string(&Target::MasterGain {}).unwrap(),
+            r#"{"parameter":"master_gain"}"#
+        );
     }
 }

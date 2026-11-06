@@ -91,8 +91,8 @@ The proposed pitch-strip master control requests a gain-change speed, not an
 absolute fader position. Center stops movement; either side raises/lowers gain;
 return to center stops at the resulting gain. The operator explicitly requires
 **a slow maximum speed**, even at full displacement. The provisional software model uses a quadratic curve, 8% dead zone and
-maximum 0.5 dB/s, with a 250 ms stale-input stop. The provider Master gain target
-and production speed integration are still absent; hands-on feel remains pending. Disconnect/context loss
+maximum 0.5 dB/s, with a 250 ms stale-input stop. The dedicated provider Master gain target and production Desk speed path are
+implemented; hands-on feel remains pending. Disconnect/context loss
 must stop movement. Return-to-center behavior must be verified for the preset.
 
 Current compressor columns are 5: threshold/attack, 6: ratio/release, and
@@ -614,3 +614,31 @@ Remove those temporary probe outputs after inspection. CMake qualification used
 `USE_DEFLATE=on`, Release; local libunistring/ncurses/libdeflate headers, no host
 installation. Source tar SHA256:
 `acc8809b457935a44c4dcaf0ee505ada23594f08aa2ae610acb6f2355afd550a`.
+
+## Master gain software contract
+
+LocalAudio advertises `master_gain` (GP-Master version 1) in rendered snapshots,
+with stable target `main` and source-observed current/target linear nanogain.
+The nested authority target is exactly `{"parameter":"master_gain"}`; it is not
+an input, mute, pan or PA EQ operation. Ordinary C-AUDIO Set/FOH authority,
+revision, epoch, writer/lease and source-owner admission fences apply. Values
+are integer milli-dB from −60000 through +6000 inclusive. Unsupported providers
+omit this capability; Desk refuses Master edits against them.
+
+Preparation computes the linear coefficient off-source. The source applies one
+240-frame (5 ms at 48 kHz) linear ramp to coherent stereo dry + FX Main returns
+before PA and before talkback. Local legacy FX, local four-aux and authenticated
+remote returns share that position. Independent monitor returns, pre-Master FX
+sends, raw recording and input analysis retain their original taps. Main listening
+is post-Master/pre-talkback; Main metering/spectrum is post-Master/pre-PA (including
+FOH talkback when present). Output safety remains independent; gain never rearms.
+No JSON, allocation, locking or destruction is added to source execution.
+
+Core engine intent version 4 includes the Master target configuration only.
+Versions 1–3 cannot contain that target; production loading upgrades their absent
+Master to unity. Version 4 requires exactly one Master target. Restore discards
+leases, holds, pending work and output arming. The FX-only saved-intent format is
+unchanged. Master pan/mute and physical controller bindings remain unavailable.
+
+Disarmed source boundaries close direct Main/listening and final mapped playback,
+including wet and native PA tails. Master configuration never opens this closure.

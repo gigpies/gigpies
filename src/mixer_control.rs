@@ -24,6 +24,8 @@ pub struct Observation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenderedSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub master_gain: Option<MasterGain>,
     pub capability: String,
     pub capability_version: u32,
     pub rendered_application: bool,
@@ -41,6 +43,15 @@ pub struct RenderedSnapshot {
     pub clock: Option<crate::clock_domain::ClockDomain>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<EngineResources>,
+}
+/// GP-Master:1: stable Main target; source-bound gain coefficients, not a meter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MasterGain {
+    pub version: u32,
+    pub target: String,
+    pub current_nanogain: u64,
+    pub target_nanogain: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -126,6 +137,21 @@ pub struct RenderedReply {
 impl RenderedSnapshot {
     pub fn validate(&self) -> Result<()> {
         self.authority.validate()?;
+        let master = self
+            .authority
+            .parameters
+            .iter()
+            .any(|p| p.target == (crate::control_model::Target::MasterGain {}));
+        if master != self.master_gain.is_some()
+            || self.master_gain.as_ref().is_some_and(|m| {
+                m.version != 1
+                    || m.target != "main"
+                    || !(1_000_000..=1_995_262_315).contains(&m.current_nanogain)
+                    || !(1_000_000..=1_995_262_315).contains(&m.target_nanogain)
+            })
+        {
+            return Err("Master capability/readback".into());
+        }
         if self.capability != "GP03-rendered"
             || ![1, 2].contains(&self.capability_version)
             || !self.rendered_application
@@ -288,6 +314,7 @@ impl RenderedReply {
 }
 #[derive(Debug)]
 struct Pending {
+    deadline: Option<std::time::Instant>,
     request: Request,
     staged: Authority,
     reply: Reply,
@@ -895,10 +922,15 @@ impl OfflineEngine {
         *self = next;
         Ok(())
     }
+    pub(crate) fn enable_master(&mut self) {
+        self.authority.enable_master();
+    }
     pub fn persisted_intent(&mut self) -> Result<EngineIntent> {
         let snapshot = self.authority.snapshot()?;
         Ok(EngineIntent {
-            version: if self
+            version: if self.authority.has_master() {
+                4
+            } else if self
                 .observed
                 .processing
                 .iter()
@@ -940,7 +972,7 @@ impl OfflineEngine {
         Self::restore_intent(intent, epoch, frame)
     }
     pub fn restore_intent(intent: &EngineIntent, epoch: Counter, frame: u64) -> Result<Self> {
-        if ![1, 2, 3].contains(&intent.version)
+        if ![1, 2, 3, 4].contains(&intent.version)
             || intent.processing.len() != intent.topology.inputs.len()
             || (intent.version == 1 && intent.send_taps.is_some())
             || (intent.version >= 2 && intent.send_taps.is_none())
@@ -958,6 +990,16 @@ impl OfflineEngine {
             frame,
             intent.topology.clone(),
         )?;
+        let has_master = intent
+            .parameters
+            .iter()
+            .any(|e| e.target == (crate::control_model::Target::MasterGain {}));
+        if has_master != (intent.version == 4) {
+            return Err("intent Master version".into());
+        }
+        if has_master {
+            e.enable_master();
+        }
         e.source
             .as_mut()
             .unwrap()
@@ -1276,6 +1318,12 @@ impl OfflineEngine {
         let current = &self.observed.current;
         let target = &self.observed.targets;
         Ok(RenderedSnapshot {
+            master_gain: self.authority.has_master().then(|| MasterGain {
+                version: 1,
+                target: "main".into(),
+                current_nanogain: nano(self.observed.master_current),
+                target_nanogain: nano(self.observed.master_target),
+            }),
             capability: "GP03-rendered".into(),
             capability_version: self.authority.version(),
             rendered_application: true,
@@ -2072,6 +2120,8 @@ impl OfflineEngine {
             Err(_) => return Ok(Self::backpressure(r)),
         };
         let p = Pending {
+            deadline: matches!(&r.command, Command::Set { targets } if targets.iter().any(|e| e.target == (crate::control_model::Target::MasterGain {})))
+                .then(|| std::time::Instant::now() + std::time::Duration::from_millis(250)),
             request: r.clone(),
             staged,
             reply,
@@ -2292,7 +2342,7 @@ impl OfflineEngine {
                 fx_sends: std::mem::take(&mut self.pending_fx_sends),
                 admission: self.source_admission.clone(),
                 installed: false,
-                expires: None,
+                expires: self.pending.as_ref().and_then(|p| p.deadline),
                 #[cfg(feature = "hardware-host")]
                 authority_fence: None,
             });
@@ -2618,6 +2668,7 @@ impl OfflineEngine {
                 }
             } else {
                 for parameter in new.iter().filter(|v| match &v.target {
+                    crate::control_model::Target::MasterGain {} => false,
                     crate::control_model::Target::Fader { input }
                     | crate::control_model::Target::Pan { input }
                     | crate::control_model::Target::Mute { input }
@@ -2626,6 +2677,7 @@ impl OfflineEngine {
                     }
                 }) {
                     let indices: &[usize] = match &parameter.target {
+                        crate::control_model::Target::MasterGain {} => &[],
                         crate::control_model::Target::Fader { .. } => &[0],
                         crate::control_model::Target::Pan { .. } => &[1, 2],
                         crate::control_model::Target::Mute { .. } => &[3],
@@ -2687,7 +2739,7 @@ impl<'de> Deserialize<'de> for EngineIntent {
             .ok_or_else(|| serde::de::Error::custom("intent version"))?;
         let count = match version {
             1 => 5,
-            2 | 3 => 6,
+            2..=4 => 6,
             _ => return Err(serde::de::Error::custom("intent version")),
         };
         if object.len() != count
@@ -3108,16 +3160,23 @@ mod render_boundary_tests {
     fn detached_revocation_before_and_after_mixer_commit_preserves_dsp_authority_agreement() {
         for revoke_before in [true, false] {
             let (mut engine, processing) = unprepared_processing();
+            engine.enable_master();
             let mut request = processing.history_request();
             request.contract = "C-AUDIO".into();
             request.version = engine.wire_version();
             request.command = Command::Set {
-                targets: vec![Edit {
-                    target: crate::control_model::Target::Fader {
-                        input: "input-01".into(),
+                targets: vec![
+                    Edit {
+                        target: crate::control_model::Target::Fader {
+                            input: "input-01".into(),
+                        },
+                        value: crate::control_model::Value::Integer(0),
                     },
-                    value: crate::control_model::Value::Integer(0),
-                }],
+                    Edit {
+                        target: crate::control_model::Target::MasterGain {},
+                        value: crate::control_model::Value::Integer(-12000),
+                    },
+                ],
             };
             let before = engine.observed.targets[0][0];
             assert_eq!(before, 10_f64.powf(-6.0 / 20.0));
@@ -3152,6 +3211,14 @@ mod render_boundary_tests {
             assert_eq!(
                 engine.observed.targets[0][0],
                 if revoke_before { before } else { 1.0 }
+            );
+            assert_eq!(
+                engine.observed.master_target,
+                if revoke_before {
+                    1.
+                } else {
+                    10_f64.powf(-12. / 20.)
+                }
             );
             assert!(!engine.authority.writer_live("desk", 3));
             assert!(engine.pending.is_none());

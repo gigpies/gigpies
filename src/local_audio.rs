@@ -660,7 +660,8 @@ impl LocalAudio {
             meter_tap,
             spectrum.take_acquisition().unwrap(),
         );
-        let engine = OfflineEngine::with_topology(show, epoch, Counter(0), 0, topology)?;
+        let mut engine = OfflineEngine::with_topology(show, epoch, Counter(0), 0, topology)?;
+        engine.enable_master();
         let source_completion = engine.source_completion();
         let routing_observed = source::RoutingObservation::new(engine.topology());
         let epoch_owner = EpochOwner::reserve(directory, show, epoch)?;
@@ -1447,6 +1448,7 @@ impl LocalAudio {
             return Err("persisted PA unavailable".into());
         }
         self.engine = restored;
+        self.engine.enable_master();
         self.source_completion = self.engine.source_completion();
         self.routing_command((), |routing, _| routing.close_brain_audio())?;
         self.brain = intent
@@ -3042,7 +3044,7 @@ impl LocalAudio {
                 .engine
                 .take_source_command()
                 .ok_or("clock command absent")?;
-            command.expires = Some(expiry);
+            command.expires = Some(command.expires.map_or(expiry, |d| d.min(expiry)));
             command.authority_fence = fence;
             // Read-only operations have no lease and no scheduled mutation.
             if self.engine.pending_lease_remaining(now).is_none() && reply["state"] != "pending" {
@@ -4500,5 +4502,173 @@ mod clocked_control_tests {
         }
         status.close();
         host.finish_source_clock(&status).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod master_gain_tests {
+    use super::*;
+    use crate::control_model::{Command, Edit, Request, Scope, Target, Value};
+    const SHOW: &str = "11111111-1111-4111-8111-111111111111";
+    fn request(command: Command, id: u64, revision: u64, lease: Option<Counter>) -> Request {
+        Request {
+            contract: "C-AUDIO".into(),
+            version: 2,
+            show_id: SHOW.into(),
+            module: "audio".into(),
+            epoch: Counter(9),
+            writer: Some("master-test".into()),
+            lease,
+            request_id: Some(Counter(id)),
+            expected_revision: Some(Counter(revision)),
+            command,
+        }
+    }
+    #[test]
+    fn master_contract_source_boundary_persistence_and_safety() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gp-master-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut host = LocalAudio::bind_configured(
+            &dir,
+            "audio",
+            SHOW,
+            Counter(9),
+            crate::topology::EngineTopology::software(4, 2, 0).unwrap(),
+        )
+        .unwrap();
+        let initial = host.engine.snapshot().unwrap();
+        initial.validate().unwrap();
+        assert_eq!(initial.master_gain.unwrap().current_nanogain, 1_000_000_000);
+        let grant = host
+            .engine
+            .handle(
+                &request(Command::Grant { scope: Scope::Foh }, 1, 0, None),
+                0,
+            )
+            .unwrap()
+            .outcome
+            .unwrap();
+        let lease = grant.body.granted_lease;
+        let revision = grant.body.revision.0;
+        let set = request(
+            Command::Set {
+                targets: vec![Edit {
+                    target: Target::MasterGain {},
+                    value: Value::Integer(-6000),
+                }],
+            },
+            2,
+            revision,
+            lease,
+        );
+        assert_eq!(host.engine.handle(&set, 0).unwrap().state, "pending");
+        let capture: [f64; 192] = std::array::from_fn(|i| if i % 4 == 0 { 0.125 } else { 0. });
+        let mut output = [0.; 192];
+        for _ in 0..12 {
+            host.tick_with_capture(0, 9, host.frame(), &capture, &mut output)
+                .unwrap();
+        }
+        assert!(output.iter().all(|v| *v == 0.), "Master edits never rearm");
+        let applied = host.engine.snapshot().unwrap();
+        applied.validate().unwrap();
+        let gain = 10_f64.powf(-6. / 20.);
+        assert_eq!(
+            applied.master_gain.unwrap().current_nanogain,
+            (gain * 1e9).round() as u64
+        );
+        let intent = host.persisted_intent().unwrap();
+        assert_eq!(intent.engine.version, 4);
+        let restored = crate::mixer_control::EngineIntent::decode(
+            &serde_json::to_vec(&intent.engine).unwrap(),
+        )
+        .unwrap();
+        let mut engine = OfflineEngine::restore_intent(&restored, Counter(10), 0).unwrap();
+        assert!(engine.outputs_quiesced());
+        assert!(
+            engine
+                .snapshot()
+                .unwrap()
+                .authority
+                .parameters
+                .iter()
+                .all(|p| p.hold.is_none() && p.owner.is_none())
+        );
+        let mut wrong = serde_json::to_value(&restored).unwrap();
+        wrong["version"] = serde_json::json!(3);
+        assert!(
+            crate::mixer_control::EngineIntent::decode(&serde_json::to_vec(&wrong).unwrap())
+                .is_err()
+        );
+        host.rearm().unwrap();
+        for _ in 0..12 {
+            host.tick_with_capture(0, 9, host.frame(), &capture, &mut output)
+                .unwrap();
+        }
+        let dry = 0.125 * gain * std::f64::consts::FRAC_1_SQRT_2;
+        for f in output.chunks_exact(4) {
+            assert!((f[0] - dry * gain).abs() < 1e-12);
+            assert!((f[1] - dry * gain).abs() < 1e-12);
+            assert_eq!(f[2], 0.125);
+            assert!((f[3] - 0.000125).abs() < 1e-12);
+        }
+        assert_eq!(host.source.raw_scratch, capture);
+        let stale = request(
+            Command::Set {
+                targets: vec![Edit {
+                    target: Target::MasterGain {},
+                    value: Value::Integer(0),
+                }],
+            },
+            3,
+            revision,
+            lease,
+        );
+        assert_ne!(host.engine.handle(&stale, 0).unwrap().state, "pending");
+        for (index, n) in [-60001, 6001, i32::MAX].into_iter().enumerate() {
+            let mut bad = stale.clone();
+            bad.request_id = Some(Counter(index as u64 + 4));
+            bad.expected_revision = Some(host.engine.revision());
+            bad.command = Command::Set {
+                targets: vec![Edit {
+                    target: Target::MasterGain {},
+                    value: Value::Integer(n),
+                }],
+            };
+            let refused = host.engine.handle(&bad, 0).unwrap();
+            assert_ne!(refused.state, "pending");
+            assert_eq!(
+                refused.outcome.unwrap().body.reason.as_deref(),
+                Some("range")
+            );
+        }
+        host.recover_source(Counter(10), 0).unwrap();
+        assert!(host.engine.outputs_quiesced());
+        assert_eq!(
+            host.engine
+                .snapshot()
+                .unwrap()
+                .master_gain
+                .unwrap()
+                .target_nanogain,
+            (gain * 1e9).round() as u64
+        );
+        assert_ne!(host.engine.handle(&stale, 0).unwrap().state, "pending");
+        host.tick_with_capture_and_wet(
+            0,
+            10,
+            host.frame(),
+            &capture,
+            &mut output,
+            Some(&[0.25; 96]),
+        )
+        .unwrap();
+        assert!(
+            output.iter().all(|v| *v == 0.),
+            "nonzero wet cannot bypass disarm"
+        );
+        drop(host);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

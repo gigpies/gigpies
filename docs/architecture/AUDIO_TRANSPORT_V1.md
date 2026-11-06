@@ -1220,3 +1220,14 @@ and media channels; GPA1 layout, packet counts, queues and 768-frame deadline ar
 unchanged. Prepared source packets and copied observations include routing targets;
 resource admission accounts for configured monitor storage/work and bounded
 readback. This does not change local T0–T2 acceptance or authorize T3 traffic.
+
+## Main Master gain position
+
+The source-owned RenderGraph applies the dedicated Master coefficient after
+coherent dry and local/remote wet Main summing, before PA and FOH talkback.
+FX send excitation, independent monitor returns, raw REC and input analysis stay
+before/outside this coefficient. Autonomous and compatibility source callers use
+the same numeric entry. Prepared gain travels through the existing single global
+transaction and retirement path; source observation supplies current/target gain.
+[Panel contract](../reference/INSTRUMENT_PANEL.md#master-gain-software-contract)
+defines capability, range, intent versions and meter/listening positions.

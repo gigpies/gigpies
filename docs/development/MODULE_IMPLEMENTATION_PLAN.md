@@ -2949,8 +2949,10 @@ or accepted-mix rendering occurs. See the owning processing reference.
 Actual synthetic producer-to-Desk v5 acceptance now covers Manual and imported
 reviewed gate edits, correlated confirmed readback, unchanged other inputs,
 draft selection fences, read-only reconnect without replay, and stale refusal.
-Master speed/provider acceptance is still unfinished software, separately from
-physical/listening qualification.
+At that gate baseline, Master speed/provider acceptance remained unfinished.
+The [November 6 GP-PANEL continuation](#master-gain-and-slow-strip--2026-11-06)
+owns its implementation and current software evidence; physical/listening
+qualification remains separate.
 
 Final continuation production validation (Rust 1.97.1, shared build lock,
 `CARGO_INCREMENTAL=0`, `--locked -j1 --all-targets`): GigPies default **503 passed,
@@ -3881,6 +3883,150 @@ are private temporary test resources and are removed by the harness.
 
 ### Controller/keybed implementation — 2026-10-30
 
+#### Master gain and slow strip — 2026-11-06
+
+Production software implementation now adds explicitly advertised GP-Master:1,
+stable Main gain, strict milli-dB bounds (−60..+6 dB), existing FOH/revision/epoch/
+source admission, source-observed current/target coefficients and 240-frame
+smoothing. The sole source graph applies gain once after coherent dry/local or
+remote wet Main summing and before PA/talkback. Independent monitor returns,
+FX excitation, raw recording and input analysis retain their taps. Core intent
+v4 saves only configuration; v1–3 restore unity Master and v4 requires Master.
+Restores remain disarmed, with no saved authority, movement or held controls.
+
+Desk supports explicit Master selection, semantic menu, guarded level, detached
+exact entry/review and production rendering. The existing speed model now uses
+real elapsed time through one outstanding provider operation, a separate queued
+motion cancellation token, correlated completion and fresh settled readback.
+Center/loss discards unsent motion; uncertain submitted work is not replayed.
+Concurrent revisions and other operator actions stop the strip. Input/application
+stalls also discard the sub-milli-dB coalescing remainder, with a focused Frontend
+regression for an application stall despite fresh input. Master pan/mute,
+physical MIDI acquisition, return-to-center verification and feel remain open.
+[Producer/tap contract](../reference/INSTRUMENT_PANEL.md#master-gain-software-contract)
+and [Desk workflow](../../../shr-desk/docs/CONTROLLER.md#master-selection-and-editing)
+own current usage; this card remains open for the rest of GP-PANEL.
+
+Final software validation used the uncommitted implementation on GigPies base
+`c9f1d8d9465c556afd1594b066cad8f7bc2507b2` and Desk base
+`47ba05b726e6d72a6790b6277bcd16d666f99bc4`, on rpi5. Prior acceptance records
+below are baseline evidence only. All nine library/header/owner-manifest hashes
+in `user/node-lab/gp-h1-modules.json` were reverified before the final episodes;
+no sibling owner was rebuilt.
+
+| Normal all-target suite (serial) | Passed | Ignored opt-ins | Targets |
+| --- | ---: | ---: | ---: |
+| GigPies default | 561 | 22 | 77 |
+| GigPies hardware-host | 696 | 89 | 80 |
+| Desk default | 395 | 31 | 41 |
+| Desk native | 398 | 31 | 41 |
+
+All four warnings-denied all-target Clippy gates and all four required release
+builds passed. Both `cargo fmt --all -- --check` gates passed. Complete-index
+publication checks passed (807 GigPies / 574 Desk entries), with zero outgoing
+commits; changed-worktree policy, relative documentation links and publication
+regressions (6 / 9 tests) also passed. Native validation used inspected runtime
+prerequisites, unset DISPLAY/WAYLAND_DISPLAY/VK_ADD_DRIVER_FILES and the CPU
+`/usr/share/vulkan/icd.d/lvp_icd.json` for both `VK_DRIVER_FILES` and
+`VK_ICD_FILENAMES`. Missing X11
+pkg-config development metadata did not prevent the prescribed native gates.
+
+Four actual-provider opt-ins passed separately on the final driver:
+
+- Local Frontend: semantic selection, exact review/entry, real bitmap rendering,
+  speed/center, draft cancellation, active controller loss, explicit regrant and
+  read-only reconnect without replay; **192 independent Main/monitor sample
+  comparisons**, wet energy **0.08372954771698594**, unchanged raw capture.
+- Authenticated loopback: the same Frontend workflow with four actual FX owners;
+  **5702 FX blocks**, **17568 Main sample comparisons**, nonzero wet contribution
+  on all buses, zero native input/output drops and no first-source gap.
+- Disarmed autonomous authenticated loopback: **1089024 silent output samples**,
+  unchanged core/composed intent except the explicitly reviewed Master setting,
+  no rearm or replay, zero native input/output drops and no first-source gap.
+- Autonomous actual PA/FX/REC source: **32 quanta / 1536 frames**, independent
+  scalar dry-plus-wet Master relation, unchanged sends/monitor/talkback paths,
+  PA reference comparison, no source allocation/destruction, and **eight 24-bit
+  raw WAV tracks** exactly matching input, zero dropped recording frames.
+
+Acceptance executables retained under the normal release target directories:
+GigPies `deps/gigpies-0fe0a176ba2ad145`, SHA-256
+`dedb646e0c14aa6e8d123cf957e551be5101146d411f0672f5680f542b1c1567`;
+Desk `deps/fx_aux_actual-dfadab3e07e1c7f8`, SHA-256
+`12ffa9e3b08ab359d63e0d537a9a055f8b9c9345456ad9c77e894188e39f6ea1`.
+
+Unchanged historical/exhaustive matrices, audition generation, long benchmark
+and hardware/device campaigns were intentionally skipped. No physical activation,
+audible playback, MIDI device, controller memory write, two-node traffic, T3,
+backend restart, host tuning, commit or push occurred. These software results do
+not qualify physical safety, controller return-to-center behavior or feel.
+
+Failure evidence (not counted as acceptance): an initial parallel Desk run
+missed an unchanged held-talkback deadline (31 ms versus 30 ms); serial validation
+is used below. The first hardware-host library run had 232 passes, three fixture
+mismatches and 43 ignored opt-ins. Existing producer generators refreshed eight
+atomic/held-proof snapshots with unity Master and the current normalized strip
+memory estimate; Desk received identical bytes (67 atomic / 30 held-proof JSON
+files verified). No authority or maintenance outcome changed. The first final Desk run also
+exposed five stale hashes in its separate atomic PROVENANCE record; these were
+refreshed from the verified producer bytes, retaining the original corpus lineage.
+
+Early actual-provider attempts exposed test-driver sequencing errors: comparing
+an unsettled ramp, requesting a new edit while cancellation remained UNKNOWN,
+reusing a retired writer identity, and confirming immediately after a costly
+bitmap render with an expiring observation. The driver now waits for observed
+settlement, uses production read-only Reconnect with its fresh writer, observes
+lease expiry without replay, explicitly regrants, and consumes fresh observations
+before independent input/confirmation events. A 244 ms-old observation correctly
+refused motion 20 ms later; this guard remains unchanged. No queue or deadline
+was relaxed. An initial idle-timeout hypothesis was disproved by writer-ownership
+tracing. Debug loopback attempts reported source-egress gaps. The reused baseline
+twenty-edit FX route driver also refused stale generation/review before Master;
+that separate campaign is unchanged. Dedicated Master episodes configure actual
+FX owners through validated producer operations and exercise only the requested
+Master workflow. Final optimized acceptance results below supersede those failed
+attempts, without qualifying hardware timing or feel.
+
+The source audit also found that adding wet Main to the direct-output path needed
+an explicit disarm closure. Direct Main/listening and the final mapped output now
+remain zero at a closed safety boundary, including nonzero wet/native tails;
+Master edits never change that safety state. Raw capture remains ahead of it.
+
+Closeout retained source, normal producer/consumer fixtures, owning documentation,
+production release binaries and the two acceptance executables above. After
+checking processes, the nonblocking shared lock, open/mapped references and Git
+status, cleanup removed 220 task-created disposable debug test executables plus
+24 task logs/inventories: **22339768320 allocated bytes reclaimed** (about
+20.8 GiB). Free space is 39 GiB. The normal GigPies/Desk targets retain about
+11/14 GiB of pre-existing or useful shared compilation caches and required
+executables; no blanket target removal or rebuild for cleanup verification was
+performed. Temporary synthetic acceptance recordings were removed by their test
+owners. Both canonical checkouts remain on main, with uncommitted changes only.
+
+Normal gates in each repository used these commands under the shared lock and
+environment below, repeated with `--features hardware-host` (GigPies) or
+`--features native` (Desk) before the test/compiler argument separator:
+
+```sh
+cargo +1.97.1 test --locked -j1 --all-targets -- --test-threads=1
+cargo +1.97.1 clippy --locked -j1 --all-targets -- -D warnings
+cargo +1.97.1 build --locked -j1 --release
+cargo +1.97.1 fmt --all -- --check
+```
+
+Reproduction uses Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0`, normal target
+directories and `flock -xn /home/shome/p/.gigpies-build.lock`. Build Desk's
+`--release --test fx_aux_actual --no-run` and provide that executable as
+`GP_FX_DESK_TEST_EXE`, with the approved `GP_FX_LIBRARY`. Run each GigPies
+`--release --features hardware-host --lib` opt-in separately with `-- --ignored --exact`:
+
+- `local_audio::fx_aux::frontend_tests::actual_frontend_master_local_samples`
+- `remote::tests::fx_aux_tls_tests::actual_master_tls_frontend_and_samples`
+- `remote::tests::fx_aux_tls_tests::actual_master_tls_frontend_disarmed_silence`
+- `local_audio::source::tests::actual_master_pa_fx_raw_rec_without_controller_pump`
+  (also set `GP05_MANIFEST` to the approved manifest and `GP_PA_CONFIG` to the
+  approved PA stereo configuration).
+
+
 Continuation: `FeedbackWorker` now owns the explicit injected output on an
 independent thread. Frontend attaches/detaches it and publishes confirmed action
 projections in the normal pump, repainting across generations. Latest-state
@@ -3890,7 +4036,8 @@ No OS MIDI port or device memory was opened/changed. The pure speed model now
 integrates prior velocity through centre transitions, retains elapsed motion,
 and drops stale-input/application pending motion. Dead zone/max speed remain
 8% / ±0.5 dB/s. Dedicated provider Master target, coherent post-FX/pre-PA gain,
-persistence and speed-to-provider integration **remain unfinished software**.
+persistence and speed-to-provider integration **were unfinished at this baseline**;
+the November 6 implementation and fresh validation above supersede that gap.
 Selected-Master pan/mute remain explicitly unavailable, with no input fallback.
 
 
@@ -3906,9 +4053,9 @@ Desk `controller_flow` supplies endpoint-qualified profiles, explicit held-Shift
 messages, alternate rotary CC normalization, two pad banks, release edges,
 relative gain guards, a tested Master speed model and a bounded/coalesced output
 transport. No hardware messages were sent. All physical bindings remain
-unqualified until captured. The frontend refuses Master gain/pan: the existing
-provider has no dedicated Master target. Speed-to-provider integration therefore
-remains open; it is not an implemented live Master strip. Gate mode/manual/tom/
+unqualified until captured. At this October 30 baseline, the frontend refused Master gain/pan because the
+provider had no dedicated Master target. The November 6 work above adds gain and
+speed integration; pan/mute remain unavailable. Gate mode/manual/tom/
 automatic-import actions are available through the controller menu. Physical
 feel/LED/Shift qualification remains open. Input context changes reset held
 controls; a known held Shift must release before a new context accepts rotations.

@@ -6,7 +6,7 @@
 
 | Area | Available | Still unfinished or unverified |
 |---|---|---|
-| Audio desk | Channel EQ/compression, default-bypassed gate (processing v5), cued-PCM preparation and actual v5 Desk mutation acceptance, fader/pan, meters, monitor sends, spectrum and 24-input-bank + Master selection strip | Master gain/pitch-speed provider integration, physical controller bindings and listening acceptance |
+| Audio desk | Channel EQ/compression, default-bypassed gate (processing v5), cued-PCM preparation and actual v5 Desk mutation acceptance, fader/pan, meters, monitor sends, spectrum and 24-input-bank + Master selection strip | Physical controller bindings and listening acceptance; Master software acceptance is tracked in GP-PANEL |
 | PA | Configurable routing, output controls and master EQ | Speaker protection and acoustic alignment in a real system |
 | Effects | Four stereo FX auxes through Brain, wet returns to Main, palette controls, tail-preserving bypass and panic; [owning GP-FX card](development/MODULE_IMPLEMENTATION_PLAN.md#gp-fx--writable-owner-effects-in-the-console) | Saved-show integration, listening and sustained target-hardware performance |
 | Recording | Reviewed Desk Start/Stop, aligned raw tracks, readiness/progress/fault/final outcome readback | Physical storage/load and power-loss durability; standalone recorder playback |

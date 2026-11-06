@@ -49,6 +49,7 @@ pub enum Mode {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "parameter", deny_unknown_fields, rename_all = "snake_case")]
 pub enum Target {
+    MasterGain {},
     Fader { input: String },
     Pan { input: String },
     Mute { input: String },
@@ -370,6 +371,7 @@ impl Target {
     }
     fn input(&self) -> &str {
         match self {
+            Self::MasterGain {} => "main",
             Self::Fader { input }
             | Self::Pan { input }
             | Self::Mute { input }
@@ -378,6 +380,7 @@ impl Target {
     }
     fn value_valid(&self, v: &Value) -> bool {
         match (self, v) {
+            (Self::MasterGain {}, Value::Integer(n)) => (-60000..=6000).contains(n),
             (Self::Mute { .. }, Value::Boolean(_)) => true,
             (Self::Pan { .. }, Value::Integer(n)) => (-100..=100).contains(n),
             (Self::Fader { .. } | Self::Send { .. }, Value::Integer(n)) => {
@@ -691,8 +694,32 @@ impl Authority {
     pub fn dimensions(&self) -> (usize, usize) {
         (self.inputs, self.monitors)
     }
+    pub(crate) fn enable_master(&mut self) {
+        if !self
+            .parameters
+            .iter()
+            .any(|p| p.target == (Target::MasterGain {}))
+        {
+            self.parameters.push(Parameter {
+                target: Target::MasterGain {},
+                actual: None,
+                target_value: Value::Integer(0),
+                proposal: None,
+                hold: None,
+                owner: None,
+            });
+        }
+    }
+    pub(crate) fn has_master(&self) -> bool {
+        self.parameters
+            .iter()
+            .any(|p| p.target == (Target::MasterGain {}))
+    }
     pub(crate) fn restore_parameters(&mut self, edits: &[Edit]) -> Result<()> {
-        let required = required_targets_for(self.inputs, self.monitors);
+        let mut required = required_targets_for(self.inputs, self.monitors);
+        if self.has_master() {
+            required.insert(Target::MasterGain {});
+        }
         if edits.len() != required.len()
             || edits
                 .iter()
@@ -1223,7 +1250,11 @@ fn validate_inventory<'a>(
             return Err("duplicate parameter".into());
         }
     }
-    if seen != required_targets_for(inputs, monitors) {
+    let mut required = required_targets_for(inputs, monitors);
+    if seen.contains(&Target::MasterGain {}) {
+        required.insert(Target::MasterGain {});
+    }
+    if seen != required {
         return Err("parameter inventory".into());
     }
     Ok(())
@@ -1292,10 +1323,11 @@ impl Snapshot {
                 return Err("automation bounds".into());
             }
         }
-        if self.parameters.len() > self.inputs.len() * (3 + self.monitors.len()) {
+        if self.parameters.len() > self.inputs.len() * (3 + self.monitors.len()) + 1 {
             return Err("capacity".into());
         }
-        let allowed = required_targets_for(self.inputs.len(), self.monitors.len());
+        let mut allowed = required_targets_for(self.inputs.len(), self.monitors.len());
+        allowed.insert(Target::MasterGain {});
         let mut seen = BTreeSet::new();
         for p in &self.parameters {
             if !allowed.contains(&p.target)
@@ -1456,7 +1488,8 @@ impl Reply {
             }
             let mut seen = BTreeSet::new();
             for e in &p.destinations {
-                if crate::processing_wire::input_index(e.target.input()).is_err()
+                if (e.target != (Target::MasterGain {})
+                    && crate::processing_wire::input_index(e.target.input()).is_err())
                     || (self.version == 1
                         && crate::processing_wire::input_index(e.target.input())
                             .is_ok_and(|i| i >= 8))

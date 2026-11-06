@@ -270,6 +270,7 @@ impl ModuleSource {
         result
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn process_interleaved_brain(
         &mut self,
@@ -280,6 +281,29 @@ impl ModuleSource {
         buses: usize,
         external_wet: Option<&[f64]>,
         talkback: Option<&[f64]>,
+    ) -> std::result::Result<(), ProcessError> {
+        self.process_with_master(
+            epoch,
+            frame,
+            raw,
+            mixed,
+            buses,
+            external_wet,
+            talkback,
+            &[1.; 48],
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_with_master(
+        &mut self,
+        epoch: u64,
+        frame: u64,
+        raw: &[f64],
+        mixed: &[f64],
+        buses: usize,
+        external_wet: Option<&[f64]>,
+        talkback: Option<&[f64]>,
+        master: &[f64; 48],
     ) -> std::result::Result<(), ProcessError> {
         self.output.fill(0.);
         if let Some(storage) = &mut self.pa_storage {
@@ -336,7 +360,7 @@ impl ModuleSource {
             self.wet.fill(0.);
         }
         for i in 0..FRAMES * 2 {
-            self.sum[i] += self.wet[i];
+            self.sum[i] = (self.sum[i] + self.wet[i]) * master[i / 2];
         }
         self.program.copy_from_slice(&self.sum);
         if let Some(tb) = talkback {

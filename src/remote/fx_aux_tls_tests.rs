@@ -15,14 +15,24 @@ fn read() -> Value {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "GP_FX_LIBRARY actual palette; bounded private loopback TLS/source/Brain wet acceptance"]
 async fn actual_four_aux_tls_brain_controls_and_samples() {
-    four_aux_tls_episode(false).await;
+    four_aux_tls_episode(false, false).await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "GP_FX_LIBRARY and GP_FX_DESK_TEST_EXE; disarmed saved FX authenticated loopback acceptance"]
 async fn actual_saved_fx_tls_frontend_and_silence() {
-    four_aux_tls_episode(true).await;
+    four_aux_tls_episode(true, false).await;
 }
-async fn four_aux_tls_episode(saved: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "GP_FX_LIBRARY and GP_FX_DESK_TEST_EXE; actual Master authenticated loopback and wet samples"]
+async fn actual_master_tls_frontend_and_samples() {
+    four_aux_tls_episode(false, true).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "GP_FX_LIBRARY and GP_FX_DESK_TEST_EXE; disarmed autonomous Master authenticated loopback acceptance"]
+async fn actual_master_tls_frontend_disarmed_silence() {
+    four_aux_tls_episode(true, true).await;
+}
+async fn four_aux_tls_episode(saved: bool, master: bool) {
     tokio::task::LocalSet::new().run_until(async{tokio::time::timeout(Duration::from_secs(15),async{
   let directory=PrivateTestDirectory::new();let library=std::path::PathBuf::from(std::env::var_os("GP_FX_LIBRARY").unwrap());let hash=crate::hash::hex(sha2::Sha256::digest(std::fs::read(&library).unwrap()));
   let mut provider=crate::local_audio::LocalAudio::bind_configured(&directory.0,"host",SHOW,Counter(9),EngineTopology::software(4,2,0).unwrap()).unwrap();if !saved {provider.rearm().unwrap();}let mut host=Box::new(HostAuthority::new(provider,1).unwrap());let identity=host.identity();
@@ -30,7 +40,7 @@ async fn four_aux_tls_episode(saved: bool) {
   let clock_status=if saved {Some(host.start_source_clock(0,Duration::from_millis(1),20000).unwrap())}else{None};
   let driver = std::env::var_os("GP_FX_DESK_TEST_EXE");
   let driver_done = Rc::new(Cell::new(false)); let source_done = driver_done.clone(); let with_driver = driver.is_some();
-  let(server_credentials,client_credentials)=credentials();let policy=PolicyStore::new(vec![peer(client_credentials.certificate_chain[0].as_ref(),&[Permission::Fx,Permission::FxConfiguration])]).unwrap();let client_policy=PolicyStore::new(vec![peer(server_credentials.certificate_chain[0].as_ref(),&[])]).unwrap();
+  let(server_credentials,client_credentials)=credentials();let policy=PolicyStore::new(vec![peer(client_credentials.certificate_chain[0].as_ref(),&if master {vec![Permission::Fx,Permission::FxConfiguration,Permission::Foh]} else {vec![Permission::Fx,Permission::FxConfiguration]})]).unwrap();let client_policy=PolicyStore::new(vec![peer(server_credentials.certificate_chain[0].as_ref(),&[])]).unwrap();
   let server=RemoteServer::bind("127.0.0.1:0".parse().unwrap(),&server_credentials,policy).unwrap();let address=server.local_addr().unwrap();
   if driver.is_some() {
     use std::os::unix::fs::PermissionsExt;
@@ -49,8 +59,8 @@ async fn four_aux_tls_episode(saved: bool) {
     for f in 0..48 {
       if frame>=480 && monitors.is_none() { monitors=Some([output[f*4+2],output[f*4+3]]); }
       if !saved && (!with_driver || source_done.get()) {
-        for ch in 0..2 { let expected=host.provider().brain_fx_send()[f*2+ch]+host.test_admitted_wet()[f*2+ch]*if with_driver {0.95}else{1.}; assert!((output[f*4+ch]-expected).abs()<1e-12); comparisons+=1; }
-        if let Some(baseline)=monitors { let wet=if with_driver {(host.test_admitted_wet()[f*2]+host.test_admitted_wet()[f*2+1])*0.025}else{0.}; for m in 0..2 { assert!((output[f*4+2+m]-baseline[m]-wet*(m+1) as f64).abs()<1e-12); } }
+        for ch in 0..2 { let expected=host.provider().brain_fx_send()[f*2+ch]+host.test_admitted_wet()[f*2+ch]*if with_driver && !master {0.95}else{1.}; assert!((output[f*4+ch]-expected * if master {10_f64.powf(-12. / 20.)} else {1.}).abs()<1e-12); comparisons+=1; }
+        if let Some(baseline)=monitors { let wet=if with_driver && !master {(host.test_admitted_wet()[f*2]+host.test_admitted_wet()[f*2+1])*0.025}else{0.}; for m in 0..2 { assert!((output[f*4+2+m]-baseline[m]-wet*(m+1) as f64).abs()<1e-12); } }
       }
     }
    }
@@ -58,7 +68,11 @@ async fn four_aux_tls_episode(saved: bool) {
        let report=host.finish_source_clock(&status).unwrap();
        assert!(report.fault.is_none(),"{:?}",report.fault);
        assert!(report.peaks.iter().all(|v|*v==0.) && report.energy.iter().all(|v|*v==0.));
-       assert_eq!(serde_json::to_value(host.provider_mut().persisted_intent().unwrap()).unwrap(),core_before);
+       let mut expected_core = core_before;
+       if master { for p in expected_core["engine"]["parameters"].as_array_mut().unwrap() {
+           if p["target"]["parameter"] == "master_gain" { p["value"] = json!(-12000); }
+       } }
+       assert_eq!(serde_json::to_value(host.provider_mut().persisted_intent().unwrap()).unwrap(),expected_core);
        comparisons=report.blocks as usize*48*4;
        eprintln!("saved FX TLS: {comparisons} silent output samples; core/composed intent unchanged");
    }
@@ -88,10 +102,13 @@ async fn four_aux_tls_episode(saved: bool) {
     tokio::time::sleep(Duration::from_millis(20)).await;
     struct Child(std::process::Child);
     impl Drop for Child { fn drop(&mut self) { let _=self.0.kill(); let _=self.0.wait(); } }
-    let mut child=Child(std::process::Command::new(exe).args(["--ignored","--exact",if saved {"actual_provider_saved_fx_controls"} else {"actual_provider_return_controls"},"--nocapture"])
+    let names = if master {vec!["actual_provider_master_controls"]} else {vec![if saved {"actual_provider_saved_fx_controls"} else {"actual_provider_return_controls"}]};
+    for name in names {
+    let mut child=Child(std::process::Command::new(&exe).args(["--ignored","--exact",name,"--nocapture"])
       .env("GP_FX_DESK_CONFIG",directory.0.join("desk.json"))
       .spawn().unwrap());
     loop { if let Some(status)=child.0.try_wait().unwrap() { if !status.success() { stop.set(true); let (_,_,execution)=brain_task.await.unwrap(); let (mut host,_)=source.await.unwrap(); host.finish_source_egress(); acceptor.abort(); panic!("Desk driver failed; execution={execution:?}; media={}; egress={}",serde_json::to_value(host.media_stats()).unwrap(),host.source_egress_report()); } break; } tokio::time::sleep(Duration::from_millis(5)).await; }
+    }
     driver_done.set(true);
   }
   let before=wet_count.get();stalled.set(true);tokio::time::sleep(Duration::from_millis(100)).await;let during=wet_count.get();assert!(during>before+20,"wet return stopped with controller: {before}->{during}");stalled.set(false);

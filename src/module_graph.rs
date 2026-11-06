@@ -674,7 +674,7 @@ impl ModuleGraph {
         external_wet: Option<&[f64]>,
         talkback: Option<&[f64]>,
     ) -> std::result::Result<(), ProcessError> {
-        let result = self.source.process_interleaved_brain(
+        self.process_with_master(
             epoch,
             frame,
             raw,
@@ -682,6 +682,30 @@ impl ModuleGraph {
             buses,
             external_wet,
             talkback,
+            &[1.; 48],
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_with_master(
+        &mut self,
+        epoch: u64,
+        frame: u64,
+        raw: &[f64],
+        mixed: &[f64],
+        buses: usize,
+        external_wet: Option<&[f64]>,
+        talkback: Option<&[f64]>,
+        master: &[f64; 48],
+    ) -> std::result::Result<(), ProcessError> {
+        let result = self.source.process_with_master(
+            epoch,
+            frame,
+            raw,
+            mixed,
+            buses,
+            external_wet,
+            talkback,
+            master,
         );
         self.observe_pa();
         result

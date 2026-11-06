@@ -3102,6 +3102,16 @@
             "parameter": "send"
           },
           "target_value": -60000
+        },
+        {
+          "actual": null,
+          "hold": null,
+          "owner": null,
+          "proposal": null,
+          "target": {
+            "parameter": "master_gain"
+          },
+          "target_value": 0
         }
       ],
       "release_commit": false,
@@ -4280,13 +4290,19 @@
     ],
     "faulted": false,
     "frame": "96",
+    "master_gain": {
+      "current_nanogain": 1000000000,
+      "target": "main",
+      "target_nanogain": 1000000000,
+      "version": 1
+    },
     "meters": null,
     "protection": "offline-unprotected",
     "release_commit": true,
     "rendered_application": true,
     "resources": {
       "admission": {
-        "estimated_bytes": 2635776,
+        "estimated_bytes": 2665984,
         "estimated_snapshot_bytes": 425472,
         "sample_operations": 1179648
       },

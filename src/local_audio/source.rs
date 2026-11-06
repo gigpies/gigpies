@@ -565,6 +565,11 @@ impl RenderGraph {
                 .chunks_exact_mut(topology.playback_channels)
                 .enumerate()
             {
+                // Final safety closure also covers native PA/FX tails. A
+                // configuration edit cannot bypass a disarmed source boundary.
+                if self.mixer.mixer.output_safety_gain(first_frame + f as u64) == 0. {
+                    continue;
+                }
                 for patch in &topology.outputs {
                     output[patch.playback_slot] = match patch.source {
                         None => 0.,
@@ -610,6 +615,15 @@ impl RenderGraph {
             output.fill(0.);
             self.close_numeric();
             return Err(RenderError::Closed);
+        }
+        #[cfg(feature = "hardware-host")]
+        let wet_width = if intent.remote_fx_aux { 384 } else { 96 };
+        #[cfg(not(feature = "hardware-host"))]
+        let wet_width = 96;
+        if wet.is_some_and(|w| w.len() != wet_width || w.iter().any(|v| !v.is_finite())) {
+            output.fill(0.);
+            self.close_numeric();
+            return Err(RenderError::Mixer);
         }
         let frame = self.mixer.mixer.frame();
         let ni = self.mixer.mixer.input_count();
@@ -663,6 +677,8 @@ impl RenderGraph {
         } else {
             wet
         };
+        let master: [f64; 48] =
+            std::array::from_fn(|f| self.mixer.mixer.master_gain_at(frame + f as u64));
         let safety = std::array::from_fn(|f| self.mixer.mixer.output_safety_gain(frame + f as u64));
         #[cfg(feature = "hardware-host")]
         let foh = intent.foh && self.modules.is_some();
@@ -694,7 +710,7 @@ impl RenderGraph {
         let mut meter_bus_valid = true;
         #[cfg(feature = "hardware-host")]
         if let Some(graph) = &mut self.modules {
-            match graph.process_interleaved_brain(
+            match graph.process_with_master(
                 epoch,
                 frame,
                 inputs,
@@ -702,6 +718,7 @@ impl RenderGraph {
                 buses,
                 wet,
                 Some(&routing.brain_talkback),
+                &master,
             ) {
                 Ok(()) => routing.meter_main.copy_from_slice(&graph.sum),
                 Err(crate::module_graph::ProcessError::Fx(_)) => {
@@ -735,14 +752,34 @@ impl RenderGraph {
             }
         }
         #[cfg(feature = "hardware-host")]
-        if let Some(aux) = aux_input.map(|_| aux_main.as_slice()) {
-            for (out, pair) in output.chunks_exact_mut(buses).zip(aux.chunks_exact(2)) {
-                out[0] += pair[0];
-                out[1] += pair[1];
+        let graph_main = self.modules.as_ref().map(|graph| &graph.program);
+        #[cfg(not(feature = "hardware-host"))]
+        let graph_main: Option<&[f64; 96]> = None;
+        if let Some(main) = graph_main {
+            // The module owner already applied Master after its local/remote FX.
+            for (out, main) in output.chunks_exact_mut(buses).zip(main.chunks_exact(2)) {
+                out[..2].copy_from_slice(main);
             }
-            if self.modules.is_none() {
-                for (meter, wet) in routing.meter_main.iter_mut().zip(aux) {
-                    *meter += wet;
+        } else {
+            for (f, out) in output.chunks_exact_mut(buses).enumerate() {
+                for (ch, sample) in out[..2].iter_mut().enumerate() {
+                    let index = f * 2 + ch;
+                    *sample = (*sample + wet.map_or(0., |w| w[index])) * master[f];
+                    routing.meter_main[index] = *sample;
+                }
+            }
+            if matches!(intent.monitor, MonitorSource::Main) {
+                for (i, sample) in routing.brain_monitor.iter_mut().enumerate() {
+                    *sample *= master[i / 2];
+                }
+            }
+        }
+        for (f, out) in output.chunks_exact_mut(buses).enumerate() {
+            if safety[f] == 0. {
+                out[..2].fill(0.);
+                routing.meter_main[f * 2..f * 2 + 2].fill(0.);
+                if matches!(intent.monitor, MonitorSource::Main) {
+                    routing.brain_monitor[f * 2..f * 2 + 2].fill(0.);
                 }
             }
         }
@@ -1036,6 +1073,16 @@ mod tests {
     #[test]
     #[ignore = "actual PA/FX/REC bindings: GP05_MANIFEST and GP_PA_CONFIG"]
     fn actual_combined_render_pa_fx_raw_rec_without_controller_pump() {
+        combined_render(false);
+    }
+    #[cfg(feature = "hardware-host")]
+    #[test]
+    #[ignore = "actual PA/FX/REC bindings: GP05_MANIFEST and GP_PA_CONFIG; Master source allocation/sample/REC witness"]
+    fn actual_master_pa_fx_raw_rec_without_controller_pump() {
+        combined_render(true);
+    }
+    #[cfg(feature = "hardware-host")]
+    fn combined_render(master: bool) {
         use crate::{
             mixer_control::OfflineEngine,
             module_graph::{Manifest, ModuleGraph},
@@ -1075,6 +1122,14 @@ mod tests {
         let routing = SourceRouting::new(mixer.topology(), None);
         let talkback = [0.25; 48];
         let deadline = Some(16 * 48 + 17);
+        let master_gain = |frame: u64| {
+            if master {
+                1. + (10_f64.powf(-6. / 20.) - 1.)
+                    * ((frame.saturating_sub(48) as f64) / 240.).min(1.)
+            } else {
+                1.
+            }
+        };
         let mut envelope = 0.;
         let mut expected = Vec::with_capacity(32);
         for block in 0..32 {
@@ -1108,7 +1163,7 @@ mod tests {
             )
             .unwrap();
             reference_modules
-                .process_interleaved_brain(
+                .process_with_master(
                     9,
                     frame,
                     input.as_flattened(),
@@ -1116,9 +1171,13 @@ mod tests {
                     4,
                     None,
                     Some(&tb),
+                    &std::array::from_fn(|f| master_gain(frame + f as u64)),
                 )
                 .unwrap();
             for f in 0..48 {
+                mixed[f * 4..f * 4 + 2].copy_from_slice(
+                    &reference_modules.program_before_talkback()[f * 2..f * 2 + 2],
+                );
                 for bus in 2..4 {
                     mixed[f * 4 + bus] += tb[f * 4 + bus];
                 }
@@ -1168,6 +1227,20 @@ mod tests {
                         modules: Some(module_source),
                         aux: None,
                     };
+                    if master {
+                        graph
+                            .mixer
+                            .mixer
+                            .schedule(
+                                crate::mixer::Prepared::edits(&[crate::control_model::Edit {
+                                    target: crate::control_model::Target::MasterGain {},
+                                    value: crate::control_model::Value::Integer(-6000),
+                                }])
+                                .unwrap(),
+                                99,
+                            )
+                            .unwrap();
+                    }
                     let mut mixed = [0.; 192];
                     // The guard counts both allocation and destruction on this source
                     // worker. REC I/O remains on the owner's pre-existing worker.
@@ -1194,7 +1267,14 @@ mod tests {
                             assert_eq!(&mixed, wanted);
                             assert_eq!(&graph.routing.brain_send, sends);
                             assert_eq!(&graph.routing.brain_monitor, monitor);
-                            assert_eq!(graph.modules.as_ref().unwrap().output_interleaved(), pa);
+                            let module = graph.modules.as_ref().unwrap();
+                            let first = graph.mixer.mixer.frame() - 48;
+                            for (i, send) in sends.iter().enumerate() {
+                                let expected_main =
+                                    (*send + module.wet[i]) * master_gain(first + (i / 2) as u64);
+                                assert!((module.program[i] - expected_main).abs() < 1e-12);
+                            }
+                            assert_eq!(module.output_interleaved(), pa);
                             assert!(graph.mixer.busy());
                         }
                     });

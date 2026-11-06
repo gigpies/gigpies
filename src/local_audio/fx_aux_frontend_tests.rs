@@ -8,6 +8,14 @@ use std::{
 #[test]
 #[ignore = "GP_FX_LIBRARY and GP_FX_DESK_TEST_EXE; bounded local software-only Frontend/sample acceptance"]
 fn actual_frontend_returns_local_samples() {
+    returns_local_samples(false);
+}
+#[test]
+#[ignore = "GP_FX_LIBRARY and GP_FX_DESK_TEST_EXE; actual Master Frontend and dry/wet/monitor samples"]
+fn actual_frontend_master_local_samples() {
+    returns_local_samples(true);
+}
+fn returns_local_samples(master: bool) {
     let library = std::path::PathBuf::from(std::env::var_os("GP_FX_LIBRARY").unwrap());
     let hash = crate::hash::hex(Sha256::digest(std::fs::read(&library).unwrap()));
     let dir = std::env::temp_dir().join(format!("gigpies-desk-returns-{}", std::process::id()));
@@ -61,12 +69,71 @@ fn actual_frontend_returns_local_samples() {
         assert!((f[0] - dry).abs() < 1e-12 && (f[1] - dry).abs() < 1e-12);
         assert!((f[2] - 0.125).abs() < 1e-12 && (f[3] - 0.000125).abs() < 1e-12);
     }
+    if master {
+        // Establish one actual wet owner and independent monitor returns through
+        // the production API. Master acceptance does not replay the separate
+        // twenty-edit FX UI campaign.
+        let grant = crate::control_model::Request {
+            contract: "C-AUDIO".into(),
+            version: 2,
+            show_id: show.into(),
+            module: "audio".into(),
+            epoch: Counter(9),
+            writer: Some("master-setup".into()),
+            lease: None,
+            request_id: Some(Counter(1)),
+            expected_revision: Some(Counter(0)),
+            command: Command::Grant {
+                scope: crate::control_model::Scope::FxConfiguration,
+            },
+        };
+        let lease = p
+            .engine
+            .handle(&grant, 0)
+            .unwrap()
+            .outcome
+            .unwrap()
+            .body
+            .granted_lease
+            .unwrap();
+        let read = json!({"contract":wire::CONTRACT,"version":1,"show_id":show,"module":"audio","epoch":"9","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{"return_routing":true}});
+        let snapshot = p.fx_aux_request(read.clone(), 0, false, None).unwrap();
+        let mut wet: Configuration =
+            serde_json::from_str(snapshot["buses"][0]["configuration_json"].as_str().unwrap())
+                .unwrap();
+        wet.sends[0] = 1.;
+        wet.returns = Some(wire::Returns {
+            main: 0.95,
+            monitors: vec![0.05, 0.1],
+        });
+        wet.settings.time_ms = 2.;
+        let edit = json!({"contract":wire::CONTRACT,"version":1,"show_id":show,"module":"audio","epoch":"9","writer":"master-setup","lease":lease,"request_id":"2","expected_revision":snapshot["revision"],"kind":"fx_aux_configure","body":{"bus":0,"map_revision":"1","library_sha256":hash,"expected_generation":"0","configuration_json":serde_json::to_string(&wet).unwrap(),"panic":false}});
+        assert_eq!(
+            p.fx_aux_request(edit, 0, true, None).unwrap()["state"],
+            "prepared"
+        );
+        for _ in 0..32 {
+            p.tick_with_capture(0, 9, p.frame(), &capture, &mut output)
+                .unwrap();
+        }
+        let settled = p.fx_aux_request(read, 0, false, None).unwrap();
+        assert_eq!(settled["buses"][0]["applied_generation"], "1");
+        assert!(
+            p.take_remote_completions()
+                .iter()
+                .any(|r| r["state"] == "accepted" && r["request_id"] == "2")
+        );
+    }
     cleanup.child = Some(
         std::process::Command::new(std::env::var_os("GP_FX_DESK_TEST_EXE").unwrap())
             .args([
                 "--ignored",
                 "--exact",
-                "actual_provider_return_controls",
+                if master {
+                    "actual_provider_master_controls"
+                } else {
+                    "actual_provider_return_controls"
+                },
                 "--nocapture",
             ])
             .env("GP_FX_DESK_CONFIG", config)
@@ -109,17 +176,19 @@ fn actual_frontend_returns_local_samples() {
             *wet = graph.aux.as_ref().unwrap().wet;
         })
         .unwrap();
+    let main_gain = if master { 10_f64.powf(-12. / 20.) } else { 1. };
     let mut energy = 0.;
     for f in 0..48 {
         let left = (0..4).map(|b| wet[f * 8 + b * 2]).sum::<f64>();
         let right = (0..4).map(|b| wet[f * 8 + b * 2 + 1]).sum::<f64>();
-        assert!((output[f * 4] - dry - left * 0.95).abs() < 1e-12);
-        assert!((output[f * 4 + 1] - dry - right * 0.95).abs() < 1e-12);
+        assert!((output[f * 4] - (dry + left * 0.95) * main_gain).abs() < 1e-12);
+        assert!((output[f * 4 + 1] - (dry + right * 0.95) * main_gain).abs() < 1e-12);
         assert!((output[f * 4 + 2] - 0.125 - (left + right) * 0.025).abs() < 1e-12);
         assert!((output[f * 4 + 3] - 0.000125 - (left + right) * 0.05).abs() < 1e-12);
         energy += left * left + right * right;
     }
     assert!(energy > 0., "actual wet samples required");
+    assert_eq!(p.source.raw_scratch, capture);
     eprintln!(
         "Desk local applied routes: 192 independent Main/monitor sample comparisons; wet energy {energy}"
     );
