@@ -2214,9 +2214,16 @@ synchronous revision fixture; the corrected output-route request passes. A later
 normal library run had one intermittent failure in
 `local_audio::clocked_control_tests::clocked_authority_release_and_writer_revocation_close_copied_hold`:
 the second command observed revision **1**, expected **2** (`src/local_audio.rs`,
-assertion after `clocked_control`). The immediate isolated rerun passed. No numeric
-refusal receipt was captured at that assertion, so the cause remains unresolved;
-passing reruns do not establish timing acceptance. Both prior TLS witnesses are historical evidence for the later native-window
+assertion after `clocked_control`). The immediate isolated rerun passed.
+The November 6 ARM64 hardware-host CI failure captured a `clock` refusal
+with no source receipt: the fixture reused request IDs as timestamps after
+preparation had advanced authority time. The fixture now uses elapsed monotonic
+time for every request and includes a 5 ms preparation delay to cover the
+regression while preserving the release/revocation/fence assertions. Production
+clock rejection is unchanged. Local validation: the delayed regression and
+normal hardware-host library suite passed (235 passed, 43 opt-in ignored),
+alongside all 67 script tests. Passing software checks do not establish hardware
+timing acceptance. Both prior TLS witnesses are historical evidence for the later native-window
 correction. An overbroad remote opt-in selector also reached
 three unrelated environment-gated cases (EQ manifest, prebuilt Desk and fixture
 output destination) and failed setup; no corpus was generated. The intended
