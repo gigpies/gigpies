@@ -169,7 +169,7 @@ fn validate(peers: Vec<Peer>) -> Result<BTreeMap<String, Peer>> {
     Ok(out)
 }
 pub fn fingerprint(certificate: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(certificate))
+    crate::hash::hex(Sha256::digest(certificate))
 }
 
 /// Constructed only after mutual TLS plus the local leaf-certificate policy check.

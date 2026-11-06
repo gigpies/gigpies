@@ -2881,7 +2881,7 @@ mod render_boundary_tests {
         use sha2::{Digest, Sha256};
         let policy = crate::remote::PolicyStore::new(vec![crate::remote::Peer {
             id: "clock-peer".into(),
-            certificate_sha256: format!("{:x}", Sha256::digest(b"clock-peer")),
+            certificate_sha256: crate::hash::hex(Sha256::digest(b"clock-peer")),
             permissions: [crate::remote::Permission::Foh].into_iter().collect(),
         }])
         .unwrap();

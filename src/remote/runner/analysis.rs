@@ -85,7 +85,7 @@ impl Worker {
                     }
                 }
                 client.close();
-                report.sha256 = format!("{:x}", hash.finalize());
+                report.sha256 = crate::hash::hex(hash.finalize());
                 Ok(report)
             })
         }).map_err(|e| e.to_string())?;

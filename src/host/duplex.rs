@@ -27,7 +27,7 @@ pub struct DeviceAcceptance {
 impl DeviceAcceptance {
     pub fn validate(&self, device: &str, topology: &EngineTopology) -> Result<()> {
         use sha2::{Digest, Sha256};
-        let hash = format!("{:x}", Sha256::digest(serde_json::to_vec(topology)?));
+        let hash = crate::hash::hex(Sha256::digest(serde_json::to_vec(topology)?));
         validate_main_routes(topology)?;
         if topology.mapping_evidence != "operator-verified"
             || self.device != device

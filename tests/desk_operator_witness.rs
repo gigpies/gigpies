@@ -35,7 +35,7 @@ fn hash_file(path: &Path) -> String {
         }
         digest.update(&buffer[..count]);
     }
-    format!("{:x}", digest.finalize())
+    gigpies::hash::hex(digest.finalize())
 }
 fn provenance(manifest: &Path, fixture: &Path) -> Value {
     let revision = match option_env!("GP_DESK_WITNESS_SOURCE") {

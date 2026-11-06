@@ -138,7 +138,8 @@ impl LocalAudio {
         }
         let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let mut digest = Sha256::new();
-        std::io::copy(&mut file, &mut digest).map_err(|e| e.to_string())?;
+        std::io::copy(&mut file, &mut crate::hash::DigestWriter(&mut digest))
+            .map_err(|e| e.to_string())?;
         // Reserve bounded wire space for four configurations and actual input identities.
         let map_bytes = serde_json::to_vec(&self.topology().inputs)
             .map_err(|e| e.to_string())?
@@ -153,7 +154,7 @@ impl LocalAudio {
         {
             return Err("FX aux observation capacity for configured input map".into());
         }
-        let hash = format!("{:x}", digest.finalize());
+        let hash = crate::hash::hex(digest.finalize());
         if hash != expected_hash {
             return Err("FX aux library hash mismatch".into());
         }
@@ -279,10 +280,9 @@ impl LocalAudio {
                     }
                 }
                 use sha2::{Digest, Sha256};
-                let fingerprint = format!(
-                    "{:x}",
-                    Sha256::digest(serde_json::to_vec(&value).map_err(|e| e.to_string())?)
-                );
+                let fingerprint = crate::hash::hex(Sha256::digest(
+                    serde_json::to_vec(&value).map_err(|e| e.to_string())?,
+                ));
                 let reservation = self.engine.begin_external(
                     &r,
                     &fingerprint,
@@ -655,7 +655,7 @@ mod actual_tests {
         use sha2::{Digest, Sha256};
         use std::os::unix::fs::PermissionsExt;
         let path = std::path::PathBuf::from(std::env::var("GP_FX_LIBRARY").unwrap());
-        let hash = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        let hash = crate::hash::hex(Sha256::digest(std::fs::read(&path).unwrap()));
         let dir = std::env::temp_dir().join(format!("gigpies-fx-aux-test-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();

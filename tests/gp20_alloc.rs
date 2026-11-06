@@ -34,7 +34,7 @@ static ALLOC: Guard = Guard;
 fn reserved_mic_borrowed_offer_never_allocates_or_retires() {
     use sha2::{Digest, Sha256};
     let executable = std::fs::canonicalize("/usr/bin/true").unwrap();
-    let hash = format!("{:x}", Sha256::digest(std::fs::read(&executable).unwrap()));
+    let hash = gigpies::hash::hex(Sha256::digest(std::fs::read(&executable).unwrap()));
     let mut state = State::new(Config {
         version: 1,
         mode: "software-only".into(),

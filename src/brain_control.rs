@@ -148,10 +148,9 @@ impl Request {
     }
     pub fn fingerprint(&self) -> Result<String> {
         use sha2::{Digest, Sha256};
-        Ok(format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(self).map_err(|e| e.to_string())?)
-        ))
+        Ok(crate::hash::hex(Sha256::digest(
+            serde_json::to_vec(self).map_err(|e| e.to_string())?,
+        )))
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

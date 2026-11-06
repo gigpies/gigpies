@@ -99,8 +99,8 @@ impl MediaWorker {
             }
             report.stale_capture_blocks+=u64::from(pending_capture.is_some());
             for _ in 0..4 { if lanes.captured.pop().is_ok() { report.stale_capture_blocks+=1; } else { break; } }
-            report.captured_pre_wire_sha256=format!("{:x}",capture_hash.finalize());
-            report.received_monitor_sha256=format!("{:x}",monitor_hash.finalize());
+            report.captured_pre_wire_sha256=crate::hash::hex(capture_hash.finalize());
+            report.received_monitor_sha256=crate::hash::hex(monitor_hash.finalize());
             report
         }))
         }).map_err(|e|e.to_string())?;

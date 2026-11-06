@@ -1445,7 +1445,7 @@ impl HostAuthority {
             }
             Some("device_configure") => {
                 context.require(&Permission::LocalOperatorMonitor)?;
-                let fingerprint = format!("{:x}", Sha256::digest(super::encode(&payload)?));
+                let fingerprint = crate::hash::hex(Sha256::digest(super::encode(&payload)?));
                 if let Some(change) = self
                     .device_pending
                     .as_ref()
@@ -2158,7 +2158,7 @@ impl HostAuthority {
         &self.media_stats
     }
     pub fn accepted_wet_sha256(&self) -> String {
-        format!("{:x}", self.accepted_wet_hash.clone().finalize())
+        crate::hash::hex(self.accepted_wet_hash.clone().finalize())
     }
     pub fn provider(&self) -> &LocalAudio {
         &self.provider

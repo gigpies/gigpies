@@ -4131,7 +4131,7 @@ mod clocked_control_tests {
             use sha2::{Digest, Sha256};
             let policy = crate::remote::PolicyStore::new(vec![crate::remote::Peer {
                 id: "clock-test".into(),
-                certificate_sha256: format!("{:x}", Sha256::digest(certificate)),
+                certificate_sha256: crate::hash::hex(Sha256::digest(certificate)),
                 permissions: [crate::remote::Permission::PaConfiguration]
                     .into_iter()
                     .collect(),
@@ -4247,7 +4247,7 @@ mod clocked_control_tests {
             let certificate = b"held-controller-session";
             let policy = crate::remote::PolicyStore::new(vec![crate::remote::Peer {
                 id: "held-controller".into(),
-                certificate_sha256: format!("{:x}", Sha256::digest(certificate)),
+                certificate_sha256: crate::hash::hex(Sha256::digest(certificate)),
                 permissions: [crate::remote::Permission::TalkbackDestinations]
                     .into_iter()
                     .collect(),

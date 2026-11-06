@@ -400,7 +400,7 @@ impl BrainWorker {
         let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        let actual = format!("{:x}", Sha256::digest(&bytes));
+        let actual = crate::hash::hex(Sha256::digest(&bytes));
         if actual != expected_sha256 {
             return Err("FX library hash mismatch".into());
         }
@@ -697,7 +697,7 @@ impl BrainWorker {
         if let Some(worker) = &self.media_worker {
             return worker.report.hash.clone();
         }
-        format!("{:x}", self.returned_hash.clone().finalize())
+        crate::hash::hex(self.returned_hash.clone().finalize())
     }
     pub fn nonzero_return_samples(&self) -> u64 {
         self.nonzero_return_samples

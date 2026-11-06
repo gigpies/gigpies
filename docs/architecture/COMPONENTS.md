@@ -91,7 +91,7 @@ Active dependencies are intentionally small:
 | hound 3.5.1 | WAV metadata reading; already used by SHR projects |
 | serde 1.0.229 | Typed report serialization |
 | serde_json 1.0.151 | JSON settings/reports with exact float round trips |
-| sha2 0.10.9 | SHA-256 identities for frozen matching inputs/settings |
+| sha2 0.11.1 | SHA-256 identities for frozen matching inputs/settings |
 | rtrb 0.4.0 | Bounded independent worker queues |
 | socket2 0.6.5 | Explicit transport socket capacity |
 | alsa 0.11.0, libloading 0.7.4, libc 0.2.189 | Optional `hardware-host` device/module boundary |

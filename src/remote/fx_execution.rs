@@ -834,7 +834,7 @@ mod tests {
         let path = std::path::PathBuf::from(
             std::env::var_os("GP_FX_LIBRARY").expect("verified FX library"),
         );
-        let hash = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        let hash = crate::hash::hex(Sha256::digest(std::fs::read(&path).unwrap()));
         let mut fx = BrainFx::prepare(&path, 2, 48, 2).unwrap();
         assert!(fx.enable_configured(&path).unwrap());
         let binding = wire::Binding {

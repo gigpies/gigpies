@@ -769,12 +769,12 @@ mod tests {
             let policy = PolicyStore::new(vec![
                 Peer {
                     id: "hold-controller".into(),
-                    certificate_sha256: format!("{:x}", Sha256::digest(b"hold-controller")),
+                    certificate_sha256: crate::hash::hex(Sha256::digest(b"hold-controller")),
                     permissions: [Permission::TalkbackDestinations].into_iter().collect(),
                 },
                 Peer {
                     id: "speech-media".into(),
-                    certificate_sha256: format!("{:x}", Sha256::digest(b"speech-media")),
+                    certificate_sha256: crate::hash::hex(Sha256::digest(b"speech-media")),
                     permissions: [Permission::TalkbackDestinations].into_iter().collect(),
                 },
             ])

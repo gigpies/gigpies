@@ -16,7 +16,7 @@ fn read() -> Value {
 #[ignore = "GP_FX_LIBRARY actual palette; bounded private loopback TLS/source/Brain wet acceptance"]
 async fn actual_four_aux_tls_brain_controls_and_samples() {
     tokio::task::LocalSet::new().run_until(async{tokio::time::timeout(Duration::from_secs(15),async{
-  let directory=PrivateTestDirectory::new();let library=std::path::PathBuf::from(std::env::var_os("GP_FX_LIBRARY").unwrap());let hash=format!("{:x}",sha2::Sha256::digest(std::fs::read(&library).unwrap()));
+  let directory=PrivateTestDirectory::new();let library=std::path::PathBuf::from(std::env::var_os("GP_FX_LIBRARY").unwrap());let hash=crate::hash::hex(sha2::Sha256::digest(std::fs::read(&library).unwrap()));
   let mut provider=crate::local_audio::LocalAudio::bind_configured(&directory.0,"host",SHOW,Counter(9),EngineTopology::software(4,2,0).unwrap()).unwrap();provider.rearm().unwrap();let mut host=Box::new(HostAuthority::new(provider,1).unwrap());let identity=host.identity();
   let(server_credentials,client_credentials)=credentials();let policy=PolicyStore::new(vec![peer(client_credentials.certificate_chain[0].as_ref(),&[Permission::Fx,Permission::FxConfiguration])]).unwrap();let client_policy=PolicyStore::new(vec![peer(server_credentials.certificate_chain[0].as_ref(),&[])]).unwrap();
   let server=RemoteServer::bind("127.0.0.1:0".parse().unwrap(),&server_credentials,policy).unwrap();let address=server.local_addr().unwrap();let(tx,mut rx)=tokio::sync::mpsc::channel(2);

@@ -880,7 +880,7 @@ fn write_actual_remote48_response_pages() {
     }
     std::fs::write(root.join("response-whole.json"), &whole).unwrap();
     std::fs::write(root.join("response-framed.bin"), &framed).unwrap();
-    let manifest = json!({"source":"actual EngineAuthority48 snapshot + typed Response::Reply + production snapshot_pages::encode","session":ctx.session().to_string(),"page_count":pages.len(),"whole_bytes":whole.len(),"framed_bytes":framed.len(),"whole_sha256":format!("{:x}",Sha256::digest(&whole)),"framed_sha256":format!("{:x}",Sha256::digest(&framed))});
+    let manifest = json!({"source":"actual EngineAuthority48 snapshot + typed Response::Reply + production snapshot_pages::encode","session":ctx.session().to_string(),"page_count":pages.len(),"whole_bytes":whole.len(),"framed_bytes":framed.len(),"whole_sha256":crate::hash::hex(Sha256::digest(&whole)),"framed_sha256":crate::hash::hex(Sha256::digest(&framed))});
     std::fs::write(
         root.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest).unwrap(),

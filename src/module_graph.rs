@@ -57,7 +57,7 @@ fn hash(path: &Path, maximum: u64) -> Result<String> {
         }
         hasher.update(&buffer[..n]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::hash::hex(hasher.finalize()))
 }
 impl Artifact {
     fn verify(&self) -> Result<()> {
