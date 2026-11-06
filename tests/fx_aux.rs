@@ -154,3 +154,112 @@ fn malformed_aux_client_cannot_stop_source_processing() {
     for(now,value)in [serde_json::json!({"contract":"GP-FX-aux","version":999}),serde_json::json!({"contract":"GP-FX-aux","version":1,"show_id":"11111111-1111-4111-8111-111111111111","module":"audio","epoch":"8","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{}})].into_iter().enumerate(){let mut c=UnixStream::connect(path.join("host")).unwrap();let bytes=serde_json::to_vec(&value).unwrap();c.write_all(&(bytes.len()as u32).to_be_bytes()).unwrap();c.write_all(&bytes).unwrap();p.tick(now as u64).unwrap();}
     assert_eq!(p.frame(), 96);
 }
+
+#[test]
+fn returns_exact_samples_independent_main_monitors_ramps_and_safety() {
+    use gigpies::fx_aux_wire::Returns;
+    for monitors in [0, 1, 3, 5, 17] {
+        let mut m =
+            Mixer::from_topology(0, EngineTopology::software(4, monitors, 0).unwrap()).unwrap();
+        m.enable_fx_aux().unwrap();
+        let wet: [f64; 384] = std::array::from_fn(|i| (i % 8 + 1) as f64 / 16.);
+        let mut out = vec![0.125; 48 * (monitors + 2)];
+        let baseline = out.clone();
+        let mut main = [0.; 96];
+        m.mix_fx_returns(0, &wet, &mut main, &mut out);
+        assert_eq!(out, baseline, "default monitor routes must be bit exact");
+        for pair in main.chunks_exact(2) {
+            assert_eq!(pair, &[1., 1.25]);
+        }
+        for bus in 0..4 {
+            m.set_fx_returns(
+                bus,
+                &Returns {
+                    main: 0.,
+                    monitors: (0..monitors)
+                        .map(|i| if i % 4 == bus { 0.5 } else { 0. })
+                        .collect(),
+                },
+            )
+            .unwrap();
+        }
+        for frame in [0, 1, 48, 120, 239, 240, 480] {
+            out.copy_from_slice(&baseline);
+            m.mix_fx_returns(frame, &wet, &mut main, &mut out);
+            for f in 0..48 {
+                let ramp = ((frame + f as u64) as f64 / 240.).min(1.);
+                assert!((main[f * 2] - (1. - ramp)).abs() < 1e-14);
+                assert!((main[f * 2 + 1] - 1.25 * (1. - ramp)).abs() < 1e-14);
+                assert_eq!(
+                    &out[f * (monitors + 2)..f * (monitors + 2) + 2],
+                    &[0.125; 2]
+                );
+                for i in 0..monitors {
+                    let mono = ((i % 4 * 2 + 1) + (i % 4 * 2 + 2)) as f64 / 32.;
+                    assert!(
+                        (out[f * (monitors + 2) + i + 2] - (0.125 + mono * 0.5 * ramp)).abs()
+                            < 1e-14
+                    );
+                }
+            }
+        }
+        let before = m.fx_returns(0).unwrap();
+        for bad in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+            let mut r = before.clone();
+            r.main = bad;
+            assert!(m.set_fx_returns(0, &r).is_err());
+            if monitors > 0 {
+                r = before.clone();
+                r.monitors[0] = bad;
+                assert!(m.set_fx_returns(0, &r).is_err());
+            }
+        }
+        assert!(m.set_fx_returns(4, &before).is_err());
+        assert!(
+            m.set_fx_returns(0, &Returns::silent_monitors(monitors + 1))
+                .is_err()
+        );
+        assert_eq!(m.fx_returns(0).unwrap(), before);
+        // Opposite-polarity stereo cancels in mono, without changing Main semantics.
+        let anti: [f64; 384] = std::array::from_fn(|i| if i % 2 == 0 { 0.25 } else { -0.25 });
+        out.copy_from_slice(&baseline);
+        m.mix_fx_returns(480, &anti, &mut main, &mut out);
+        assert_eq!(out, baseline);
+        m.quiesce();
+        out.copy_from_slice(&baseline);
+        m.mix_fx_returns(480, &wet, &mut main, &mut out);
+        assert_eq!(out, baseline);
+        assert_eq!(main, [0.; 96]);
+    }
+}
+
+#[test]
+fn return_contract_is_strict_and_runtime_only() {
+    use gigpies::{fx_aux_wire::Returns, mixer_control::OfflineEngine, show::Counter};
+    for json in [
+        r#"{"main":1,"monitors":[0],"extra":0}"#,
+        r#"{"main":1,"main":0,"monitors":[0]}"#,
+        r#"{"main":1,"monitors":[true]}"#,
+    ] {
+        assert!(serde_json::from_str::<Returns>(json).is_err());
+    }
+    let mut e = OfflineEngine::new(
+        "11111111-1111-4111-8111-111111111111",
+        Counter(1),
+        Counter(0),
+        0,
+    )
+    .unwrap();
+    e.enable_fx_aux().unwrap();
+    let mut r = Returns::silent_monitors(e.topology().monitors);
+    r.main = 0.;
+    r.monitors[0] = 0.75;
+    e.set_fx_returns(2, &r).unwrap();
+    let saved = e.persisted_intent().unwrap();
+    e.quiesce("lost source");
+    e.recover(Counter(2), 0).unwrap();
+    assert!(e.outputs_quiesced());
+    assert_eq!(e.fx_returns(2).unwrap(), r);
+    let fresh = OfflineEngine::restore_intent(&saved, Counter(3), 0).unwrap();
+    assert!(fresh.fx_returns(2).is_none());
+}

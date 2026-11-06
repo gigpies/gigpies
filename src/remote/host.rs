@@ -331,6 +331,7 @@ struct HostSourceMedia {
     gates: [WetGate; 8],
     wet_channels: usize,
     wet: [f64; 96],
+    aux_wet: [f64; 384],
     egress: Option<super::source_egress::SourceEgressInput>,
     analysis_indices: Vec<usize>,
     analysis: Vec<f64>,
@@ -367,6 +368,7 @@ impl HostSourceMedia {
             gates: [WetGate::default(); 8],
             wet_channels: 2,
             wet: [0.; 96],
+            aux_wet: [0.; 384],
             egress: None,
             analysis_indices: Vec::new(),
             analysis: Vec::new(),
@@ -513,10 +515,12 @@ impl HostSourceMedia {
             }
         }
         self.wet.fill(0.);
+        self.aux_wet.fill(0.);
         for f in 0..48 {
             for ch in 0..self.wet_channels {
-                self.wet[f * 2 + ch % 2] +=
-                    self.gates[ch].step(incoming[f * self.wet_channels + ch]);
+                let sample = self.gates[ch].step(incoming[f * self.wet_channels + ch]);
+                self.aux_wet[f * 8 + ch] = sample;
+                self.wet[f * 2 + ch % 2] += sample;
             }
             if self.wet_channels == 8 {
                 self.wet[f * 2] *= safety[f];
@@ -589,6 +593,7 @@ struct MediaObservation {
     #[cfg(test)]
     talkback_last_received: Option<u64>,
     wet: [f64; 96],
+    aux_wet: [f64; 384],
     talkback_samples: [f64; 48],
 }
 impl MediaObservation {
@@ -607,6 +612,7 @@ impl MediaObservation {
             #[cfg(test)]
             talkback_last_received: source.talkback.as_ref().and_then(|s| s.last_received),
             wet: source.wet,
+            aux_wet: source.aux_wet,
             talkback_samples: source.talkback_samples,
         }
     }
@@ -674,6 +680,7 @@ impl SourceMediaController {
                 if packet.1 {
                     source.gates = [WetGate::default(); 8];
                     source.wet.fill(0.);
+                    source.aux_wet.fill(0.);
                 }
             })
             .is_err()
@@ -2231,7 +2238,11 @@ impl HostAuthority {
             frame,
             capture,
             playback,
-            Some(&self.source_media.wet),
+            Some(if self.provider.remote_fx_aux_enabled() {
+                &self.source_media.aux_wet[..]
+            } else {
+                &self.source_media.wet[..]
+            }),
             Some(&self.source_media.talkback_samples),
         )?;
         self.emit_brain_monitor(frame, now_ms)?;
@@ -2780,6 +2791,13 @@ impl AuthorityEndpoint for HostAuthority {
             let zeros = vec![0.; self.provider.topology().inputs.len()];
             for bus in 0..4 {
                 sends.set(zeros.len(), bus, &zeros)?;
+                sends.set_returns(
+                    self.provider.topology().monitors,
+                    bus,
+                    &crate::fx_aux_wire::Returns::silent_monitors(
+                        self.provider.topology().monitors,
+                    ),
+                )?;
             }
         }
         let wet_channels = if four_aux { 8 } else { 2 };
@@ -2849,6 +2867,7 @@ impl AuthorityEndpoint for HostAuthority {
                 std::mem::swap(&mut source.wet_fence, &mut p.wet_fence);
                 source.gates = [WetGate::default(); 8];
                 source.wet.fill(0.);
+                source.aux_wet.fill(0.);
                 // Successful swap is marked below outside the payload borrow.
                 true
             },

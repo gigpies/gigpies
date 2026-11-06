@@ -10,6 +10,8 @@ use serde_json::{Value, json};
 pub struct Configuration {
     pub settings: Settings,
     pub sends: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns: Option<crate::fx_aux_wire::Returns>,
     #[serde(default)]
     pub tempo: Option<Tempo>,
 }
@@ -29,7 +31,7 @@ struct Bus {
 #[cfg(feature = "hardware-host")]
 pub(super) struct Rack {
     buses: [Bus; 4],
-    wet: [f64; 96],
+    wet: [f64; 384],
     next_frame: u64,
 }
 #[cfg(feature = "hardware-host")]
@@ -166,6 +168,7 @@ impl LocalAudio {
             let config = Configuration {
                 settings: owner.defaults(1)?,
                 sends: vec![0.; self.topology().inputs.len()],
+                returns: None,
                 tempo: None,
             };
             controls.push(BusControl {
@@ -186,7 +189,7 @@ impl LocalAudio {
         self.fx_aux = Some(Controller {
             source: Some(Rack {
                 buses: buses.try_into().map_err(|_| "FX buses")?,
-                wet: [0.; 96],
+                wet: [0.; 384],
                 next_frame: 0,
             }),
             buses: controls.try_into().map_err(|_| "FX controls")?,
@@ -217,7 +220,7 @@ impl LocalAudio {
             return Err("FX aux attachment".into());
         }
         if m.is_none() {
-            return self.fx_aux_snapshot(&r);
+            return wire::snapshot_compatibility(&value, self.fx_aux_snapshot(&r)?);
         }
         let _ = (now, fresh, client);
         #[cfg(not(feature = "hardware-host"))]
@@ -255,6 +258,9 @@ impl LocalAudio {
                     .transpose()?;
                 let mut token = None;
                 if let Some(c) = &config {
+                    if let Some(r) = &c.returns {
+                        r.validate(self.engine.topology().monitors)?;
+                    }
                     if c.sends.len() != bus.config.sends.len()
                         || c.sends
                             .iter()
@@ -342,8 +348,10 @@ impl LocalAudio {
             let mut buses = Vec::new();
             for (i, bus) in rack.buses.iter_mut().enumerate() {
                 let status = bus.status;
+                let mut config = bus.config.clone();
+                config.returns = self.engine.fx_returns(i);
                 buses.push(json!({"id":format!("fx-{}",i+1),"generation":bus.generation.to_string(),
-                    "applied_generation":bus.applied.to_string(),"configuration_json":serde_json::to_string(&bus.config).map_err(|e|e.to_string())?,
+                    "applied_generation":bus.applied.to_string(),"configuration_json":serde_json::to_string(&config).map_err(|e|e.to_string())?,
                     "owner_json":serde_json::to_string(&status).map_err(|e|e.to_string())?}));
             }
             let mut palette = Vec::new();
@@ -353,6 +361,12 @@ impl LocalAudio {
                     palette.push(json!({"algorithm":algorithm,"defaults":owner.defaults(algorithm)?,"parameters":owner.parameters(algorithm)?}));
                 }
             }
+            value["return_routing_version"] = json!(1);
+            value["monitors"] = json!(
+                (0..self.engine.topology().monitors)
+                    .map(|i| format!("monitor-{}", i + 1))
+                    .collect::<Vec<_>>()
+            );
             value["available"] = json!(true);
             value["pending"] = json!(self.fx_aux_pending.as_ref().map(|p| p.mutation.bus));
             value["library_sha256"] = json!(rack.hash);
@@ -411,6 +425,9 @@ impl LocalAudio {
         let b = &control.buses[p.mutation.bus];
         let mut sends = crate::mixer::PreparedFxSends::default();
         if let Some(config) = &p.config {
+            if let Some(r) = &config.returns {
+                sends.set_returns(self.engine.topology().monitors, p.mutation.bus, r)?;
+            }
             sends.set(
                 self.engine.topology().inputs.len(),
                 p.mutation.bus,
@@ -621,7 +638,7 @@ impl Rack {
         receipt
     }
 
-    pub(super) fn process(&mut self, frame: u64, mixer: &crate::mixer::Mixer) -> [f64; 96] {
+    pub(super) fn process(&mut self, frame: u64, mixer: &crate::mixer::Mixer) -> [f64; 384] {
         let r = self;
         r.wet.fill(0.);
         if r.next_frame != frame {
@@ -632,15 +649,12 @@ impl Rack {
             r.next_frame = frame.saturating_add(48);
             return r.wet;
         }
-        for (b, input) in r.buses.iter_mut().zip(mixer.fx_aux_samples()) {
+        for (bus, (b, input)) in r.buses.iter_mut().zip(mixer.fx_aux_samples()).enumerate() {
             b.owner.process(input, &mut b.output);
-            for (sum, wet) in r.wet.iter_mut().zip(&b.output) {
-                *sum += wet;
+            for f in 0..48 {
+                r.wet[f * 8 + bus * 2..f * 8 + bus * 2 + 2]
+                    .copy_from_slice(&b.output[f * 2..f * 2 + 2]);
             }
-        }
-        for (i, sample) in r.wet.iter_mut().enumerate() {
-            let gain = mixer.output_safety_gain(frame + (i / 2) as u64);
-            *sample = if gain == 0. { 0. } else { *sample * gain };
         }
         r.next_frame = frame.saturating_add(48);
         r.wet
@@ -702,12 +716,16 @@ mod actual_tests {
             .body
             .granted_lease
             .unwrap();
-        let read = json!({"contract":wire::CONTRACT,"version":1,"show_id":show,"module":"audio","epoch":"9","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{}});
+        let read = json!({"contract":wire::CONTRACT,"version":1,"show_id":show,"module":"audio","epoch":"9","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{"return_routing":true}});
         let snapshot = p.fx_aux_request(read.clone(), 0, false, None).unwrap();
         let mut c: Configuration =
             serde_json::from_str(snapshot["buses"][0]["configuration_json"].as_str().unwrap())
                 .unwrap();
         c.sends[0] = 1.;
+        c.returns = Some(wire::Returns {
+            main: 0.5,
+            monitors: vec![0.25, 0.75],
+        });
         c.settings.time_ms = 2.;
         c.settings.amount = 0.;
         c.settings.damping = 0.;
@@ -717,6 +735,22 @@ mod actual_tests {
                        revision: Value,
                        config: Option<&Configuration>| json!({"contract":wire::CONTRACT,"version":1,"show_id":show,"module":"audio","epoch":"9","writer":"aux-test","lease":lease,"request_id":id.to_string(),"expected_revision":revision,"kind":"fx_aux_configure","body":{"bus":0,"map_revision":"1","library_sha256":hash,"expected_generation":generation.to_string(),"configuration_json":config.map(|c|serde_json::to_string(c).unwrap()),"panic":config.is_none()}});
         let r = request(2, 0, snapshot["revision"].clone(), Some(&c));
+        let mut invalid = c.clone();
+        invalid.returns.as_mut().unwrap().monitors.push(0.);
+        assert_eq!(
+            p.fx_aux_request(
+                request(2, 0, snapshot["revision"].clone(), Some(&invalid)),
+                0,
+                true,
+                None
+            )
+            .unwrap()["state"],
+            "rejected"
+        );
+        assert_eq!(
+            p.fx_aux_request(r.clone(), 0, false, None).unwrap()["state"],
+            "rejected"
+        );
         assert_eq!(
             p.fx_aux_request(r.clone(), 0, true, None).unwrap()["state"],
             "prepared"
@@ -760,13 +794,17 @@ mod actual_tests {
         let dry = 0.125 * 10_f64.powf(-6. / 20.) * std::f64::consts::FRAC_1_SQRT_2;
         for f in playback.chunks_exact(4) {
             assert!(
-                (f[0] - 2. * dry).abs() < 1e-12,
+                (f[0] - 1.5 * dry).abs() < 1e-12,
                 "Main dry + wet {} vs {}",
                 f[0],
-                2. * dry
+                1.5 * dry
             );
-            assert!((f[1] - 2. * dry).abs() < 1e-12);
-            assert!((f[2] - 0.125).abs() < 1e-12, "monitor unchanged");
+            assert!((f[1] - 1.5 * dry).abs() < 1e-12);
+            assert!(
+                (f[2] - (0.125 + dry * 0.25)).abs() < 1e-12,
+                "independent monitor return"
+            );
+            assert!((f[3] - (0.000125 + dry * 0.75)).abs() < 1e-12);
         }
         assert_eq!(
             p.fx_aux_request(r, 33, true, None).unwrap()["state"],
@@ -850,6 +888,7 @@ mod actual_tests {
         .unwrap();
         p.recover_source(Counter(10), 0).unwrap();
         assert!(p.engine.outputs_quiesced());
+        assert_eq!(p.engine.fx_returns(0), c.returns);
         let recovered_sends = p.fx_aux.as_ref().unwrap().buses[0].config.sends.clone();
         p.graph_command((), |graph, _| {
             assert_eq!(graph.aux.as_ref().unwrap().next_frame, 0)
@@ -869,7 +908,106 @@ mod actual_tests {
                 .unwrap();
         }
         for f in playback.chunks_exact(4) {
-            assert!((f[0] - 2. * dry).abs() < 1e-12, "recovered dry + wet");
+            assert!((f[0] - 1.5 * dry).abs() < 1e-12, "recovered dry + wet");
+        }
+        // A fresh writer after recovery can change routing without replacing DSP.
+        let mut read = read.clone();
+        read["epoch"] = json!("10");
+        let mut grant = grant.clone();
+        grant.epoch = Counter(10);
+        grant.request_id = Some(Counter(1));
+        grant.expected_revision = Some(p.brain_snapshot().revision);
+        let lease = p
+            .engine
+            .handle(&grant, 90)
+            .unwrap()
+            .outcome
+            .unwrap()
+            .body
+            .granted_lease
+            .unwrap();
+        for (id, omit) in [(91, true), (92, false)] {
+            let snapshot = p.fx_aux_request(read.clone(), id, true, None).unwrap();
+            let mut config: Configuration =
+                serde_json::from_str(snapshot["buses"][0]["configuration_json"].as_str().unwrap())
+                    .unwrap();
+            let prior: Value =
+                serde_json::from_str(snapshot["buses"][0]["owner_json"].as_str().unwrap()).unwrap();
+            let mut wanted = config.returns.clone().unwrap();
+            if omit {
+                config.returns = None;
+            } else {
+                wanted.main = 0.;
+                wanted.monitors = vec![1., 0.];
+                config.returns = Some(wanted.clone());
+            }
+            let mut edit = request(
+                id,
+                snapshot["buses"][0]["generation"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+                snapshot["revision"].clone(),
+                Some(&config),
+            );
+            edit["epoch"] = json!("10");
+            edit["body"]["map_revision"] = snapshot["map_revision"].clone();
+            edit["lease"] = json!(lease);
+            assert_eq!(
+                p.fx_aux_request(edit, id, true, None).unwrap()["state"],
+                "prepared"
+            );
+            for _ in 0..8 {
+                let frame = p.frame();
+                p.tick_with_capture(id, 10, frame, &input, &mut playback)
+                    .unwrap();
+            }
+            let after = p.fx_aux_request(read.clone(), id, true, None).unwrap();
+            let status: Value =
+                serde_json::from_str(after["buses"][0]["owner_json"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                status["accepted_request"], prior["accepted_request"],
+                "route-only edits reuse the existing owner"
+            );
+            assert_eq!(
+                p.engine.fx_returns(0).unwrap(),
+                wanted,
+                "legacy omission preserves routing"
+            );
+            if !omit {
+                for f in playback.chunks_exact(4) {
+                    assert!((f[0] - dry).abs() < 1e-12);
+                    assert!(f[2] > 0.125);
+                }
+            }
+        }
+        // Refused authority requests consume their own IDs; never replay them.
+        let basis = p.fx_aux_request(read.clone(), 94, true, None).unwrap();
+        let config: Configuration =
+            serde_json::from_str(basis["buses"][0]["configuration_json"].as_str().unwrap())
+                .unwrap();
+        for (offset, key) in ["lease", "expected_revision", "epoch"].iter().enumerate() {
+            let mut invalid = request(
+                94 + offset as u64,
+                basis["buses"][0]["generation"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap(),
+                basis["revision"].clone(),
+                Some(&config),
+            );
+            invalid["epoch"] = json!("10");
+            invalid["lease"] = json!(lease);
+            invalid["body"]["map_revision"] = basis["map_revision"].clone();
+            invalid[*key] = json!("999");
+            let result = p.fx_aux_request(invalid, 94, true, None);
+            assert!(result.is_err() || result.unwrap()["state"] == "rejected");
+            assert_eq!(
+                p.fx_aux_request(read.clone(), 94, true, None).unwrap()["buses"],
+                basis["buses"]
+            );
         }
         drop(p);
     }

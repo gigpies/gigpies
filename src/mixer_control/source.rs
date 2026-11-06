@@ -595,6 +595,16 @@ mod remote_send_tests {
             let cancelled = Arc::new(AtomicBool::new(mode == 1));
             let mut sends = crate::mixer::PreparedFxSends::default();
             sends.set(8, 0, &[0.75; 8]).unwrap();
+            sends
+                .set_returns(
+                    2,
+                    0,
+                    &crate::fx_aux_wire::Returns {
+                        main: 0.,
+                        monitors: vec![0.25, 0.75],
+                    },
+                )
+                .unwrap();
             source.remote_fx = Some(RemoteFxSends {
                 ticket: 7,
                 frame: 0,
@@ -621,6 +631,17 @@ mod remote_send_tests {
             assert_eq!(
                 source.mixer.fx_sends(0).unwrap(),
                 vec![if mode == 0 { 0.75 } else { 0. }; 8]
+            );
+            assert_eq!(
+                source.mixer.fx_returns(0).unwrap(),
+                if mode == 0 {
+                    crate::fx_aux_wire::Returns {
+                        main: 0.,
+                        monitors: vec![0.25, 0.75],
+                    }
+                } else {
+                    crate::fx_aux_wire::Returns::silent_monitors(2)
+                }
             );
             // The slot and allocating prepared payload survive both outcomes
             // until controller code takes them; repeated ticks cannot reapply.

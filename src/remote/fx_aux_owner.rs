@@ -27,6 +27,8 @@ pub fn binding(d: &MediaDescriptor, hash: &str) -> Result<String> {
 pub struct Configuration {
     pub settings: Settings,
     pub sends: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns: Option<crate::fx_aux_wire::Returns>,
     #[serde(default)]
     pub tempo: Option<Tempo>,
 }
@@ -165,6 +167,7 @@ impl BrainAux {
             let config = Configuration {
                 settings: owner.defaults(1)?,
                 sends: vec![0.; inputs],
+                returns: None,
                 tempo: None,
             };
             let generation = 0;
@@ -268,6 +271,9 @@ impl BrainAux {
                         .map(|s| serde_json::from_str(s).map_err(|e| e.to_string()))
                         .transpose()?;
                     if let Some(c) = &config {
+                        if let Some(r) = &c.returns {
+                            r.validate(r.monitors.len())?;
+                        }
                         if c.sends.len() != b.config.sends.len()
                             || c.sends
                                 .iter()

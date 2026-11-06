@@ -82,6 +82,12 @@ impl HostAuthority {
                 .is_some_and(|c| c.check_current().is_ok())
             && now.saturating_sub(self.aux.observed_at) <= 1000
         {
+            v["return_routing_version"] = json!(1);
+            v["monitors"] = json!(
+                (0..self.provider.topology().monitors)
+                    .map(|i| format!("monitor-{}", i + 1))
+                    .collect::<Vec<_>>()
+            );
             v["available"] = json!(true);
             v["pending"] = json!(self.aux.pending.as_ref().map(|p| p.mutation.bus));
             v["library_sha256"] = json!(o.library_sha256);
@@ -96,6 +102,12 @@ impl HostAuthority {
             for bus in 0..4 {
                 let mut config: Value = serde_json::from_str(&o.buses[bus].configuration_json)
                     .map_err(|e| e.to_string())?;
+                config["returns"] = json!(
+                    self.provider
+                        .engine()
+                        .fx_returns(bus)
+                        .ok_or("FX return source unavailable")?
+                );
                 config["sends"] = json!(
                     self.provider
                         .engine()
@@ -139,6 +151,9 @@ impl HostAuthority {
             }
             let c: owner::Configuration =
                 serde_json::from_str(&b.configuration_json).map_err(|e| e.to_string())?;
+            if let Some(r) = &c.returns {
+                r.validate(self.provider.topology().monitors)?;
+            }
             if c.sends.len() != self.provider.topology().inputs.len()
                 || c.sends
                     .iter()
@@ -264,8 +279,11 @@ impl HostAuthority {
                 let actual: owner::Configuration =
                     serde_json::from_str(&b.configuration_json).map_err(|e| e.to_string())?;
                 if let Some(c) = &p.mutation.configuration_json {
-                    let target: Value = serde_json::from_str(c).map_err(|e| e.to_string())?;
-                    if serde_json::to_value(&actual).map_err(|e| e.to_string())? != target {
+                    let target: owner::Configuration =
+                        serde_json::from_str(c).map_err(|e| e.to_string())?;
+                    if serde_json::to_value(&actual).map_err(|e| e.to_string())?
+                        != serde_json::to_value(target).map_err(|e| e.to_string())?
+                    {
                         return Err("FX aux applied target mismatch".into());
                     }
                 }
@@ -274,6 +292,12 @@ impl HostAuthority {
                         != Some(&actual.sends)
                 {
                     return Err("FX aux source send readback mismatch".into());
+                }
+                if !p.mutation.panic
+                    && let Some(returns) = &actual.returns
+                    && self.provider.engine().fx_returns(p.mutation.bus).as_ref() != Some(returns)
+                {
+                    return Err("FX return source readback mismatch".into());
                 }
                 let settled = b.generation == b.applied_generation;
                 self.aux.observation = Some(observation);
@@ -307,7 +331,7 @@ impl HostAuthority {
         }
         let Some(m) = m else {
             self.aux.reads.insert(context.session(), now);
-            return self.aux_snapshot(&r, now);
+            return wire::snapshot_compatibility(&value, self.aux_snapshot(&r, now)?);
         };
         context.require(&Permission::FxConfiguration)?;
         if r.writer.as_deref() != Some(context.writer()) {
@@ -341,6 +365,9 @@ impl HostAuthority {
             }
             if let Some(c) = &m.configuration_json {
                 let c: owner::Configuration = serde_json::from_str(c).map_err(|e| e.to_string())?;
+                if let Some(r) = &c.returns {
+                    r.validate(self.provider.topology().monitors)?;
+                }
                 if c.sends.len() != self.provider.topology().inputs.len()
                     || c.sends
                         .iter()
@@ -488,6 +515,9 @@ impl HostAuthority {
                 if let Some(c) = &p.mutation.configuration_json {
                     let c: owner::Configuration =
                         serde_json::from_str(c).map_err(|e| e.to_string())?;
+                    if let Some(r) = &c.returns {
+                        sends.set_returns(self.provider.topology().monitors, p.mutation.bus, r)?;
+                    }
                     sends.set(
                         self.provider.topology().inputs.len(),
                         p.mutation.bus,
@@ -568,6 +598,11 @@ impl HostAuthority {
         {
             if let Some(c) = &p.mutation.configuration_json {
                 let c: owner::Configuration = serde_json::from_str(c).map_err(|e| e.to_string())?;
+                if let Some(r) = &c.returns {
+                    self.provider
+                        .engine_mut()
+                        .set_fx_returns(p.mutation.bus, r)?;
+                }
                 self.provider
                     .engine_mut()
                     .set_fx_sends(p.mutation.bus, &c.sends)?;
@@ -809,7 +844,7 @@ mod tests {
             }
         }
         fn snapshot(&mut self) -> Value {
-            self.host.dispatch_aux(&self.writer,json!({"contract":wire::CONTRACT,"version":1,"show_id":SHOW,"module":"audio","epoch":"9","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{}}),self.now).unwrap()
+            self.host.dispatch_aux(&self.writer,json!({"contract":wire::CONTRACT,"version":1,"show_id":SHOW,"module":"audio","epoch":"9","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{"return_routing":true}}),self.now).unwrap()
         }
         fn edit(&mut self, bus: usize, id: u64) -> Value {
             let s = self.snapshot();
@@ -821,6 +856,10 @@ mod tests {
             c.settings.damping = 0.;
             c.settings.gain = 1.;
             c.sends[bus] = 1.;
+            c.returns = Some(wire::Returns {
+                main: 1.,
+                monitors: vec![0.25 * (bus + 1) as f64, if bus == 2 { 0.5 } else { 0. }],
+            });
             json!({"contract":wire::CONTRACT,"version":1,"show_id":SHOW,"module":"audio","epoch":"9","writer":self.writer.writer(),"lease":self.lease,"request_id":id.to_string(),"expected_revision":s["revision"],"kind":"fx_aux_configure","body":{"bus":bus,"map_revision":s["map_revision"],"library_sha256":s["library_sha256"],"owner_binding":s["owner_binding"],"expected_generation":s["buses"][bus]["generation"],"configuration_json":serde_json::to_string(&c).unwrap(),"panic":false}})
         }
     }
@@ -870,6 +909,10 @@ mod tests {
         assert_eq!(
             h.host.provider.engine().fx_sends(0).unwrap(),
             vec![1., 0., 0., 0.]
+        );
+        assert_eq!(
+            h.host.provider.engine().fx_returns(0).unwrap().monitors,
+            vec![0.25, 0.]
         );
         // Exercise actual native preparation/permit/application with contiguous
         // source identities. This is control/source integration, not network timing.
@@ -936,8 +979,9 @@ mod tests {
                     2. * dry[f * 2 + ch]
                 );
             }
-            assert_eq!(h.last[f * 4 + 2], monitors[0]);
-            assert_eq!(h.last[f * 4 + 3], monitors[1]);
+            let unit = (128. / 8388608.) * 10_f64.powf(-6. / 20.) * std::f64::consts::FRAC_1_SQRT_2;
+            assert!((h.last[f * 4 + 2] - (monitors[0] + unit * 7.5)).abs() < 1e-10);
+            assert!((h.last[f * 4 + 3] - (monitors[1] + unit * 1.5)).abs() < 1e-10);
         }
         let stale = h.edit(0, 8);
         let mut bad = stale.clone();

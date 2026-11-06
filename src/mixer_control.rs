@@ -753,6 +753,32 @@ impl OfflineEngine {
                 .set(self.source_topology.inputs.len(), bus, levels)
         }
     }
+    pub fn set_fx_returns(
+        &mut self,
+        bus: usize,
+        returns: &crate::fx_aux_wire::Returns,
+    ) -> Result<()> {
+        if let Some(source) = &mut self.source {
+            source.mixer.set_fx_returns(bus, returns)
+        } else {
+            self.enable_fx_aux()?;
+            self.pending_fx_sends
+                .set_returns(self.source_topology.monitors, bus, returns)
+        }
+    }
+    pub fn fx_returns(&self, bus: usize) -> Option<crate::fx_aux_wire::Returns> {
+        if let Some(source) = &self.source {
+            source.mixer.fx_returns(bus)
+        } else {
+            (bus < 4 && self.observed.fx_aux_enabled).then(|| crate::fx_aux_wire::Returns {
+                main: self.observed.fx_returns[0][bus],
+                monitors: self.observed.fx_returns[1..]
+                    .iter()
+                    .map(|r| r[bus])
+                    .collect(),
+            })
+        }
+    }
     /// Controller readback of applied source send targets. Detached pending
     /// commands cannot appear here before their coherent source observation.
     pub fn fx_sends(&self, bus: usize) -> Option<Vec<f64>> {
@@ -862,6 +888,9 @@ impl OfflineEngine {
                 .ok_or("source must return before recovery")?
                 .mixer,
         )?;
+        let source = next.source.as_mut().unwrap();
+        source.mixer.observe_into(&mut source.observation);
+        next.observed.clone_from(&source.observation);
         next.clock = clock;
         *self = next;
         Ok(())

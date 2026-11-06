@@ -9,7 +9,7 @@ Stagebox sends eight explicitly ordered channels (`fx-1-left`, `fx-1-right`,
 through `fx-4-right`) to Brain. Brain owns four native-f64 SHR FX instances and
 returns eight wet channels on the same source-frame timeline. Stagebox admits
 those returns through the existing bounded jitter/loss gates, sums them into
-Main before PA, and never feeds them back into sends. Raw REC and monitor paths
+Main before PA, and never feeds them back into sends. Raw REC and dry monitor paths
 are unchanged. Monitor sends keep GP18's independent taps and physical outputs;
 they have no return to Main.
 
@@ -23,7 +23,7 @@ converted to the owner's native f64 at its boundary. The source clock remains
 Stagebox's; Brain processes complete received source blocks, never a free-running
 render clock. Missing/stale groups reset affected continuity and returns fade to
 silence through the existing bounded loss gates. All eight channels retain their
-identity in transport; summation happens only at Stagebox Main.
+identity through transport and loss gates, until source-side Main/monitor routing.
 
 An optional local source-host variant remains available for offline checks or
 explicit local deployment: `gigpies-headless --fx-aux-library ABS_SO
@@ -115,6 +115,74 @@ checks require `GP_FX_LIBRARY` and their named ignored tests. Desk's repeatable
 [GP-FX card](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-fx--writable-owner-effects-in-the-console)
 owns validation state; physical placement, aggregate cost and listening remain
 separate acceptance.
+
+## Independent wet return routing (opt-in readback extension 1)
+
+Both local and Brain four-aux paths expose independently ramped host return levels.
+Request `fx_aux_snapshot` with body `{"return_routing":true}`. The reply adds
+`return_routing_version:1`, ordered `monitors` using the same `monitor-1`… IDs
+as GP18, and `returns` inside every bus's `configuration_json`:
+
+```json
+{"main":1.0,"monitors":[0.0,0.0,0.0]}
+```
+
+The array length must equal the advertised configured monitor count; this example
+has three. All levels are finite linear 0..1. Unknown/duplicate configuration
+fields, invalid bus, shape or values refuse before reservation. Include `returns`
+in the usual `fx_aux_configure` complete configuration. The existing
+`fx_configuration` scope, authenticated writer, fresh read, revision, lease,
+epoch, map, library and remote owner binding remain mandatory. No new writer
+scope or automatic regrant is introduced. Main defaults to unity and every
+monitor route defaults to zero. Each aux/monitor pair is independent; changing
+Main to zero does not silence an enabled monitor return.
+
+The tap is **after** the existing SHR FX wet-only processing, provider `settings.gain`,
+bypass and algorithm transition/fault handling, and remote loss gate; it is
+**before** `returns.main`. `settings.gain` retains its legacy meaning as shared
+provider wet gain, not the new Main-only fader. Bypass stops excitation and drains
+existing tails to all selected destinations. Panic clears the one existing owner;
+there is no separate monitor instance or feedback into excitation. Enabling aux
+mode provisions silent routes without opening excitation. Input mute closes its
+post-mute sends while existing wet history drains. No new global FX mute is implied: Main-only mute is `returns.main:0`, individual monitor mute
+is its zero level, and source disarm/fault safety gates all outputs. Mono monitors
+receive `(L + R) * 0.5 * level`; equal correlated channels retain their amplitude
+and opposite-polarity channels cancel. Every host level ramps linearly over 240
+source frames from its current value. Main summation order and output safety
+remain unchanged at default routing; dry sends, raw REC and PA processing retain
+their existing paths. Operator Monitor selection hears the resulting monitor mix
+before talkback; Main hears Main wet, and channel PFL/AFL keeps its original tap.
+
+Routing allocation and validation occur off audio. Prepared routing travels in
+the existing source command, with source admission/revocation/expiry fences and
+controller retirement. Applied readback merges actual source targets, never
+queued targets, with actual owner status. For remote edits, owner completion
+also requires matching source return targets and the 240-frame settlement gate.
+A route-only edit prepares/validates but does not publish a replacement DSP token.
+Refusal leaves the previous route intact. Lost completion remains UNKNOWN;
+fresh readback and explicit reviewed action are required. UI reconnect preserves
+routing read-only. Source epoch recovery retains targets while disarmed and clears
+owner history; explicit rearm is still required. A newly negotiated Brain owner
+resets sends and monitor routes to silence and Main to unity. Session/policy loss
+uses the existing wet fade for all destinations without interrupting dry/REC.
+
+Compatibility: empty-body snapshots retain the exact legacy field shape;
+legacy configuration edits omitting `returns` retain the current host routing.
+Older providers reject the opt-in read body, so consumers must probe and disable
+these controls when unsupported, without retrying a mutation. Both updated ends
+are required for the remote extension; no fallback can claim applied routing.
+Core saved-mix persistence is unchanged: it does not save these FX aux settings
+or routes. Process restart starts with silent monitor returns. GP-SHOW owns
+future saved-show integration.
+
+Desk integration remains **unimplemented** in this backend change. Desk must opt
+into readback, enumerate the advertised monitor IDs, distinguish shared owner wet
+gain from Main-only return gain, provide independent per-aux monitor controls,
+retain untouched routing on edits, and settle against correlated acceptance plus
+fresh exact source targets/owner generations. Show current versus pending/refused/
+UNKNOWN and disarmed state; reconnect must not replay edits or rearm outputs.
+Physical output mapping, listening, feedback/speaker protection and sustained
+hardware performance remain separate GP-H1 acceptance.
 
 ## Legacy actual remote FOH FX — GP21-fx:1
 

@@ -357,7 +357,7 @@ impl Quantum {
             received: None,
             input: Vec::with_capacity(48 * topology.capture_channels.max(topology.inputs.len())),
             output: Vec::with_capacity(48 * topology.playback_channels.max(topology.monitors + 2)),
-            wet: Vec::with_capacity(96),
+            wet: Vec::with_capacity(384),
             talkback: Vec::with_capacity(48),
             monitor: MonitorSource::None,
             deadline: None,
@@ -639,9 +639,30 @@ impl RenderGraph {
             .aux
             .as_mut()
             .map(|rack| rack.process(frame, &self.mixer.mixer));
-        #[cfg(feature = "hardware-host")]
-        let wet = aux_wet.as_ref().map(|v| v.as_slice()).or(wet);
+        // Capture dry excitation before mixing any returned wet into monitors.
         routing.capture_send(buses, output);
+        #[cfg(feature = "hardware-host")]
+        let mut aux_main = [0.; 96];
+        #[cfg(feature = "hardware-host")]
+        let aux_input: Option<&[f64; 384]> = aux_wet.as_ref().or_else(|| {
+            if intent.remote_fx_aux {
+                wet.and_then(|w| w.try_into().ok())
+            } else {
+                None
+            }
+        });
+        #[cfg(feature = "hardware-host")]
+        if let Some(aux) = aux_input {
+            self.mixer
+                .mixer
+                .mix_fx_returns(frame, aux, &mut aux_main, output);
+        }
+        #[cfg(feature = "hardware-host")]
+        let wet = if aux_input.is_some() {
+            Some(aux_main.as_slice())
+        } else {
+            wet
+        };
         let safety = std::array::from_fn(|f| self.mixer.mixer.output_safety_gain(frame + f as u64));
         #[cfg(feature = "hardware-host")]
         let foh = intent.foh && self.modules.is_some();
@@ -714,11 +735,7 @@ impl RenderGraph {
             }
         }
         #[cfg(feature = "hardware-host")]
-        if let Some(aux) = aux_wet
-            .as_ref()
-            .map(|v| v.as_slice())
-            .or(if intent.remote_fx_aux { wet } else { None })
-        {
+        if let Some(aux) = aux_input.map(|_| aux_main.as_slice()) {
             for (out, pair) in output.chunks_exact_mut(buses).zip(aux.chunks_exact(2)) {
                 out[0] += pair[0];
                 out[1] += pair[1];
@@ -1292,5 +1309,117 @@ mod tests {
             assert_eq!(&row[..2], &[0.25; 2]);
             assert!(row[2..].iter().all(|v| *v == 0.75));
         }
+    }
+}
+
+#[cfg(all(test, feature = "hardware-host"))]
+mod return_routing_tests {
+    use super::*;
+    #[test]
+    fn remote_returns_reach_selected_monitor_without_excitation_feedback_or_main() {
+        let mut engine = crate::mixer_control::OfflineEngine::new(
+            "11111111-1111-4111-8111-111111111111",
+            crate::show::Counter(9),
+            crate::show::Counter(0),
+            0,
+        )
+        .unwrap();
+        engine.enable_fx_aux().unwrap();
+        for bus in 0..4 {
+            engine
+                .set_fx_returns(
+                    bus,
+                    &crate::fx_aux_wire::Returns {
+                        main: 0.,
+                        monitors: vec![if bus == 2 { 0.5 } else { 0. }, 0.],
+                    },
+                )
+                .unwrap();
+        }
+        let routing = SourceRouting::new(engine.topology(), None);
+        engine.prepare_render(48, 0).unwrap();
+        let mut graph = RenderGraph {
+            mixer: engine.take_source().unwrap(),
+            routing,
+            closure: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            clock_routing: None,
+            modules: None,
+            aux: None,
+        };
+        let wet: [f64; 384] = std::array::from_fn(|i| {
+            if i % 8 == 4 {
+                0.25
+            } else if i % 8 == 5 {
+                0.75
+            } else {
+                0.
+            }
+        });
+        let mut output = [0.; 192];
+        crate::remote::assert_no_allocations(|| {
+            for _ in 0..7 {
+                graph
+                    .render(
+                        9,
+                        &[0.; 384],
+                        &mut output,
+                        Some(&wet),
+                        None,
+                        None,
+                        RenderIntent {
+                            monitor: MonitorSource::Monitor { index: 0 },
+                            deadline: None,
+                            monitors: &[],
+                            foh: false,
+                            talkback_gain: 0.,
+                            remote_fx_aux: true,
+                        },
+                    )
+                    .unwrap();
+            }
+        });
+        for row in output.chunks_exact(4) {
+            assert_eq!(row, &[0., 0., 0.25, 0.]);
+        }
+        assert_eq!(graph.routing.brain_send, [0.; 96]);
+        assert!(
+            graph
+                .mixer
+                .mixer
+                .fx_aux_samples()
+                .iter()
+                .flatten()
+                .all(|v| *v == 0.)
+        );
+        assert_eq!(
+            graph.routing.brain_monitor,
+            [0.25 * std::f64::consts::FRAC_1_SQRT_2; 96]
+        );
+        graph
+            .closure
+            .store(true, std::sync::atomic::Ordering::Release);
+        crate::remote::assert_no_allocations(|| {
+            assert!(
+                graph
+                    .render(
+                        9,
+                        &[0.; 384],
+                        &mut output,
+                        Some(&wet),
+                        None,
+                        None,
+                        RenderIntent {
+                            monitor: MonitorSource::Main,
+                            deadline: None,
+                            monitors: &[],
+                            foh: false,
+                            talkback_gain: 0.,
+                            remote_fx_aux: true,
+                        }
+                    )
+                    .is_err()
+            );
+        });
+        assert_eq!(output, [0.; 192]);
     }
 }

@@ -502,7 +502,11 @@ impl SourceClock {
             frame,
             &state.capture,
             &mut state.playback,
-            Some(&media.wet),
+            Some(if intent.remote_fx_aux {
+                &media.aux_wet[..]
+            } else {
+                &media.wet[..]
+            }),
             Some(&media.talkback_samples),
             Some(now_ms),
             intent,
@@ -1286,6 +1290,8 @@ mod tests {
                 serde_json::from_str(snapshot["buses"][0]["configuration_json"].as_str().unwrap())
                     .unwrap();
             config["sends"][0] = serde_json::json!(1.);
+            config["returns"] =
+                serde_json::json!({"main":0.5,"monitors":vec![0.25; provider.topology().monitors]});
             config["settings"]["time_ms"] = serde_json::json!(2.);
             config["settings"]["amount"] = serde_json::json!(0.);
             config["settings"]["damping"] = serde_json::json!(0.);
@@ -1320,6 +1326,10 @@ mod tests {
         let report = host.finish_source_clock(&status).unwrap();
         assert_eq!(report.fault, None);
         assert_eq!(report.next_frame, first + 64 * 48);
+        assert_eq!(
+            host.provider().engine().fx_returns(0).unwrap().monitors,
+            vec![0.25; host.provider().topology().monitors]
+        );
         assert!(report.energy.iter().any(|e| *e > 0.));
         let mut result = serde_json::Value::Null;
         for _ in 0..1000 {

@@ -244,11 +244,26 @@ impl PreparedOutputPatch {
 pub(crate) struct PreparedFxSends {
     storage: Option<Vec<[Ramp; 4]>>,
     levels: [Option<Vec<f64>>; 4],
+    returns: [Option<crate::fx_aux_wire::Returns>; 4],
+    return_storage: Option<Vec<[Ramp; 4]>>,
 }
 impl PreparedFxSends {
     pub(crate) fn enable(&mut self, topology: &crate::topology::EngineTopology) -> Result<()> {
         if self.storage.is_some() {
             return Ok(());
+        }
+        let map_bytes = serde_json::to_vec(&topology.inputs)
+            .map_err(|e| e.to_string())?
+            .len();
+        if topology
+            .inputs
+            .len()
+            .checked_add(topology.monitors)
+            .and_then(|n| n.checked_mul(128))
+            .and_then(|n| n.checked_add(map_bytes + 32768))
+            .is_none_or(|n| n > crate::local_audio::MAX_FRAME)
+        {
+            return Err("FX aux observation capacity".into());
         }
         let budget = crate::topology::ResourceBudget::default();
         let core = topology.validate(budget)?;
@@ -256,6 +271,9 @@ impl PreparedFxSends {
             .inputs
             .len()
             .checked_mul(4 * size_of::<Ramp>())
+            .and_then(|n| {
+                n.checked_add((topology.monitors + 1) * 4 * size_of::<Ramp>() * 4 + 384 * 8 * 4)
+            })
             .and_then(|n| n.checked_add(size_of::<[[f64; 96]; 4]>()))
             .and_then(|n| n.checked_add(core.estimated_bytes))
             .ok_or("FX aux memory overflow")?;
@@ -263,6 +281,7 @@ impl PreparedFxSends {
             .inputs
             .len()
             .checked_mul(8)
+            .and_then(|n| n.checked_add((topology.monitors + 1) * 16))
             .and_then(|n| n.checked_mul(topology.max_block_frames))
             .and_then(|n| n.checked_add(core.sample_operations))
             .ok_or("FX aux work overflow")?;
@@ -270,6 +289,22 @@ impl PreparedFxSends {
             return Err("FX aux resource admission".into());
         }
         self.storage = Some(vec![[Ramp::fixed(0.); 4]; topology.inputs.len()]);
+        let mut returns = vec![[Ramp::fixed(0.); 4]; topology.monitors + 1];
+        returns[0] = [Ramp::fixed(1.); 4];
+        self.return_storage = Some(returns);
+        Ok(())
+    }
+    pub(crate) fn set_returns(
+        &mut self,
+        monitors: usize,
+        bus: usize,
+        returns: &crate::fx_aux_wire::Returns,
+    ) -> Result<()> {
+        if bus >= 4 {
+            return Err("FX return bus".into());
+        }
+        returns.validate(monitors)?;
+        self.returns[bus] = Some(returns.clone());
         Ok(())
     }
     pub(crate) fn set(&mut self, inputs: usize, bus: usize, levels: &[f64]) -> Result<()> {
@@ -314,6 +349,7 @@ pub struct Mixer {
     ramps: Vec<Vec<Ramp>>,
     sends: Vec<Vec<TapTransition>>,
     fx_sends: Vec<[Ramp; 4]>,
+    fx_returns: Vec<[Ramp; 4]>,
     fx_samples: [[f64; 96]; 4],
     pending: Option<Pending>,
     completion: Option<Completion>,
@@ -333,6 +369,7 @@ pub(crate) struct SourceObservation {
     pub output: OutputObservation,
     pub fx_aux_enabled: bool,
     pub fx_sends: Vec<[f64; 4]>,
+    pub fx_returns: Vec<[f64; 4]>,
     pub current: Vec<Vec<f64>>,
     pub targets: Vec<Vec<f64>>,
     pub processing: Vec<(
@@ -352,6 +389,7 @@ impl SourceObservation {
             output: mixer.output_observation(),
             fx_aux_enabled: !mixer.fx_sends.is_empty(),
             fx_sends: vec![[0.; 4]; mixer.input_count()],
+            fx_returns: vec![[0.; 4]; mixer.monitor_count() + 1],
             current: mixer.coefficients(),
             targets: mixer.targets(),
             processing: mixer.processing_observations(),
@@ -400,6 +438,7 @@ impl Mixer {
             ramps: vec![row; inputs],
             sends: vec![vec![TapTransition::default(); monitors]; inputs],
             fx_sends: Vec::new(),
+            fx_returns: Vec::new(),
             fx_samples: [[0.; 96]; 4],
             pending: None,
             completion: None,
@@ -420,16 +459,29 @@ impl Mixer {
         let mut prepared = PreparedFxSends::default();
         prepared.enable(&self.topology)?;
         self.fx_sends = prepared.storage.take().unwrap();
+        self.fx_returns = prepared.return_storage.take().unwrap();
         Ok(())
     }
     pub(crate) fn accepts_fx_sends(&self, prepared: &PreparedFxSends) -> bool {
-        if prepared.storage.is_none() && prepared.levels.iter().all(Option::is_none) {
+        if prepared.storage.is_none()
+            && prepared.levels.iter().all(Option::is_none)
+            && prepared.returns.iter().all(Option::is_none)
+        {
             return true;
         }
         let inputs = self.input_count();
         self.clock.checked_add(RAMP_FRAMES).is_some()
             && prepared.storage.as_ref().is_none_or(|v| v.len() == inputs)
             && prepared.levels.iter().flatten().all(|v| v.len() == inputs)
+            && prepared
+                .returns
+                .iter()
+                .flatten()
+                .all(|r| r.valid(self.monitor_count()))
+            && prepared
+                .return_storage
+                .as_ref()
+                .is_none_or(|r| r.len() == self.monitor_count() + 1)
             && (!self.fx_sends.is_empty() || prepared.storage.is_some())
     }
     /// Validation precedes every mutation; replaced storage stays in the packet.
@@ -441,6 +493,9 @@ impl Mixer {
             && let Some(storage) = &mut prepared.storage
         {
             std::mem::swap(&mut self.fx_sends, storage);
+            if let Some(returns) = &mut prepared.return_storage {
+                std::mem::swap(&mut self.fx_returns, returns);
+            }
         }
         for (bus, levels) in prepared.levels.iter().enumerate() {
             if let Some(levels) = levels {
@@ -454,6 +509,22 @@ impl Mixer {
                 }
             }
         }
+        for (bus, returns) in prepared.returns.iter().enumerate() {
+            if let Some(returns) = returns {
+                for (row, target) in self
+                    .fx_returns
+                    .iter_mut()
+                    .zip(std::iter::once(&returns.main).chain(&returns.monitors))
+                {
+                    row[bus] = Ramp {
+                        start: row[bus].at(self.clock),
+                        target: *target,
+                        begin: self.clock,
+                        end: self.clock + RAMP_FRAMES,
+                    };
+                }
+            }
+        }
         true
     }
 
@@ -461,10 +532,15 @@ impl Mixer {
         if previous.fx_sends.is_empty() {
             return Ok(());
         }
-        if self.input_count() != previous.input_count() {
+        if self.input_count() != previous.input_count()
+            || self.monitor_count() != previous.monitor_count()
+        {
             return Err("FX aux recovery dimensions".into());
         }
         self.enable_fx_aux()?;
+        for (new, old) in self.fx_returns.iter_mut().zip(&previous.fx_returns) {
+            *new = old.map(|r| Ramp::fixed(r.target));
+        }
         for (new, old) in self.fx_sends.iter_mut().zip(&previous.fx_sends) {
             for (new, old) in new.iter_mut().zip(old) {
                 *new = Ramp::fixed(old.target);
@@ -497,6 +573,62 @@ impl Mixer {
     pub fn fx_sends(&self, bus: usize) -> Option<Vec<f64>> {
         (bus < 4 && !self.fx_sends.is_empty())
             .then(|| self.fx_sends.iter().map(|r| r[bus].target).collect())
+    }
+    pub fn set_fx_returns(
+        &mut self,
+        bus: usize,
+        returns: &crate::fx_aux_wire::Returns,
+    ) -> Result<()> {
+        let mut prepared = PreparedFxSends::default();
+        prepared.set_returns(self.monitor_count(), bus, returns)?;
+        if !self.apply_fx_sends(&mut prepared) {
+            return Err("FX return application refused".into());
+        }
+        Ok(())
+    }
+    pub fn fx_returns(&self, bus: usize) -> Option<crate::fx_aux_wire::Returns> {
+        (bus < 4 && !self.fx_returns.is_empty()).then(|| crate::fx_aux_wire::Returns {
+            main: self.fx_returns[0][bus].target,
+            monitors: self.fx_returns[1..].iter().map(|r| r[bus].target).collect(),
+        })
+    }
+    /// Already gated wet samples, frame-interleaved in four stereo pairs. No
+    /// feedback into excitation. Safety is applied once here for both paths.
+    pub fn mix_fx_returns(
+        &self,
+        frame: u64,
+        wet: &[f64; 384],
+        main: &mut [f64; 96],
+        output: &mut [f64],
+    ) {
+        main.fill(0.);
+        let width = self.monitor_count() + 2;
+        assert_eq!(output.len(), 48 * width);
+        if self.fx_returns.is_empty() {
+            return;
+        }
+        for f in 0..48 {
+            let safety = self.output_safety_gain(frame + f as u64);
+            if safety == 0. {
+                continue;
+            }
+            for bus in 0..4 {
+                let left = wet[f * 8 + bus * 2];
+                let right = wet[f * 8 + bus * 2 + 1];
+                let gain = self.fx_returns[0][bus].at(frame + f as u64);
+                main[f * 2] += left * gain;
+                main[f * 2 + 1] += right * gain;
+                let mono = (left + right) * 0.5;
+                for (monitor, row) in self.fx_returns[1..].iter().enumerate() {
+                    let gain = row[bus].at(frame + f as u64);
+                    if gain != 0. {
+                        output[f * width + monitor + 2] += mono * gain * safety;
+                    }
+                }
+            }
+            main[f * 2] *= safety;
+            main[f * 2 + 1] *= safety;
+        }
     }
     pub fn fx_aux_samples(&self) -> &[[f64; 96]; 4] {
         &self.fx_samples
@@ -809,6 +941,12 @@ impl Mixer {
         observation.faulted = self.fault;
         observation.output = self.output_observation();
         observation.fx_aux_enabled = !self.fx_sends.is_empty();
+        for (i, row) in observation.fx_returns.iter_mut().enumerate() {
+            *row = self
+                .fx_returns
+                .get(i)
+                .map_or([0.; 4], |r| r.map(|v| v.target));
+        }
         for (i, row) in self.ramps.iter().enumerate() {
             observation.fx_sends[i] = self
                 .fx_sends
@@ -1062,6 +1200,31 @@ mod send_reservation_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prepared_returns_are_atomic_bounded_and_allocation_free() {
+        let topology = crate::topology::EngineTopology::software(16, 5, 0).unwrap();
+        let mut mixer = Mixer::from_topology(0, topology.clone()).unwrap();
+        let mut prepared = PreparedFxSends::default();
+        prepared.enable(&topology).unwrap();
+        let returns = crate::fx_aux_wire::Returns {
+            main: 0.,
+            monitors: vec![0.5; 5],
+        };
+        prepared.set_returns(5, 3, &returns).unwrap();
+        let mut observation = SourceObservation::new(&mixer);
+        let mut output = [0.; 48 * 7];
+        let mut main = [0.; 96];
+        crate::remote::assert_no_allocations(|| {
+            assert!(mixer.apply_fx_sends(&mut prepared));
+            mixer.mix_fx_returns(240, &[0.25; 384], &mut main, &mut output);
+            mixer.observe_into(&mut observation);
+        });
+        assert_eq!(mixer.fx_returns(3).unwrap(), returns);
+        assert!(observation.fx_returns[1..].iter().all(|r| r[3] == 0.5));
+        prepared.returns[3].as_mut().unwrap().main = f64::NAN;
+        crate::remote::assert_no_allocations(|| assert!(!mixer.apply_fx_sends(&mut prepared)));
+        assert_eq!(mixer.fx_returns(3).unwrap(), returns);
+    }
     #[test]
     fn corrupted_coefficient_latches_finite_zero_output() {
         let mut mixer = Mixer::default();

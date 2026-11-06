@@ -684,6 +684,9 @@ impl Execution {
                         .map(|s| serde_json::from_str(s).map_err(|e| e.to_string()))
                         .transpose()?;
                     if let Some(c) = &config {
+                        if let Some(r) = &c.returns {
+                            r.validate(r.monitors.len())?;
+                        }
                         if c.sends.len() != self.configs[bus].sends.len()
                             || c.sends
                                 .iter()

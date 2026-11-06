@@ -2669,6 +2669,10 @@ impl LocalAudio {
             .transact_pair_until(other, packet, advance)
     }
     #[cfg(feature = "hardware-host")]
+    pub(crate) fn remote_fx_aux_enabled(&self) -> bool {
+        self.remote_fx_aux
+    }
+    #[cfg(feature = "hardware-host")]
     pub(crate) fn finish_remote_fx_aux_mode(&mut self, enabled: bool) {
         self.remote_fx_aux = enabled;
     }

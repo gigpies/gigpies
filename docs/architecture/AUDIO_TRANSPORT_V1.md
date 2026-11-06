@@ -93,7 +93,7 @@ the reserved path preserves contiguous frames with unchanged four-block lanes.
 The shared stereo/four-aux path retains source deadlines, native refusal witnesses
 and nonblocking execution. See GP-H1's native-window correction for regression
 and actual-owner evidence. This local fix does not establish physical or combined
-T3 timing acceptance; remaining T0–T2 requirements stay in the owning card.
+T3 timing acceptance; completed local T0–T2 evidence stays in the owning card.
 
 ## Source-owner integration constraint: active PA live-EQ preparation
 
@@ -151,7 +151,8 @@ source invalidation and controller teardown fence queued/active capture via a
 separate monotonic generation. Source offers only copy samples/update numeric
 progress; controller code validates authority/basis and retires returned buffers.
 
-These acquisition lifetimes are independent; the complete production scheduler is not.
+These acquisition lifetimes are independent. The completed production scheduler
+is described in the local T0–T2 acceptance section below.
 RenderGraph now owns mixer, modules, routing and local aux storage together.
 LocalAudio's compatibility caller transfers this aggregate for each quantum.
 Mixer completion now returns owned retired storage and exchanges preallocated
@@ -171,7 +172,7 @@ service, even with saturated command ingress. Client close/drop, terminal media
 or control errors and FX reply-reader cancellation also publish that signal.
 Reliable completion draining remains independent of audio closure. Fresh
 authentication creates a new signal and never reopens the old one. Whole-Stagebox
-closure remains pending.
+closure is implemented by the completed source-owner continuation below.
 LocalAudio now invokes one numeric `local_audio/source.rs::RenderGraph` entry
 covering mixer, local aux FX, PA/local FX/raw REC, talkback, taps and acquisition.
 Controller authority, lifecycle, observation exchange and reply work sit outside
@@ -1208,3 +1209,14 @@ unchanged dominant queue delay disproves sufficiency of the isolation slice.
 A pass permits proposing the 30-second gate; it grants no automatic traffic or
 physical authorization. Recovery injections and diagnostics-on comparison are
 separate declared cases; never mix their expected failures into clean counters.
+
+## Wet return monitor routing
+
+The four-aux return channels remain separate after the existing source jitter/loss
+gates. Source RenderGraph applies the independent Main/monitor routing described
+in [REMOTE_FX_CONTROL](../reference/REMOTE_FX_CONTROL.md#independent-wet-return-routing-opt-in-readback-extension-1),
+before operator monitor capture and output patching. It reuses the same wet owners
+and media channels; GPA1 layout, packet counts, queues and 768-frame deadline are
+unchanged. Prepared source packets and copied observations include routing targets;
+resource admission accounts for configured monitor storage/work and bounded
+readback. This does not change local T0–T2 acceptance or authorize T3 traffic.
