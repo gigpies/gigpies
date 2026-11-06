@@ -202,7 +202,7 @@ fn held_proof_host_renewal_preserves_active_hold_beyond_full_readback_age() {
             .parse()
             .unwrap(),
     );
-    host.provider_mut().engine_mut().rearm_outputs().unwrap();
+    host.provider_mut().rearm().unwrap();
     brain_change(
         &mut host,
         context.writer(),
@@ -460,7 +460,7 @@ fn held_proof_actual_authority_fixtures_and_refusals() {
         assert_eq!(p["witness"]["lease_remaining_ms"], 1997);
         // Configuration prepares its cached destination hash off render; the
         // actual source-boundary reapply must preserve that exact cache.
-        host.provider_mut().engine_mut().rearm_outputs().unwrap();
+        host.provider_mut().rearm().unwrap();
         let revision = host.provider_mut().engine_mut().revision();
         let config = crate::brain_control::Request {
             contract: "GP15-brain".into(),

@@ -204,6 +204,20 @@ impl FakeDuplex {
             max_transfer: config.period_frames,
         })
     }
+    /// Requested sample allocations only; excludes allocator overhead and any
+    /// library/device state not represented by these owned sample vectors.
+    pub fn prepared_sample_bytes(&self) -> usize {
+        [self.capture.capacity(), self.playback.capacity()]
+            .into_iter()
+            .map(|n| n * std::mem::size_of::<f64>())
+            .sum()
+    }
+    /// Startup only: touch prepared storage before the first service quantum.
+    #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+    pub(crate) fn prefault_prepared(&mut self) {
+        super::prefault_samples(&mut self.capture);
+        super::prefault_samples(&mut self.playback);
+    }
     pub fn set_max_transfer(&mut self, frames: usize) {
         self.max_transfer = frames;
     }

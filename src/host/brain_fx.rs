@@ -65,6 +65,9 @@ impl BrainFx {
     pub fn next_source_frame(&self) -> Option<u64> {
         self.next_frame
     }
+    pub(crate) fn max_block(&self) -> usize {
+        self.max_block
+    }
     pub fn channels(&self) -> usize {
         self.channels
     }

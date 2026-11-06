@@ -718,10 +718,283 @@ and [Brain procedure](../reference/BRAIN_AUDIO.md#bounded-physical-followup).
 Keep H8's unresolved timing/right-return evidence. Qualify sustained configured
 hardware deadlines and acoustic protection; software profiles are not hardware proof.
 
-### Next Ethernet session — execution plan, 2026-11-03
+### Ethernet evidence and transport decision, 2026-11-03
 
-State: IN PROGRESS; cable baseline passed, but synthetic transport acceptance
-remains gated on the late-return diagnosis. Private task0026 owns exact identities,
+State: IN PROGRESS; cable baseline passed, combined-load software timing remains
+OPEN. **Local T0–T2 implementation and device-free acceptance completed November 5.**
+T3 distributed timing/headroom and physical qualification remain unexecuted.
+Current implementation and exact next action are in the numbered source-owner
+checklist below. The following continuation records preserve dated evidence.
+
+Historical November 4 diagnostic follow-up: source-owner integration remained
+unfinished; that diagnostic change established no source ownership transfer or
+new external blocker. The four-aux diagnostic
+review found that idle expiry/cancellation/closure retired a pending commit without
+assigning a refusal witness; native processing/transition failures also lacked
+specific witnesses. These paths now assign numeric causes, with native codes in
+the execution report. A device-free actual-owner regression covers all three idle
+causes without source blocks or controller service. Four focused actual-owner
+checks and one exact four-aux loopback TLS check passed after all nine artifact
+hashes were reverified. This does **not** establish the cause of the earlier
+intermittent TLS failure. The 768-frame deadline, queues and mutation behavior are
+unchanged. The immediate implementation target remains transfer of the complete
+Stagebox graph through the production caller, including global prepared commits,
+independent safety closure, coherent observations and controller retirement.
+T0–T2 remain open and T3 remains review-only. Hardware-host library/test Clippy
+with warnings denied, formatting and whitespace checks passed. Full suites,
+accelerated ASRC and unrelated opt-ins were not repeated for this diagnostic-only
+change. Idle cleanup removed the new test executable after lock/process/reference
+checks, reclaiming **126,074,880 allocated bytes**. Existing source, runtime
+binaries and shared build artifacts remain; Git counts and both heads are unchanged.
+
+Historical ABI continuation (November 4, user-authorized SHR PA changes): the active-PA
+live-EQ ABI constraint is removed by an additive detached context interface.
+Source-side capture copies fixed-size owner state into controller-prepared opaque
+storage; controller coefficient preparation and readback no longer borrow the
+active graph. Original instance/generation/epoch/frame and retirement fences remain.
+GigPies loads the optional complete interface and uses it in its production PA
+wrapper, retaining old-library synchronous compatibility. Explicit retirement
+transfer retains controller-side destruction. See the [blueprint interface and
+limits](../architecture/AUDIO_TRANSPORT_V1.md#source-owner-integration-constraint-active-pa-live-eq-preparation).
+The actual PA test renders on one thread during detached controller preparation/
+readback and checks stale rejection and retirement backpressure. This removes the
+identified ABI dependency; the complete Stagebox source owner is still unfinished,
+with no remaining blocker established by this change. T0–T2 remain open; T3 was
+not launched. The original combined LocalAudio/HostAuthority orchestration remains;
+legacy FX, separate analysis, aggregate admission and full owner stall acceptance
+remain outstanding. Current actual-owner inputs use the ignored
+`user/node-lab/gp-h1-modules.json`; historical task0026 manifests were preserved.
+Validation passed with Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0` and the
+nonblocking shared build lock: SHR PA normal all-target suite **120 passed**;
+GigPies default all-target suite **517 passed/22 ignored**; hardware-host
+all-target suite **612 passed/59 ignored**. Both repositories passed all-target
+Clippy with warnings denied; SHR PA release library, five Python tests, docs
+checks, C header syntax, formatting and diff whitespace checks passed. After
+reverifying all nine current-manifest artifact hashes, the actual detached PA
+concurrency/retirement test, recording recovery through Brain loss/clock fault,
+and four-aux source/Brain roundtrip/loss passed. Run the new actual test with
+`GP_PA_LIBRARY=/home/shome/p/shr-pa/target/release/libshr_pa.so`,
+`GP_PA_CONFIG=/home/shome/p/shr-pa/tests/fixtures/cpa/v2/stereo4way.json` and
+`cargo test --locked -j1 --features hardware-host --lib
+host::pa_v2::detached_tests::actual_detached_preparation_during_render_and_transferred_retirement
+-- --ignored --exact`. Unchanged accelerated ASRC and unrelated historical,
+audition and exhaustive opt-ins were skipped. The old/new master-EQ corpus was
+not regenerated; its old-artifact acceptance was not rerun. The prior intermittent
+four-aux TLS refusal was not rerun in this ABI change; the local queue-drop
+mechanism is closed by the native-window correction in this card.
+No physical, two-node, T3, host/service/network, commit or publication actions.
+After process/open-file/map, runtime-alias, inode and shared-lock checks, cleanup
+removed 174 task-generated test executables and temporary logs, reclaiming
+**14,201,847,808 allocated bytes**. Shared build/debug artifacts and runtime binaries
+remain: GigPies target **8,551,350,272 bytes**, SHR PA target **753,475,584 bytes**;
+free space **45,739,470,848 bytes**. Retained deliverables are source/docs/tests,
+the rebuilt PA library and two small ignored current-artifact receipts. Live
+GigPies `main` / `d4adff4` has **32 modified tracked files and seven untracked files**;
+SHR PA retains **eight modified tracked files**, nothing staged in either checkout.
+The ABI fix is integrated in the existing synchronous production caller; the
+requested dedicated whole-source owner and remaining T0–T2 work are not complete.
+
+Earlier source transaction increment (November 4; borrowed handle superseded below): the production LocalAudio caller
+now uses separate mixer prepare/render/finish phases. Preparation validates the
+reserved mixer/processing/send transaction. The render handle borrows only DSP
+storage, numeric plan and receipt, retaining refused storage without destruction.
+Finish installs authority and creates coherent end-of-quantum snapshots, retaining
+the exact effective sample frame. Existing PA/FX/raw REC processing precedes mixer
+completion retirement/serialization. Allocation/destruction guards cover commits,
+lease expiry, invalid shape and source faults before application. The offline
+compatibility API retains its historical boundary-sample snapshots; the existing
+GP03 producer corpus and GP07 schema validation remain unchanged.
+
+**This continuation has not completed the requested source owner integration.**
+Preparation and completion still run in LocalAudio's combined caller. The subsequent
+owned-state extraction below does not establish dedicated Stagebox controller-stall
+acceptance. Next implementation must transfer the complete source graph and its
+prepared external commits, with independent safety closure and bounded retirement;
+then finish legacy FX, separate analysis and aggregate admission. T0–T2 stay open,
+and T3 remains review-only. Fresh default all-target validation passed **517 tests,
+22 ignored** (Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0`, nonblocking shared
+build lock). The first broad attempt exposed the offline snapshot-timing regression;
+the compatibility fix passed the original GP03 corpus and GP07/send checks before
+the successful full rerun. Hardware-host all-target validation passed **612 tests,
+58 ignored**, including **155 library tests/13 ignored**. All nine PA/FX/REC
+library/header/owner-manifest hashes matched immediately before actual-owner checks.
+Recording recovery and four-aux source/Brain roundtrip passed; the fully qualified
+`remote::aux_execution::tests::actual_owner_` filter passed all three cases. The
+single actual four-aux TLS check passed, but the previously intermittent refusal
+was not diagnosed at that checkpoint (see native-window closure in this card). Hardware-host all-target Clippy
+with `-D warnings`, formatting and whitespace checks passed. Unchanged accelerated
+ASRC and unrelated historical/audition/exhaustive opt-ins were intentionally skipped.
+No T3, two-node traffic, physical activation, sibling edits, commits or publication.
+After nonblocking build-lock, process/open-file/map, inode and runtime-alias checks,
+cleanup removed 155 task-created test executables and temporary logs/inventory:
+**13,766,758,400 allocated bytes reclaimed**. Canonical target retains
+**8,548,806,656 allocated bytes** of shared build/debug artifacts and runtime
+binaries; free space is **45,797,031,936 bytes**. No scratch inventory/log remains.
+Live `main` / `d4adff4`: **31 modified tracked files, seven untracked files, nothing
+staged**. Only the mixer transaction phase boundary was integrated in this
+continuation; the requested complete source owner and subsequent T1/T2 work remain
+unfinished, with no newly demonstrated external blocker.
+
+Prior source-egress continuation: live rpi5 checkpoint matched `main` / `d4adff4`,
+26 modified tracked files and six untracked files, nothing staged. The source
+GPA1 encoder now runs on `gp-source-encode`, fed by four reusable prepared sample
+blocks. Its output is a bounded 256-entry inline packet lane. Source overflow,
+encoding refusal, packet overflow, discarded blocks and unconsumed shutdown
+packets are separately counted; retired sessions accumulate numeric totals.
+Source invalidation closes atomically without joining; controller negotiation
+and shutdown join the worker. Existing actual-owner algorithms are unchanged.
+This is a source egress boundary only: it does not complete the source render/
+controller extraction, global prepared commits, legacy FX extraction, separate
+analysis connection or aggregate admission. **T0–T2 remain open.**
+Power-loss recovery on November 4 verified the surviving source/document writes,
+formatting, clean diff whitespace and all nine PA/FX/REC artifact hashes. The
+background all-target validation was terminated by reboot before a retained final
+result; it is not a passing run. Its temporary inventory was lost with `/tmp`.
+Post-reboot hardware-host library suite: **152 passed/13 ignored**. A cold-start
+replacement test previously expired its 20 ms lifetime before observing the stale
+epoch; it now waits for the refusal within a separate bounded test deadline.
+Production deadlines and the independent expiry assertions are unchanged.
+The actual PA/FX/REC host passed with its encoder deliberately paused: four
+queued blocks were discarded at closure and sixteen offers overflowed while
+recording and source frames continued. Actual four-aux source/Brain roundtrip
+passed; all three scoped actual FX execution/retirement/revocation guards passed.
+The authenticated four-aux TLS test first failed with a generic boundary refusal,
+then passed after adding numeric refusal witnesses (formatted off the FX owner).
+That rerun supplied no causal evidence; the later native-window correction closes
+the identified local queue-drop/source-gap mechanism.
+A broad test-name filter also selected the unrelated GP21 corpus without its
+required environment and failed setup; the corrected execution-module filter
+passed all three intended cases. Full normal all-target acceptance has not been
+re-established. Historical/audition/exhaustive opt-ins and unchanged accelerated
+ASRC opt-ins were not run; T3 and physical/two-node tests were not launched.
+Hardware-host all-target Clippy with warnings denied, formatting and diff checks
+passed. After build-lock, process/map/open-file and inode/alias checks, cleanup
+removed 77 task-created test executables: **5,928,148,992 allocated bytes reclaimed**.
+Target retains **8,546,570,240 bytes** of shared build/debug artifacts and runtime
+binaries; free space is **45,801,955,328 bytes**. No cleanup inventory/log remains.
+Live `main` / `d4adff4`: **28 modified tracked files, seven untracked files,
+nothing staged**. No commits, publication, sibling writes or host configuration
+changes. The full requested T0–T2 implementation remains unfinished; power-loss
+recovery has not demonstrated an ongoing external blocker.
+
+Prior implementation continuation (power-loss recovery checked on rpi5):
+`remote/aux_execution.rs` runs the actual four-aux palette on `gp-brain-fx`,
+with authenticated media/assembly/encoding/hash on `gp-fx-media`. The production
+runner selects this boundary for the four-aux configuration. Instance-free
+prepared tokens transfer to serialized publication; native retirement transfer
+stays on the FX owner and destruction stays controller-side after transfer/join.
+Four-block sample lanes, bounded commit/retirement queues and independent atomic
+closure are wired. Policy replacement publishes a separate generation fence before
+acknowledgment; the FX owner checks it without a lock or controller/media poll.
+Queue storage is touched before readiness. Completed state remains available
+through observation saturation and an idle source. Assembly storage moves to the
+media owner instead of remaining duplicated in the controller. The runner reports
+queue/assembly layouts and process resources separately; aggregate resource
+admission and steady-state headroom are not established.
+
+Prior continuation validation: default all-targets **514 passed/22 ignored**; hardware-host
+all-targets **608 passed/58 ignored**, including all 13 duplex/runtime regressions.
+All nine PA/FX/REC artifact hashes were reverified after the power loss and again
+before the final actual-owner checks. Three new actual FX execution tests passed
+under the host allocation/destruction guard: stalled control/observation saturation,
+retirement backpressure, and policy revocation without controller or media polling.
+The production-wired authenticated loopback test passed with the 768-frame wet
+deadline and a 100 ms controller stall while accepted wet returns continued.
+The actual source/Brain roundtrip/loss and PA/FX/REC recording-recovery cases passed,
+as did the original actual-aux commit/refusal/gap allocation guard. All eight
+transport contract tests have therefore passed across normal and explicit runs.
+Commands use Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0` and the nonblocking
+shared build lock. All five accelerated release `brain_bridge` opt-ins passed in
+**143.51 s**. Final hardware-host all-target Clippy with `-D warnings`, formatting
+and diff checks passed. Unrelated historical, audition and exhaustive opt-ins
+remained skipped.
+
+Cleanup after process/open-file/map, inode, runtime-alias, Git and nonblocking
+build-lock checks removed 156 task-generated test executables and the temporary
+validation logs: **13,753,438,208 allocated bytes reclaimed**. Shared build/debug
+artifacts and runtime binaries remain; target is **8,546,476,032 bytes (7.96 GiB)**,
+with about **42.65 GiB free**. No scratch journal remains. Live HEAD is `d4adff4`,
+with **26 modified tracked files and six untracked files**, nothing staged.
+
+T0/T1/T2 remain OPEN. Stagebox source/controller extraction, legacy Brain FX
+extraction, global source prepared commits/off-thread retirement, separate analysis
+connection and aggregate admission remain unfinished; no external blocker has
+been demonstrated. T3, two-node traffic/load and physical activation were not run.
+No sibling edits, commits, publication or host/service/network changes occurred.
+
+Previously implemented duplex boundary: `brain_runtime` uses dedicated sole duplex service and
+media execution threads. BrainHost publishes copied numeric state; the controller
+builds descriptions/JSON, hashes and playback evidence. Four-entry media, commit
+and observation lanes have explicit overflow outcomes. Independent capture and
+monitor closure generations share one atomic publication, preserving the other
+crossing during selection/PTT changes. Local deadman expiry requires observed
+closed state and a later active revision; unrelated edits cannot rearm it. Service
+independently enforces one absolute run deadline across preparation and every
+replacement; an expired replacement performs no service tick. Device
+replacement joins the old owner before opening a fresh epoch.
+Startup touches prepared samples/handoffs before readiness. A bounded consumer
+slot preserves captured media across the accepted-generation handoff; every actual
+send still performs the existing authentication/policy/descriptor checks.
+
+The proposed all-node payload budget now counts both ends of both duplex
+crossings: 9,216 bytes for those four lanes and 2,241,536 total bytes for the
+16-input/eight-FX-channel/eight-window fixture. This corrects a pre-existing
+4,608-byte omission, not a measured RSS value. The stereo fake service reports
+88,888 known requested bytes, with library, metadata, description, network,
+allocator and stack exclusions. Runtime separately samples process RSS/peak RSS,
+CPU and faults. In the fresh deadline/replacement regression process, RSS was
+5,046,272 bytes before and 14,057,472 after three service instances; minor faults
+155→388 and major faults 27→74 include cold startup. Known prepared layouts are
+not an explanation of that process-wide delta or proof of fault-free steady
+service. No aggregate-system resource or scheduling acceptance follows.
+
+Prior duplex continuation validation (Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0`,
+nonblocking shared build lock): default all-target suite **514 passed/22 ignored**;
+final hardware-host all-target suite **608 passed/55 ignored**, including all
+13 runtime tests and the absolute-deadline replacement regression. Hardware-host
+all-target Clippy with warnings denied, formatting and diff checks passed.
+All nine PA/FX/REC library/header/owner-manifest hashes matched the local manifest
+immediately before the actual-owner tests. Both named actual roundtrip/REC cases
+passed; all eight transport contract cases passed including the actual aux
+allocation/destruction guard. All five accelerated release bridge opt-ins passed
+in **143.56 s**. Unrelated historical, audition, exhaustive and other environment
+opt-ins remained ignored; T3, two-node traffic and physical tests were not launched.
+
+The runtime tests cover authenticated loopback service during controller stall,
+per-role closure, generation-handoff continuity, actual 18-output mapping under
+the host allocation/destruction guard, saturated lanes, expiry/rearm, replacement
+and finite shutdown. These checks validate the duplex extraction and unchanged
+actual-owner algorithms; they do not validate independent source/FX execution.
+T0/T1/T2 remain open: source/FX extraction, global prepared commits/off-thread
+retirement, aggregate admission and remaining T2 background/resource acceptance
+are not complete. No external blocker has been demonstrated.
+
+Prior duplex continuation cleanup: after nonblocking build-lock, process/open-file/map,
+inode and live Git checks, removed 156 task-generated test executables
+and the temporary validation journal, reclaiming **13,690,220,544 allocated bytes**
+(376,832 bytes from temporary logs/inventory). Retained normal runtime
+binaries and shared build/debug artifacts; target is 7.95 GiB and
+free space is 42.67 GiB. Existing source, user data and uncommitted work
+remain. HEAD is `d4adff4`, with 24 modified tracked and five untracked files,
+nothing staged; no commits/publication or sibling/configuration changes occurred.
+
+Historical admission-only increment:
+The current admission change makes registry and mailbox wet prefilters reject
+deadline equality, matching final jitter-buffer admission. The registry regression
+also verifies that a deadline refusal does not consume replay state. This change
+does not establish source/FX or duplex execution isolation; T0–T2 stay open.
+Fresh validation of this admission change: default suite 512 passed/22 ignored,
+plus two default example tests; hardware-host all-target suite 601 passed/55
+ignored; three verified-library owner cases and all five accelerated release
+bridge cases passed (bridge run 146.03s). Hardware-host all-target Clippy with
+warnings denied, formatting and diff checks passed. PA/FX/REC library, header
+and owner-manifest hashes matched the local manifest. These checks do not prove
+the requested execution boundaries. After lock/process/reference checks, removed
+152 task-generated test executables (13,484,118,016 allocated bytes); retained
+runtime binaries and shared build/debug artifacts (target about 8.1 GiB).
+Two-node traffic/load, physical activation, host configuration, sibling edits and
+publication remain unauthorized. Work is direct single-agent on the canonical Pi5 checkout.
+Private task0026 owns exact identities,
 reservations, failed reports and sample checks. Source synchronization does not
 reserve the link or authorize PCM, cable pulls or service changes. Pi5 coordinates
 directly without peer workers. Record a finite reservation and acknowledgment on
@@ -803,39 +1076,1319 @@ denied,67 publication-script tests and the release build passed. Historical rese
 auditions, exhaustive matrices and physical opt-ins were not rerun. Focused tests
 cover runtime isolation, retirement completion, deferred meter reads and trace bounds.
 
-The priority is the current authenticated QUIC/media graph, including four FX
-auxes, raw recording and Brain duplex crossings. The accepted October 3 GPA1 UDP
-identity-return benchmark is historical evidence, not acceptance of today's graph.
-Use [remote transport](../reference/REMOTE_TRANSPORT.md),
-[Brain audio](../reference/BRAIN_AUDIO.md),
-[Brain acceptance](../acceptance/BRAIN_AUDIO_ACCEPTANCE.md) and
-[hardware evidence](../acceptance/AUDIO_HARDWARE.md) as the contracts and baseline.
+### Minimal transport blueprint and dependency-ordered implementation
 
-| Order | Bounded experiment | Evidence and pass condition |
+Design: [dedicated-link audio v1](../architecture/AUDIO_TRANSPORT_V1.md).
+Recommendation: retain authenticated QUIC DATAGRAM for v1 and isolate audio
+execution; direct GPA1/GBA1 UDP is a conditional same-topology comparator.
+The blueprint contains the exact wire layouts, session state machine, fixed queue
+profile, clock/resource budgets, preliminary patent screen and go/no-go criteria.
+This card is the sole implementation plan; private task0026 remains evidence.
+No transport replacement, security downgrade or physical acceptance is approved
+by writing this plan. The existing implementation remains at the inspected base.
+
+Fresh planning inspection verified GigPies97a7949b06297ffc8f13f27bfc496f2a0f5a4585,
+all13 local manifest heads/lock/toolchain hashes, and clean matching relevant
+GigPies/Desk/PA/FX/REC heads on Pi4 through persistent Tailscale SSH. Exchange/hub
+and peer exchange match26acd3ec8816e6a8e1e29a744d5ed9ad70f7f7d1. Runtime binary
+identity was not requalified; reverify before trials. No workers, builds, load
+traffic, PCM, host settings, source synchronization or publication in this task.
+
+Execute the milestones in dependency order. Each is a reviewable bounded change;
+no sibling source writes are implicit. Keep Rust 1.97.1, edition2024, locked exact
+owner artifacts and normal build directories. Before substantial builds inspect
+free space/output sizes and acquire the existing build reservation; all agent
+Rust commands use CARGO_INCREMENTAL=0. Before two-node trials obtain separate
+traffic authorization and finite reservations, without disturbing other sessions.
+
+| Milestone / dependencies | Owner/files and behavior | Validation and acceptance | Rollback / unresolved decisions |
+|---|---|---|---|
+| **T0 — freeze contracts and resource fixtures**; first | GigPies `src/transport/{packet,buffer}.rs`, `src/remote/{media,brain_audio}.rs`, focused tests/fixtures and this blueprint. Record golden GPA1/GBA1 bytes, strict admission/deadline equality, exact production topology, layout and prepared-memory arithmetic. No runtime switch. | Focused normal codec/contract/safety tests; independent decode of vectors, invalid lengths/versions/floats, sequence wrap, u64 exhaustion, dimensions16/32/48, channel-map refusal. Acceptance: every blueprint field maps to implementation or an explicitly proposed change; no hidden MTU/channel/deadline default. Full normal suites if shared codec behavior changes. | Revert only owned fixture/contract changes, leave existing transport. Resolve exact common payload size from runtime capability before comparison; no product question needed. |
+| **T1 — isolate source ingress and Brain FX execution**; T0 | GigPies `remote/{proxy,host,brain,runner,session}.rs`, proposed `remote/audio_execution.rs`, `transport/handoff.rs`, `local_audio.rs`, `host/duplex.rs`. Extract fixed media ingress/assembly and prepared commits from JSON dispatch; dedicated FX/source owners; move encode/hash/analysis/serialization off audio. Preserve source cadence/debt and owner algorithms. One ordinary prepared commit/block; independent atomic closure. | Focused queue/order/revocation/retirement tests, allocation+destruction guards, actual PA/FX/REC samples, then complete normal default and hardware-host suites because execution/concurrency changed. Acceptance of the code slice: no control await/lock/allocation on audio path and all bounded outcomes counted. The **5s combined-load QUIC falsifier** belongs to T3, after T2 and separate traffic authorization; it is not required to complete the authorized T1 code gate. That later smoke needs zero wet misses and ≥192-frame margin before proposing duration escalation; failure disproves isolation sufficiency and requires diagnosis. | Feature/config rollback at process restart, fresh session/readback/rearm; no hot fallback. Open engineering issue: extraction of LocalAudio authority/snapshot state must preserve sole ownership and applied/readback coherence; thread relocation alone does not complete T1. If owner ABI cannot safely transfer, scope sibling change separately. |
+| **T2 — isolate Brain duplex and background load**; T1 code contract accepted | GigPies `brain_runtime.rs`, `bin/brain.rs`, `brain_audio/{host,bridge}.rs`, `remote/{brain_audio,session,diagnostics}.rs`, analysis/meter host taps. Give duplex device a sole dedicated service owner; fixed independent capture/monitor lanes, move control awaits and fake sample JSON out. Separate analysis connection/runtime within16-session cap. Keep REC push/lifecycle independent. | Focused fake partial-transfer, both bridge directions, stale selection/PTT, explicit arm and overload tests; full normal suites. Run relevant accelerated long bridge opt-ins since delivery assumptions change. Acceptance: numerical bridge thresholds unchanged, bounded occupancy/ratio, zero normal under/overflow, control stall cannot stall device service; aggregate bytes/CPU/faults documented. | Restore prior executable wiring at quiesced restart and fresh device/session epoch. Open: measured four-core headroom and thread scheduling; do not silently add realtime priority/affinity/mlock or enlarge queues. |
+| **T3 — isolated QUIC reference acceptance**; T2 | GigPies actual runner/proxy/media and Desk consumer at recorded revision; PA/FX/REC exact unchanged owner artifacts. No sibling algorithms. Run existing actual-owner topology, freeze parameters and common grouping. | Authorized 5→30→60s independent gates, Desk+duplex+analysis+REC simultaneously. Trace-off/on comparison, per-layer timing/accounting, exact raw samples and independent monitor/actual wet evidence. Separate ≤60s owned-process restart, source/device replacement, stale injection, read-only reconnect/rearm, PTT and REC lifecycle cases. Acceptance: blueprint clean gates, ≥192-frame margin, complete accounting and no resource starvation. A failure stops escalation for diagnosis. | Keep current known source checkpoint/config and fail closed; T1/T2 fixes may remain only if their contracts pass, no physical clearance. Open: whether isolation alone resolves combined timing. This milestone can complete v1 without UDP. |
+| **T4 — bounded direct-UDP comparison**; T3 baseline measured (a diagnosed QUIC failure may supply the baseline) | GigPies `transport/network.rs`, temporary adapter under `remote`, `remote/wire.rs`/control binding and runner selection. Share codecs/queues/DSP; implement blueprint `GP-media-bind:1` lab-only lifecycle. No historical scalar UDP control. | Parser/lifecycle/security-refusal tests and full normal suites. Explicit synthetic traffic authorization; identical graph/security-difference declaration; paired5s, then30s/60s only after clean earlier gates, reverse final ordering once. Acceptance: identify whether transport-local costs change and whether ≥96-frame margin improvement is repeatable. Reject physical mode for bare UDP. | Remove temporary adapter if no material gain; keep useful shared tests and one concise result. Open: measured transport attribution, not user preference. Bare UDP success is not production acceptance. |
+| **T5 — conditional secure UDP qualification**; only material T4 benefit | GigPies transport/control integration plus reviewed dependency, `Cargo.toml`/`Cargo.lock`, protocol fixtures. Qualify maintained DTLS1.3 for existing packets; reconsider RTP/SRTP only if its established implementation demonstrably reduces work. Bind authenticated media association to reliable control/session; no custom cryptography. | Security review, forged/replayed/wrong-cert/revoked/session-confused packets, overhead/MTU and bounded resource tests, full normal suites and exact T3/T4 combined comparison with security enabled. Acceptance: preserve existing media authentication/integrity/confidentiality, all clean/recovery gates and material benefit retained. | If library/profile or benefit fails, retain isolated QUIC, delete candidate. Open: qualified implementation and complete secure profile, deployment-jurisdiction patent checks, contributor rights. Any intentional security reduction is a separate product decision, not an optimization. T5 is unnecessary for selected QUIC v1. |
+| **T6 — decision, consolidation and separate hardware handoff**; T3, plus T5 if replacing | GigPies owning references, executable default/config schema and GP-H1; sibling fixture updates only with separate authorization. Select one production adapter, remove losing experiment branch/helpers, keep codecs and conformance corpus. | Complete normal suites for final execution/contract changes; independent implementation/review of packet/state vectors before replacement; publication policy only if later publication is authorized. Apply blueprint go/no-go exactly. Acceptance: one production path, concise result and reproducible commands, no private artifacts; retain H8/physical gates open. | Rollback to recorded QUIC configuration requires fresh session/epochs/readback and explicit rearm. Open hardware requirements are observed socket map/ADAT lock, electrical delay, safe fault handling and sustained actual graph; never infer them from software success. |
+
+Current local acceptance reconciliation (November 5, completed):
+
+- **Implemented and component-validated:** autonomous source ownership; bounded
+  prepared/completion/retirement lanes; detached PA and REC lifecycle; source
+  egress and authenticated handoffs; all supported legacy 48/96-frame FX shapes
+  and four-aux native/media execution; dedicated Brain duplex service/media;
+  independent read-only analysis connection/runtime and encoder. Do not restart
+  these extractions. The native output-credit queue-drop/source-gap defect is closed.
+- **Combined coverage implemented:** authenticated actual duplex/FX/raw REC,
+  selected nonzero playback, held talkback, full source return lanes, exact
+  talkback receipts, independent analysis closure, old FX identity refusal,
+  source/device replacement and authenticated explicit output rearm. Stale device
+  refusal, independent capture closure and final broad validation passed.
+- **Resource reconciliation:** actual source media/encoder, native FX/assembly,
+  duplex service and global executor layout reports identify each allocation once
+  and explicitly exclude opaque owner/TLS/allocator storage. Process and per-thread
+  RSS/CPU/fault/scheduling observations cover resident aggregate. Existing limits
+  admit two audio owners, one independent observer and sixteen authenticated
+  sessions; control-only sessions gain no media pools. The completed audit is below.
+- **Local T0–T2 complete:** focused actual-owner, normal hardware/default, relevant
+  accelerated bridge, Clippy and formatting gates passed. No local implementation
+  or acceptance item remains open.
+- **Outside this authorization:** T3 distributed 5/30/60-second clean timing and
+  headroom qualification, physical activation, socket/clock/acoustic checks.
+  These are separate gates, not local software implementation blockers.
+
+Source-owner continuation checklist (local T0–T2 accepted):
+
+1. **Complete — owned source extraction and component validation.**
+   `mixer_control/source.rs` owns the production mixer, numeric epoch, plan and
+   retained receipt; LocalAudio uses it instead of a borrowed quantum handle.
+   Preallocated numeric observations now capture end-of-quantum coefficients,
+   processing configuration/progress, sends and raw gate state. Controller
+   snapshots, intent persistence and processing/send readiness consume the last
+   observed state; pending source completion cannot appear applied in readback.
+   Gate attenuation conversion remains on the controller. Historical offline
+   boundary-sample snapshots retain their existing compatibility pump.
+   `module_graph/source.rs` owns actual PA/local FX, raw recorder push, timeline,
+   buffers and retired PA storage. Controller retains authority/protocol,
+   preparation, recorder metadata/observer/finalizer and replies; media retains
+   encoding/transport. `local_audio/source.rs` now owns routing scratch, talkback
+   envelope/samples, monitor/send taps and meter acquisition; production routing
+   delegates to it, with meter readback retained on the controller. Production
+   startup now also transfers spectrum acquisition, analysis taps/signals and
+   measurement capture into SourceRouting. Spectrum FFT/readback/worker joining
+   and measurement analysis/subprocess lifecycle stay on the controller. The
+   `RenderGraph` now owns SourceState, ModuleSource, SourceRouting and local aux
+   storage. LocalAudio's numeric boundary operates on this aggregate;
+   capture mapping, measurement offers, playback patching and output
+   spectrum acquisition run inside it. It no longer borrows controller DSP owners.
+   Authority, lifecycle workers and replies stay outside. HostAuthority now opts
+   into persistent graph ownership: mixer, modules, routing and local aux remain
+   detached across quanta and structural operations. Host startup now transfers the graph
+   and HostSourceMedia to one dedicated `gp-source` worker. Other LocalAudio
+   compatibility callers still reattach. Quiesced recovery retires/rebuilds the
+   graph and reinstalls it on the same worker; autonomous capture scheduling is now wired through the production runner. Monitor/send/aux samples, bus readback
+   and meter losses are copied observations; output safety/quiescence uses a copied
+   ramp envelope. Output patches prepare against controller topology and publish
+   their applied map from the returned prepared packet.
+   ModuleGraph retains an API-only PA preparer and an owned detached PA observation/context;
+   structural graph preparation and EQ JSON preparation/readback no longer borrow
+   active PA for libraries exposing the detached ABI. Source capture and native EQ
+   retirement return are explicit bounded operations; the compatibility pump is
+   still synchronous. Legacy libraries retain synchronous compatibility only.
+2. **Complete — bounded handoff, admission and retirement.** Owned mixer continues unchanged
+   rendering with occupied completion/retirement, refuses new mixer/external
+   admission until observation, rejects stale epoch and fences unvalidated/external
+   boundaries. Mixer retired prepared storage now travels in the retained receipt
+   for controller destruction; finish_render no longer takes retirement directly
+   from the active mixer. Latest numeric observations advance during unchanged
+   rendering without overwriting the retained application identity.
+   Detached mixer commands and reusable completion packets bind the owner, epoch,
+   exact frame and ticket. Refused prepared storage stays in the packet; source
+   rendering continues after completion export. Receipts distinguish cancellation
+   before application from revocation after application; the latter publishes the
+   actual revision while preserving revoked grants. External structural permits use
+   the same authority reservation and return numeric receipts before revision
+   publication; replay, stale identity, occupied render state and cancellation
+   refuse before application. Production patch/mute/rearm/PA/EQ now use that
+   source boundary. Operator selection, prepared aux storage and four-bus send
+   updates now travel in detached mixer commands; all allocated command payloads
+   return for controller destruction. Returned observations include applied aux
+   send targets; remote aux snapshots/acknowledgments no longer borrow the active
+   mixer or publish queued targets before source completion. The worker now has globally ordered 16-command, 128-completion and
+   16-retirement lanes, reserving both returns before a swap. Controller calls
+   currently serialize one outstanding packet and wait for it; the source never
+   takes the controller mutex. Source-issued exact/future-frame admission binds
+   owner/epoch/ticket without publishing future time as readback. Expired or
+   superseded commands retain storage and refuse before mutation. Future mixer
+   application can span F and F+48 without a second controller validation. The runner now uses the autonomous source clock. Ordinary engine, structural,
+   local aux and Brain preparation reserve future frames; expired storage returns
+   without publication. Remote FX permission and four-aux send application now use source-issued
+   permission and retained future-frame send packets; actual runner/TLS checks
+   validate application and retained completion.
+   Measurement uses one bounded capture admission and return slot;
+   outstanding buffers block reuse until controller retirement, while source
+   collection/completion needs no controller pump. Progress is atomic; raw offers
+   do not inspect controller PA metadata. This measurement-local
+   slot complements the globally reserved completion/readback/retirement lanes above.
+3. **Complete — module lifecycle and combined local acceptance.** Recorder pushes no longer inspect
+   controller strings; numeric source cancellation prevents late prepared handle
+   activation and preserves the original fault through Stop/recovery. Independent
+   source/session closure and module handoffs have component and actual-owner coverage.
+   Numeric PA structural/EQ commit, mute and rearm now
+   execute on ModuleSource. Owned ModuleObservation captures numeric PA/FX health;
+   controller health queries no longer call active native status functions. Legacy
+   status symbols resolve at load time. PA metadata is controller-owned. One owned
+   module exchange carries REC activation/Stop, end-quantum observation and native
+   EQ/structural retirement; controller completion schedules finalization and
+   destroys returned storage. Returned EQ slots are emptied on the controller
+   before reuse; successive actual EQ edits cover this lifecycle. PA structural
+   completion must precede preparation
+   of the next context exchange. Source closure survives controller teardown;
+   stale module epochs cannot stop a newer recorder. LocalAudio teardown publishes
+   its independent source closure before field destruction. Measurement cancellation/epoch invalidation/controller
+   teardown independently close queued/active captures through a generation signal;
+   stale buffers return for controller destruction. Analysis fault signals cannot
+   join the worker from source acquisition. Proxy disconnect/drop now publishes
+   terminal closure directly to the authenticated context's atomic render fence,
+   independent of mailbox service or command capacity. Client close/drop, terminal
+   control/media errors and FX reply-reader cancellation publish the same closure;
+   reliable applied replies remain drainable. Fresh authentication cannot reopen
+   an old fence. This covers existing consumers of that fence, not yet the
+   complete Stagebox graph. Local aux now separates controller metadata and
+   instance-free preparation from source Rack/native owners. Prepared source
+   commands use the external permit; fixed status/retirement observations return
+   native tokens for controller destruction. Routing resets, startup rearm and terminal mixer/module quiescence
+   now execute as owned packets. Recovery rejoins only after source closure
+   and reinstalls the rebuilt graph on the same source worker, preserving epoch
+   ordering; synthetic autonomous epoch replacement now coordinates close/drain/rebuild/restart
+   on that worker within the original run deadline, disarmed; physical reopen
+   remains separate. Copied local deadlines expire on source. Terminal quiescence
+   performs a bounded module exchange even without another capture block, returning
+   raw REC/native retirement for controller finalization while the graph stays detached.
+4. **Complete — production runner cutover and component validation.**
+   `ProviderSource` now starts/services/stops the production `gp-source` owner;
+   the runner timer services control/readback without submitting capture quanta.
+   Startup works at frame zero. Synthetic capture uses elapsed cadence; the raw
+   Duplex owner now transfers to the worker with bounded nonblocking partial
+   capture/playback cursors, capture-anchored playback expiry and physical-map
+   checks. Capture starts on the source worker after preparation, so controller
+   allocation cannot consume active capture headroom. No physical device was activated or qualified.
+   Ordinary engine, structural, local aux and Brain preparation use source-issued
+   F+480 admission, retain return capacity and recheck authority at application.
+   Independent hold/FOH session fences and copied deadlines silence talkback even
+   when the media session stays live. Monitor generation changes silence the old
+   stream at the source boundary and bound its retirement tail. Brain device
+   configuration intent also commits at a future source boundary.
+   Structural completion precedes the next PA context exchange. Late preparation
+   returns its storage without publishing application. Media negotiation prepares
+   storage on the controller, swaps at a future source frame, and retains the old
+   controller identity until the source accepts it. Remote FX/aux permission now commits at a source-issued future frame;
+   four-aux send changes retain their later negotiated frame independently of
+   controller service. Writer/owner fences, cancellation and copied expiry close
+   pending actions. Completed storage returns for controller retirement.
+   Four-aux negotiation swaps mixer send mode and media storage atomically.
+   Controller service exchanges current mixer/module/routing observations and REC
+   lifecycle work without advancing source time. Final observations are collected
+   after stop. Cumulative wet/drop accounting is sampled during service and at
+   stop without double counting. Preallocated source output windows retain exact
+   frame/energy/peak/wet totals, splitting on applied revision/map and Brain
+   routing/hold changes, with explicit overflow. The `source_clock_v2` report
+   carries these identities in source output windows; legacy sampled histories
+   remain null. Synthetic recovery now stops/drains/rebuilds/restarts within the
+   original deadline, preserves the previous report on restart failure, and
+   requires explicit rearm.
+   LocalAudio compatibility callers retain their existing pump. Duplex's source boundary now takes topology/epoch/frame and
+   closure/process operations without requiring a LocalAudio reference; existing
+   callers retain their behavior. HostAuthority now always extracts the source
+   sample-egress endpoint on negotiation; the endpoint owns sample submission and
+   recycling, while encoder joining stays on the controller. Authenticated negotiation now
+   transfers the sole encoded-packet consumer to the network proxy; conversion and
+   draining continue without controller service. Authenticated wet ingress now
+   transfers a prepared stream/generation endpoint to the network proxy and
+   submits to the existing source lane without mailbox service; controller
+   receipt accounting remains bounded. Brain talkback/monitor endpoints now transfer
+   to the proxy for clocked hosts; source-owned authorization and existing fixed
+   lanes allow submission and encoding without mailbox service.
+   Replacement closes and joins before endpoint destruction; independent closure
+   reaches a full source lane. HostSourceMedia now owns wet assembly/gates,
+   talkback ASRC, sample taps and source egress. Monitor encoding runs in media
+   polling behind a prefaulted copied-sample SPSC lane, retaining the existing
+   64-block bound (49,664 payload bytes); overflow refuses new blocks and counts
+   them. Wet and talkback ingress now use prefaulted Copy SPSC lanes and fixed
+   return receipts: 256 wet packets/receipts and 64 mono blocks/receipts,
+   **671,296 bytes** of additional payload storage (ring metadata excluded).
+   Source insertion rechecks negotiation generation, policy fence, exact wet
+   deadline, talkback replay and hold deadline. Full return lanes stop ingress
+   draining, not rendering; full ingress refuses/counts the newest item. Hashing
+   and acceptance accounting consume controller receipts. Source wet playout also
+   fences already-buffered samples after closure. Negotiation/replacement and
+   policy/readback admission still depend on controller progress. Negotiation
+   and replacement now swap prepared storage through owned worker commands;
+   displaced storage returns to the controller, with numeric copied readback. Final runner shutdown drains receipt
+   accounting and rejects/counts pending ingress without advancing source time.
+   Same-bridge Brain renegotiation preserves queued generation/replay state; a
+   replacement identity cannot inherit it. Legacy PA/FX wrappers permit exclusive transfer
+   under their owner ABI contracts. Dedicated thread transfer is implemented;
+   production source pacing is autonomous; combined authenticated lifecycle acceptance passed.
+5. **Complete — local source and cross-owner acceptance.** Normal source/mixer/
+   module guards cover allocation/destruction, exact application, stale epochs,
+   full completion/retirement, closure and numeric readback. Actual runner source
+   cases cover PA/local or remote FX/raw REC, autonomous progression under both
+   saturated return lanes, exact raw tails, reconstruction and explicit rearm.
+   The authenticated combined case adds actual Brain duplex/media, selected
+   nonzero playback, held talkback, independent analysis, exact talkback receipts,
+   stale FX/device refusal, replacement epochs and authenticated output rearm.
+   Capture closure preserves monitor playback. Four-aux TLS retains explicit zero
+   native-drop/source-gap assertions. Complete normal suites and the five relevant
+   accelerated bridge cases passed. This is local software acceptance; T3 and
+   physical qualification remain separate.
+6. **Complete — compatibility, analysis and local resource accounting.** Legacy
+   1..256-channel, 48/96-frame banks now use dedicated native execution and a
+   four-block topology-sized recycle pool; configured stereo controls retain the
+   same prepared commit/retirement path. Actual-library comparisons at both frame
+   sizes and 1/2/3/16/48/256 channels passed, including closure and host allocation/
+   destruction guards. The shared media adapter retains the existing native output
+   credit reservation; the four-aux fixed-block storage is unchanged.
+   Production Brain now attaches a separate read-only analysis connection on its
+   own receive runtime, with a separate source encoder and four reusable source
+   blocks. Host admission permits one analysis observer, independent of FX and
+   duplex, within the unchanged 16-session cap. Source epoch/map and atomic policy
+   fences close the observer without controller service. Its focused source/sample/
+   duplicate-admission/closure/pressure checks and combined TLS acceptance passed.
+   Process reports now include per-thread CPU ticks, faults and available Linux
+   schedstat values, sampled off audio before worker shutdown. Actual source media/encoder,
+   native FX/assembly, duplex and global queue layouts are reported separately, with
+   opaque owner/TLS/allocator costs explicitly covered by measured process RSS
+   rather than guessed byte totals. Existing session/owner/pending-transaction limits
+   bound admission; source swaps reserve return storage before mutation. Local
+   reconciliation and broad validation passed. Sustained distributed headroom is T3.
+
+Stereo delay continuation (November 5): the production runner now transfers the
+48-frame stereo `BrainFx` into `remote/fx_execution.rs`, with shared independent
+media assembly/encoding and a sole native execution thread. Controller preparation
+uses an instance-free token pinned to the same library. Exact-frame permit/commit,
+independent closure, idle request/run expiry, retained completion and bounded
+retirement preserve the existing relay protocol. Settled completion retains its
+application status through later closure; native terminal faults are separate
+from completion and propagate into runner failure. Other legacy dimensions retain
+the compatibility path rather than acquiring a new product cap. Both execution
+and runner use one absolute deadline. No sibling ABI/artifact change was needed.
+
+The actual runner lifecycle tests preserve separate admitted local-four-aux and
+legacy-remote configurations; production correctly excludes enabling both. The
+remote case exchanges production encoded source packets with the real legacy FX
+execution owner and returns wet through source ingress while PA/raw REC continue.
+It exercises remote prepare/permit/settle with
+controller observations stalled, nonzero native and source-rendered wet, retained
+completion, exact raw REC tails, autonomous reconstruction on the existing worker,
+old-handle/reply refusal, disarmed replacement and explicit rearm. Remote FX is
+closed afterward; fresh remote-owner creation/renegotiation was not covered by that
+fixture (the authenticated continuation below adds it). This is a
+bounded device-free ownership test, not authenticated combined network-timing
+acceptance. The intermittent hold-authority assertion now captures both its reply
+and numeric source refusal receipt without changing production deadlines.
+
+Authenticated recovery continuation (November 5, after reconciliation with the
+completed stereo-extraction session): the new
+`remote::tests::gp21_recovery_tests::actual_tls_fx_pending_close_and_replacement_after_source_recovery`
+exercises production BrainWorker dedicated stereo execution/media over mutual TLS
+loopback, with autonomous actual PA/raw REC. A controller stall preserves source
+progress. Recovery closes a permitted future native transition before application,
+retains refusal without generation advancement, rejects the old source handle and
+starts the replacement epoch disarmed. A new authenticated connection negotiates
+fresh media and creates a fresh FX owner; the old binding is refused. After explicit
+rearm and observed catch-up to the live source frame, one new prepare/permit settles
+at its exact requested frame. Both epochs produce nonzero actual wet/PA output;
+eight PCM24 recording tails match the old source timeline exactly and report no
+dropped REC frames. The original absolute source/FX run budgets remain bounded.
+
+The initial test version deliberately entered BrainWorker directly: that was authenticated
+media plus native-owner lifecycle coverage, not end-to-end Desk lease/relay
+acceptance. The 2 ms synthetic fixture cadence is not a timing qualification. The
+first fixture overflowed its nested async stack; moving synchronous setup out and
+boxing futures fixed the harness with RUST_MIN_STACK unset. Its initial shared
+controller/runtime also stalled Stagebox service during Brain library loading.
+The fixture now uses the production two-worker network runtime and independent
+Brain preparation. Issuing a transition immediately after initial reception/rearm
+reproduced native source-gap refusal (cause 4), with input/output queue drops
+(7/21 in the original fixture, 1/29 after runtime separation), no malformed/stale
+groups, and no native terminal fault. The final test explicitly observes catch-up
+before a single reviewed command; it neither retries refused mutations nor claims
+zero startup drops. The native-window correction in this card subsequently closes the
+local queue-drop mechanism. This run did not diagnose hold authority or enlarge
+any deadline/queue.
+
+Validation for this test-only continuation: the final exact actual-owner case
+passed, then passed three bounded stability checks after the observed failures.
+The normal hardware-host remote group passed **94 / 22 ignored**. All nine current
+PA/FX/REC artifact hashes matched before execution. The complete suites from the
+immediately preceding stereo-extraction closeout remain the production baseline;
+production code did not change here. Unrelated historical, audition, exhaustive,
+bridge and other actual-owner opt-ins were not rerun. Reproduce with the shared
+nonblocking build lock, Rust 1.97.1, CARGO_INCREMENTAL=0, RUST_MIN_STACK unset,
+GP05_MANIFEST=user/node-lab/gp-h1-modules.json and GP_PA_CONFIG pointing to the
+actual PA stereo4way fixture:
+`cargo +1.97.1 test --locked -j1 --features hardware-host --lib remote::tests::gp21_recovery_tests::actual_tls_fx_pending_close_and_replacement_after_source_recovery -- --ignored --exact --nocapture`.
+
+Recovery-test closeout: hardware-host library/test Clippy passed with warnings
+denied; formatting and whitespace checks passed. After shared-lock, process,
+open-file/mapping, hardlink/runtime-alias and Git checks, removed the task-created
+library-test executable and compiler diagnostic, reclaiming **138,760,192 allocated
+bytes**. The canonical target retains **8,813,375,488 bytes** of shared runtime/debug
+build artifacts, with approximately 43 GiB free. No temporary fixture remains.
+The user selected continuation in the original session; this session has released
+ownership of the test and owning plan. The new test file, its registration and
+this record are uncommitted; production code is unchanged by this continuation.
+
+Authenticated Desk relay continuation (November 5): the recovery test now uses a
+separate Desk TLS connection, ordinary authority readback and an FX lease, fresh
+FX review, production prepare/permit envelopes and completion delivery through
+the Brain reply channel. An unissued lease is refused. A permitted future edit
+closes without generation advancement; Desk receives `unknown`, rather than a
+false applied result. A new connection/owner refuses the old prepared reply and
+old-epoch Desk request, remains disarmed until explicit rearm, then settles a
+single reviewed edit at its exact requested frame. Actual PA, remote stereo FX
+and raw REC run together. Each source completion/retirement lane is saturated for
+32 quanta with controller observations held; native FX also advances. Both epochs
+retain nonzero wet/PA evidence and all eight old-epoch PCM24 tails match exactly.
+
+This extension exposed source-gap/stale-preparation refusals while encoded packets
+still depended on controller mailbox draining. Authenticated negotiation now hands
+the sole existing 256-packet consumer to the network proxy. No queue or deadline
+was enlarged. Controller shutdown closes/joins/drains and retains exact cumulative
+accounting; only network draining and controller shutdown share a mutex, never the
+source or encoder. A normal regression transfers the consumer across threads,
+checks exact packets, fills the lane, closes it with the endpoint still alive,
+and reconciles every encoded packet. A delayed handoff preserves packets already
+queued in the proxy ahead of the transferred consumer. Compatibility callers retain their drain.
+The test uses production 50 ms observation publication and a bounded continuity
+readiness window before review; no refused mutation is retried. Initial harness
+failures included missing authority readback and stale reviewed reset counts.
+Passing this local fixture alone did not diagnose the TLS/hold witnesses or prove
+zero startup drops. At this checkpoint wet ingress and Brain media remained controller-serviced;
+the wet-ingress continuation below removes the former dependency.
+
+Running the actual cases together exposed a frame-zero startup bug hidden by
+fresh-process time zero: REC/control preparation had advanced authority time,
+but initial source admission still used zero. Startup now uses the prepared
+source's current monotonic time. Recovery carries forward the old epoch's final
+observed time and charges drain/reconstruction time without extending the original
+run deadline or advancing the new source-frame origin. A fast normal regression
+starts at frame zero after nonzero control time; the shared-process actual cases
+cover REC startup and reconstruction as well.
+
+Validation for this continuation: complete normal all-target suites passed
+**674 / 76 ignored** with hardware-host and **550 / 22 ignored** with default
+features, without normal-test filters. After the queued-prefix and startup-time
+corrections, the complete hardware-host library passed **219 / 30 ignored**.
+Both actual runner lifecycle cases and the authenticated recovery case passed
+together in the final process, with RUST_MIN_STACK unset. The recovery fixture
+also passed three consecutive checks earlier in this continuation. Both feature
+configurations passed all-target Clippy with warnings denied. All nine current
+artifact hashes matched before execution. Unchanged historical/audition/exhaustive,
+corpus-generation and accelerated ASRC opt-ins were skipped; no offline DSP tests
+were repeated after the focused closeout corrections.
+
+The four-aux TLS compatibility case passed twice, then reproduced the existing
+intermittent failure in the final batch: bus 2, ticket 3, `FX aux source gap`
+(cause 1), **4 native input drops / 4 output drops**, 450 processed blocks,
+1 report drop, native refusal code 0 and `media_fault: null`. Source egress
+accounted for **916 encoded = 916 drained**, with zero block/packet drops,
+refusals or unconsumed packets; wet admission was **882 accepted / 0 late /
+0 rejected**. It was not rerun to obtain a green result. This retained signature is reproduced and closed by the native-window correction
+below; the successful recovery case alone was not proof
+of whole-owner or timing acceptance.
+
+The earlier exact recovery command remains valid. The historical stereo TLS
+fixture overflowed its large async test stack in the combined process; its
+separate bounded 16 MiB test-stack check uses the existing
+`user/modularization-20261008/desk-sample-proof/identity-stereo-pa.json` configuration
+(two PA outputs); it passed **1 / 0 failed** with `RUST_MIN_STACK=16777216`.
+No production stack, queue or deadline changes. After shared-lock, process,
+open-file/map, inode and runtime-reference checks, cleanup removed the task-created
+test executables (155 in the pre-cleanup inventory), reclaiming approximately
+**13.18 GiB**. The canonical target retains **8,693,960,704 allocated bytes** of
+shared build/runtime artifacts; **45,487,022,080 bytes** are free. No rebuild
+followed cleanup. Source, existing uncommitted work and runtime binaries remain. Work stays single-threaded in canonical `main`;
+no peer workers, hardware activation, two-node traffic, sibling writes, commits or
+publication.
+
+Authenticated wet-ingress continuation (November 5): traced the retained
+four-aux witness to the separate four-block Brain media/native input and output
+lanes. An input overflow drops the newest assembled source block; consuming the
+next noncontiguous block produces source-gap cause 1 and refuses pending native
+work. Output overflow independently drops a wet block. The retained 916/916 source
+egress and 882 accepted/zero-late wet counts therefore do not establish native
+continuity or localize the scheduling delay. Added fixed first/last input/output
+dropped source frames and the first expected/received native gap pair to the
+existing execution report. One diagnostic check before ingress extraction passed
+(692 blocks, 67,584 Main comparisons); it did not reproduce or resolve the failure.
+No queue, deadline, cadence or algorithm was changed.
+
+Authenticated negotiation now transfers a prepared wet stream/generation endpoint
+to the network proxy. Network submission enters the existing 256-packet source
+lane without `AuthorityMailbox::service`. Source insertion retains generation,
+policy and exact deadline validation. A short producer mutex coordinates network,
+compatibility submission, overflow accounting and final closure; source execution
+never acquires it. Existing 256 receipts retain exact payloads for controller
+hashing/accounting; full receipts defer admission while rendering continues.
+Shutdown closes submission before draining receipts and rejecting pending packets.
+Review also found that the network future-frame filter still read a controller-
+published cursor: after 1,536 frames of stalled service it could refuse valid wet
+traffic. Source ingress now publishes its actual frame atomically, even with full
+receipts, and the transferred endpoint supplies that cursor to network validation.
+No new packet queue was added. At that continuation, Brain talkback/monitor
+admission and polling still required the handoff implemented below.
+
+New normal coverage transfers the wet endpoint across threads, holds controller
+receipts, verifies full-lane refusal, continued wet rendering, stale-generation
+rejection, policy revocation and terminal shutdown. The actual authenticated
+Desk/Brain recovery fixture now requires at least 48 additional accepted wet receipts accumulated
+while controller service and both source return lanes are stalled. The strengthened check passed
+with actual PA/stereo FX/raw REC, old-epoch refusal and fresh-owner rearm. An
+actual native-owner regression also deliberately omits frame 192 and fills the
+four-block wet-output lane: it retains gap `(192, 240)` and exactly four output
+drops at first/last source frames 240/384. This validates witness interpretation,
+not the scheduling cause of the intermittent clean-run failure.
+
+Validation: the complete normal hardware-host all-target suite passed **677 /
+76 ignored**. The initial actual-owner batch passed all five selected checks
+(native gap/overflow, both runner lifecycles, four-aux TLS and authenticated
+recovery); four-aux produced 695 blocks and 67,392 Main comparisons. After the
+live-cursor correction, ten focused checks passed, including strengthened recovery,
+both actual runner lifecycles and ingress/closure tests. Default-feature remote
+regressions passed **28 / 1 ignored**. A subsequent normal hardware library run
+found a pre-existing fixture-time error in `clocked_legacy_permission_survives_controller_stall`:
+its time-zero lease could expire when startup retained the media preparation's
+nonzero source-control time. The clocked fixture now grants at that prepared time;
+production lease duration is unchanged. Both feature configurations passed
+all-target Clippy with warnings denied. The final cursor-corrected four-aux TLS
+check passed (678 blocks, 67,200 Main comparisons); causal closure came later
+from the native-window regression in this card. The final complete hardware-host
+library passed **220 / 31 ignored** after the fixture and small error-return cleanup;
+formatting and whitespace checks passed. Full offline integration targets were
+not repeated after these focused corrections. All commands used the shared
+nonblocking build lock, Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0` and
+`RUST_MIN_STACK` unset for tests.
+
+Reproduce the actual continuation with the existing manifest/PA fixture environment
+and `GP_FX_LIBRARY=/home/shome/p/shr-fx/target/release/libshr_fx.so`, under that lock:
+`cargo +1.97.1 test --locked -j1 --features hardware-host --lib -- actual_owner_gap_and_output_pressure_keep_exact_frame_witnesses actual_runner_source_ actual_tls_fx_pending_close_and_replacement_after_source_recovery --include-ignored --test-threads=1 --nocapture`.
+The four-aux diagnostic uses the previously documented exact test name separately.
+
+Closeout: after build-lock, process, open-file/mapping, hardlink/symlink and live
+Git checks, removed 80 task-built test executables (**8,359,972,864 allocated bytes**)
+and temporary logs (**262,144 bytes**). The canonical target retains
+**8,693,063,680 allocated bytes** of shared build/runtime artifacts; free space is
+**45,485,191,168 bytes**. No rebuild followed cleanup. Source, prior uncommitted
+work and runtime binaries remain. All work stayed on canonical `main` on rpi5;
+no siblings, peers, physical devices, two-node traffic, commits or publication. The unchanged default offline DSP suite is not duplicated;
+historical/audition/exhaustive and accelerated bridge opt-ins remain skipped.
+All nine current module artifact hashes matched before actual-owner execution.
+
+Brain handoff continuation (November 5): clocked-host negotiation now transfers
+prepared GBA1 talkback/monitor endpoints to the authenticated proxy. Talkback
+submits directly to the existing 64-block source lane; monitor encoding consumes
+the existing 64-block copied-sample lane. No additional packet/sample queue or
+playout allowance was added. Short producer/consumer mutexes belong exclusively
+to network/controller endpoints; the source never takes them. Source-published
+atomic authorization carries the current hold deadline and monitor silence state.
+Source insertion and rendering independently recheck hold generation, copied
+lease/FOH deadlines, policy fences and output safety. Same-bridge renegotiation
+retains the shared replay cursor and monitor queue; replacement closes the old
+endpoint before new ownership is exported. Shutdown serializes producer closure
+before final receipt/pending/refusal accounting. Compatibility hosts retain their
+synchronous admission/polling path.
+
+Validation: the complete normal hardware-host all-target suite passed **679 /
+77 ignored**. The default-feature library, binaries, examples and remaining
+integration targets passed **364 / 18 ignored / seven unchanged automix library
+cases skipped**, using the unchanged offline-target exclusions listed in the
+stereo-extraction entry below. No source/control/transport target was omitted
+from that second configuration. Focused handoff/monitor/hold checks passed **17**;
+the full library run also exercised the added new-hold-generation refusal case.
+Both configurations passed all-target Clippy with warnings denied; formatting
+and diff whitespace checks passed.
+
+All nine current module artifact hashes matched before the five selected actual
+checks: native gap/drop witnesses, both runner lifecycles, authenticated recovery
+and four-aux TLS. All **five passed**. Authenticated recovery retained the required
+48 additional accepted wet receipts during 64 controller-stalled quanta with both
+source return lanes pressured. Four-aux TLS processed **689 blocks / 67,872 Main
+sample comparisons**; no queue-drop failure occurred in that run. Its later causal
+closure is recorded below; this earlier pass alone supplied no diagnosis.
+The five relevant accelerated release `brain_bridge` opt-ins passed in **193.27 s**;
+other historical, audition, exhaustive, benchmark and unchanged actual-owner
+opt-ins remained skipped.
+
+Commands used canonical targets, Rust 1.97.1, `--locked -j1`,
+`CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1`, `RUST_MIN_STACK` unset, and the shared
+nonblocking build lock. Reproduce focused checks with
+`cargo +1.97.1 test --locked -j1 --features hardware-host --lib -- source_media_tests monitor_retirement_tests clocked_render_closes_talkback --test-threads=1`.
+The native command above additionally selected
+`actual_four_aux_tls_brain_controls_and_samples`; bridge opt-ins used
+`cargo +1.97.1 test --release --locked -j1 --features hardware-host --test brain_bridge -- --ignored --test-threads=1`.
+
+Continuation cleanup: after live Git, nonblocking shared-lock, process,
+open-file/mapping, hardlink and symlink/runtime-alias checks, removed **138**
+task-built test executables (**12,566,913,024 allocated bytes**) and temporary
+logs/inventory (**245,760 bytes**). Canonical target retains **8,347,045,888 bytes**
+of shared build/runtime artifacts; free space is **45,828,108,288 bytes**. No
+rebuild followed cleanup. Source, prior work and required runtime binaries remain.
+All source changes remain uncommitted on canonical rpi5 `main`. No siblings,
+peers, physical devices, two-node traffic, commits or publication were involved.
+T0–T2 and combined actual Brain duplex/FX/raw REC lifecycle acceptance remain open.
+
+Native-window correction (November 5): **the four-aux local queue-drop/source-gap
+issue is closed.** Inspected both retained TLS witnesses and the newer first/last
+drop and expected/received frame fields. Media previously received assembled
+blocks without reserving either native input or eventual wet-output capacity;
+output draining ran on a separate timer branch. A receive burst could fill input
+before native ran, then refill input while the previous output remained undrained.
+This does not require source-egress loss, malformed packets or a native fault.
+The deterministic negative control reproduces **4 input drops / 4 output drops**
+and gap **expected 192 / received 384** with the former admission rule. The same
+schedule with reserved admission delivers all twelve contiguous frames with zero
+drops/gaps. This is causal fault injection, not a passing rerun as diagnosis.
+
+`aux_execution::MediaWorker` now reserves one existing output slot for every
+accepted native block, counting queued input, executing work and queued output
+together. Credit returns only when media consumes output; while all four credits
+are occupied, receive is disabled and the existing output timer continues. The
+shared stereo/four-aux media path gains two scalar counters, no sample/packet
+queue, new thread, priority, deadline or playout allowance. Native execution stays
+nonblocking; genuine network gaps, full-lane witnesses and source wet deadlines
+remain enforced. A normal deterministic regression covers both scheduling
+boundaries and the old-rule negative control. An actual four-aux regression holds
+output service until all input slots are free, proves admission remains closed,
+and drains twelve exact source identities with no native gap/drop. The TLS fixture
+now explicitly asserts zero native input/output drops and no source-gap witness.
+This closes this local admission defect, not hardware or T3 timing qualification.
+
+Combined lifecycle continuation: the existing actual runner fixtures now include
+production BrainHost/ASRC/fake-duplex service and GBA1 encoding through the actual
+source proxy handoff alongside PA, FX and raw REC. Both source return lanes and
+Brain playback/status evidence lanes are pressured without controller service.
+Capture closes independently while monitor transfer and source rendering continue;
+fresh source/device epochs require new negotiation and explicit rearm, and a
+retained old device closure cannot close the replacement. Raw PCM24 tail checks,
+exact submitted = accepted + refused talkback receipt accounting, and source-side
+hold/epoch/deadline checks remain enforced. This local harness
+uses the production source handoff with an in-process media pump and the existing
+2 ms synthetic source cadence. Monitor packets carry the permitted silent stream;
+this is lifecycle/receipt evidence, not nonzero monitor playback or clock-quality
+acceptance. Authenticated
+FX lifecycle coverage remains in the separate existing TLS recovery fixture.
+
+Focused validation passed **7 / 0 failed**: deterministic old/fixed burst schedules,
+actual reserved-window continuity, deliberate gap/output-overflow witnesses, both
+combined actual runner lifecycles, authenticated FX/REC recovery and four-aux TLS.
+The final TLS run processed **705 blocks / 69,120 Main comparisons**, with explicit
+zero native input/output drops and no source gap. All nine PA/FX/REC artifact hashes
+matched. The complete normal hardware-host all-target suite passed **680 / 78 ignored**.
+Default-feature library/binaries/examples and the selected production integration
+targets passed **364 / 18 ignored**, with the same 21 unchanged offline-target
+exclusions and seven automix-library exclusions documented below. No normal
+source/control/transport target was omitted. Both configurations passed all-target
+Clippy with warnings denied; formatting and diff whitespace checks passed.
+Unchanged accelerated ASRC, other historical/audition/exhaustive, corpus-generation
+and unrelated actual-owner opt-ins were intentionally skipped. No two-node/T3 or
+physical checks ran.
+
+The first normal parallel library run exposed two pre-existing generation
+assertions. Added the existing numeric source receipt to both failure messages.
+A discriminating rerun reproduced the hold case with **code -10** at frame 2688:
+the fixture requested Hold(2) while Hold(1) remained active. The hold contract
+requires Release before a new Hold; prior success depended on incidental deadman
+expiry. The fixture now explicitly releases generation 1, then admits generation
+2 with a fresh revision, asserting successful receipts for both and retaining old
+media-generation rejection. Production authority/deadlines are unchanged. The
+corrected parallel hardware-host library passed **223 / 32 ignored**. The subsequent
+serial run exposed a separate fixture timestamp error: structural preparation
+returned final reason **clock** because the fixture reused its requested startup
+time after startup had charged preparation time. Both that test and the monitor
+selection fixture now read the prepared source's control time; the monitor test
+starts explicitly at time 7 so a literal time-zero request is deterministically
+invalid. Source receipt diagnostics remain in both assertions. The three focused
+clock/selection/hold cases passed; production clocks, leases and deadlines remain
+unchanged. Final normal validation serializes independent test cases while retaining
+their explicit worker/concurrency assertions.
+
+All commands used the shared nonblocking `/home/shome/p/.gigpies-build.lock`,
+Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1` and canonical
+targets. Reproduce the focused seven with the existing verified manifest/PA/FX
+environment and:
+`cargo +1.97.1 test --locked -j1 --features hardware-host --lib -- media_native_window actual_owner_reserved_window actual_owner_gap_and_output_pressure actual_runner_source_ actual_four_aux_tls_brain_controls_and_samples actual_tls_fx_pending_close_and_replacement_after_source_recovery --include-ignored --test-threads=1 --nocapture`.
+The final normal hardware command was
+`cargo +1.97.1 test --locked -j1 --features hardware-host --all-targets -- --test-threads=1`.
+
+Closeout: after Git, shared-lock, running-build, process executable/open-file/map,
+symlink/runtime-alias and hardlink checks, removed **134 task-built test
+executables (12,218,617,856 allocated bytes)** and temporary validation logs
+(**311,296 bytes**), reclaiming **11.38 GiB** in total. No candidate was retained
+because of an active reference, and the temporary lifecycle directories are gone.
+The canonical target retains **8,699,158,528 bytes (8.10 GiB)** of shared build/debug
+artifacts and required runtime binaries; free space is **45,471,997,952 bytes**.
+No rebuild followed cleanup. Retained deliverables are the admission fix,
+regressions/lifecycle harness, corrected fixtures and this existing evidence/card;
+original source, uncommitted work, user data and historical witnesses are preserved.
+Everything remains uncommitted on canonical rpi5 `main`. No peers, extra checkouts,
+sibling writes, hardware activation, commits or publication were used.
+
+Current continuation findings (November 5):
+
+- The combined authenticated test uses actual PA/FX/REC and production Brain
+  media/device service, selected nonzero PFL playback, held talkback, independent
+  raw analysis, saturated source return lanes, exact talkback receipt reconciliation,
+  source replacement, new device epoch/map and authenticated output rearm. It keeps
+  the original FX-only recovery case separately selectable. Raw PCM24 tails remain
+  exact and recording reports incomplete with zero dropped frames on source loss.
+- Fixture corrections preserve authority: pending then final Brain replies;
+  separate scoped monitor/talkback writers; actual device configuration generation;
+  independent playback evidence drainage; 1 ms source cadence for the 48 kHz fake
+  Brain clock. No production deadline or queue was enlarged.
+- Brain negotiation previously reserved F+480 before allocating ASRC storage.
+  Allocation now precedes the unchanged reservation. A deterministic 24-quantum
+  preparation delay protects that ordering; authority and exact-frame checks remain.
+- Monitor receive now requires existing four-block service-lane capacity. The old
+  deterministic burst schedule drops four blocks/jumps to frame 384; the new one
+  delivers twelve contiguous blocks. This is separate from the closed native
+  four-aux output-credit defect.
+- The pressure deficit had a causal CPU witness: controller consumed about 0.885 s
+  CPU in a 1.2 s test, source egress refused four offers, native input/output drops
+  remained zero. Source command exchange busy-yielded while awaiting future frames.
+  Completion publication now unparks its controller after publishing both return
+  lanes, outside guarded audio work. The controller parks; a 100 ms wake only checks
+  worker failure, never changes a media deadline. A regression waits fifty source
+  quanta while requiring caller CPU below 20 ms. The same-pressure combined fixture
+  passed five bounded trials after this change; the focused 26-case batch also passed.
+- Resource witness from that batch's eight-input combined pressure interval: 137,146 us wall,
+  480,935 us process CPU, controller 3,191,406 ns CPU, 16 threads, RSS 48,857,088 → 48,922,624 B,
+  +3 minor/+1 major faults. Known source media layouts 1,450,456 B, plus 512 B global
+  executor queue payload; duplex/native/assembly have separate reports. This is a
+  bounded local lifecycle witness, not zero-fault or sustained four-core headroom
+  qualification. The major fault and scheduling waits remain visible for T3.
+
+Final local acceptance (November 5):
+
+- Complete normal hardware-host all-target suite: **684 passed / 80 ignored**;
+  library component **227 / 34 ignored**.
+- Default-feature library/binaries, examples and selected production integration
+  targets: **365 passed / 18 ignored**, using the unchanged 21 offline-target and
+  seven automix-library exclusions documented below. The selected targets supplied
+  363 passes and the examples supplied two; no affected production target was omitted.
+- Focused actual-owner/source/queue/media batches: **26 + 6 passed**. The final six
+  include two actual source lifecycles, native credit checks, four-aux TLS (694
+  blocks / 68,352 Main comparisons, explicit zero drop/gap assertions), and combined
+  TLS with stale device refusal and continued selected playback after capture closure.
+- All **five accelerated release bridge opt-ins passed** in 193.27 s. Both all-target
+  Clippy configurations passed with warnings denied; formatting and whitespace passed.
+  Unchanged historical, exhaustive, audition, benchmark and unrelated actual-owner
+  opt-ins were intentionally skipped. No T3, two-node or physical execution occurred.
+
+Final combined resource interval additionally recorded 151,503 us wall / 508,872 us CPU,
+16 threads, RSS 50,937,856 → 51,003,392 B, +4 minor/+0 major faults and controller 3,305,882 ns
+CPU. The preceding interval's major fault remains recorded above; neither bounded
+sample is a sustained headroom claim. Runtime reports preserve per-thread CPU,
+faults and scheduling waits and explicit known-layout exclusions for later T3 work.
+
+Reproduce with Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1`,
+canonical targets and the shared nonblocking `/home/shome/p/.gigpies-build.lock`:
+`cargo +1.97.1 test --locked -j1 --features hardware-host --all-targets -- --test-threads=1`;
+the documented default selection plus `--examples`;
+`cargo +1.97.1 test --release --locked -j1 --features hardware-host --test brain_bridge -- --ignored --test-threads=1`;
+and `cargo +1.97.1 clippy --locked -j1 --all-targets [--features hardware-host] -- -D warnings`
+for each configuration. Focused hardware library filters are `source_executor::tests`,
+`remote::fx_execution::tests`, `remote::source_egress::tests`, `independent_analysis_admission`,
+`brain_preparation_does_not`, `actual_tls_combined`, `actual_tls_fx_pending`,
+`brain_runtime::media::tests`, `actual_four_aux_tls_brain_controls_and_samples`,
+`actual_runner_source_`, `media_native_window` and `actual_owner_reserved_window`,
+with `--include-ignored --test-threads=1` and the existing verified manifest/PA/FX environment.
+
+**Exact next action: no local T0–T2 implementation or acceptance work remains.**
+T3's two-node clean 5→30→60 gates, deadline margins, distributed headroom and physical
+clock/socket/acoustic/sustained qualification require their separate authorization.
+Do not restart extraction or treat those external qualifications as local blockers.
+
+Local criterion audit (accepted):
+
+| Gate | Concrete evidence | Disposition |
 |---|---|---|
-| 1. Inventory | Read link/carrier, negotiated speed/duplex, MTU, addresses/routes, NIC errors, CPU/thermal/throttling state, disks and running owners on both Pis. Identify actual audio cards without opening PCM. | Exact source/library hashes, node roles and explicit socket/channel map; enough storage; no competing build or timing workload. Stop on unknown ownership or route. |
-| 2. Cable baseline | After load authorization: 200 idle pings, then separate 10 s TCP forward/reverse runs and 10 s UDP runs at 25/50/100 Mbit/s using bounded one-shot servers. | Loss, RTT median/p95/p99/max, throughput/retransmissions and NIC-counter deltas. No unexplained idle loss or link errors; UDP loss must be resolved before claiming a healthy audio baseline. RTT is not one-way delay. No MTU/sysctl/governor changes. |
-| 3. Current software graph | Build before reserving timing resources. Use trusted PA/FX/REC libraries, fresh private TLS identity/permissions, synthetic 48 kHz source, 16 inputs and a validated configurable output topology. Run 5 s smoke, then independent 30 s and 60 s trials. | Production QUIC media and control, exact raw-analysis identity, source-frame continuity, four stereo aux sends/returns, unchanged independent monitors and actual post-PA samples. Report queue/loss/late/rejection counters and render/control costs. No unexplained missing media, recorder gaps or source faults in clean trials. |
-| 4. Operator and fault cases | Separate runs, each at most 60 s: actual Desk v5 gate edits, FX edits/tails/panic, REC Start/Stop; then owned Brain-FX loss/restart, Desk disconnect/reconnect and source-epoch replacement. | Applied/readback/settled distinguished; raw REC and local dry path survive remote loss; wet fades and fresh prefill follow source-frame bounds. No replayed mutation, old-epoch audio or automatic rearm. Keep expected loss counters separate from clean-run failures. |
-| 5. Brain local clock | First repeat fake-duplex scenarios over the cable, at most 60 s per process, including monitor selection, talkback release and permission/owner loss. | Both bounded ASRC crossings, source/local epochs, occupancy/ratio bounds, under/overflow, fail-closed destinations and source-clock FX/raw REC isolation. Fake pacing does not qualify oscillator drift or physical latency. |
-| 6. Physical mapping and latency | Only after separate PCM authorization and an observed wiring map: 5 s muted/conservative smoke, then 30 s channel-by-channel electrical loopback. Stagebox soundcard is the reference; Brain local duplex remains independent. | Verify both L/R returns first, then all configured sockets. For UMC1820 + ADA8200, qualify 16 analog inputs/18 outputs and actual ADAT lock; with other hardware, report only that subset. Measure capture-to-output and Brain-monitor/talkback paths independently, with uncertainty and intentional FX delay separated. |
-| 7. Sustained graph | After preceding passes: 60 s, then 600 s physical runs; extend to a separately reserved 30-minute run only if useful for measured skew/thermal behavior. Include admitted PA, gate/EQ/compression, four FX, raw REC and both consoles. | Zero unexplained xruns, source gaps, recorder drops or queue failures; continuous bounded counters, render p50/p95/p99/max and deadline margin, CPU/RSS/temperature and storage throughput. Sparse snapshots and means cannot establish worst-case deadlines. |
-| 8. Recovery | Separately authorize an owned process kill, then physical cable interruption/reconnect; never start with a power cut. | Local Stagebox audio/recording independence, bounded wet/talkback closure, explicit fresh grants/rearm, incomplete-take truthfulness and no stale media after reconnection. Storage power-loss durability remains a separate REC acceptance task. |
+| T0 wire/identity/length/float/deadline/sequence/exhaustion | Independent literal GPA1/GBA1 vectors in `tests/audio_transport_v1.rs`; normal remote replay/permission tests | Complete; wire unchanged |
+| T0 dimensions/grouping/resources | 16/32/48 layouts at 1232/1152/1008; checked proposed budgets and actual jitter/assembly/source/native/duplex layouts | Complete; opaque/native allocations distinguished from measured RSS |
+| T0 design-to-code map | Current direct GBA1 ingress vs explicitly proposed 32-slot/four-ms reorder; actual analysis pool 4 vs proposed 32 | Complete under T0's explicit-proposal criterion; proposals are not implementation guarantees |
+| T1 source/native isolation | Actual PA/FX/REC, source progress through controller/full-return pressure, exact raw samples and allocation/destruction guards | Complete local software acceptance |
+| T1 prepared/closure/retirement | Global 16/128/16 lanes, one outstanding controller packet, reserved returns, independent closure fences, source reconstruction | Complete; bounded ownership and refusal paths validated |
+| T1 legacy shapes | Actual 48/96-frame 1/2/3/16/48/256-channel comparison, configured 96, closure and common output-credit media path | Complete |
+| T2 duplex/bridges | Normal numeric/lifecycle guards; five accelerated cases; combined TLS nonzero playback, receipts, independent closure, stale device refusal and rearm | Complete local software acceptance |
+| T2 analysis | Independent read-only connection/runtime/encoder, exact PCM, duplicate/control refusal and encoder-stall isolation | Complete; shared provider QUIC runtime explicitly retained |
+| T2 resources/admission | Existing 16-session and sole-owner limits, checked layouts, per-thread/process RSS/CPU/fault/scheduling reports | Complete local accounting; sustained distributed headroom remains T3 |
+| T3 and physical | Clean two-node timing/margins, distributed headroom, physical mapping/clock/acoustic/sustained qualification | Outside authorization; unexecuted |
 
-Synthetic provider/fake duplex configurations are capped at 60 seconds today.
-Do not label repeated runs as one continuous soak or raise the cap for convenience.
-Long physical runs require explicit activation and an external hard deadline;
-cancel only task-owned processes. Prepare credentials and manifests privately,
-never publish them. Check the executable's actual schema before writing configs;
-do not reuse old stereo/UDP fixture dimensions as product limits.
 
-For each run record topology, block size, negotiated return budget, configured
-device buffers, effect algorithms/parameters, file/source identities and a single
-compact result. Set thresholds before execution; retain failures without silently
-increasing deadlines. Stop escalation after an unexplained xrun, loss, overflow,
-clock discontinuity, clipping, thermal throttle or incomplete measurement. Diagnose
-the failing layer before repeating. Preserve only required failed-case evidence and
-final requested captures; remove disposable trial outputs when idle.
+Task closeout: after live Git, shared nonblocking lock, active-build, process
+executable/open-file/mapping (including privileged read-only inspection), symlink
+and hardlink checks, removed **136 task-built test executables**
+(**12,264,513,536 allocated bytes**) and **294,912 bytes** of temporary logs:
+**12,264,808,448 bytes / 11.42 GiB reclaimed**. No active references or aliases
+required retaining a test executable; temporary lifecycle directories are gone.
+The canonical target retains **8,696,565,760 bytes / 8.10 GiB** of shared build/debug
+artifacts and required runtime binaries; free space is **45,466,451,968 bytes**.
+No rebuild followed cleanup. Source, existing uncommitted work, user data, required
+runtime artifacts and the concise findings in this card are retained. Work remains
+uncommitted on canonical rpi5 `main`; no peers, extra checkouts, sibling writes,
+physical activation, two-node traffic, commits or publication were used.
+
+
+Stereo extraction validation (November 5): normal hardware-host all-targets passed
+**666 / 75 ignored**; default-feature library/binaries and the remaining production
+integration targets passed **362 / 18 ignored**. Both skipped the seven unchanged
+automix library cases. The default run omitted the unchanged offline targets
+already exercised by hardware-host: ambience, automix, balance, bass, bleed,
+bleed_reference, delivery, drums, dynamic_eq, effects, ensemble, expert, inventory,
+loudness_hierarchy, matching, preservation, preset_dsp, private_automix, reference,
+tone and unity. No normal source/control/transport target was omitted from that
+second configuration. Focused validation passed 34 owner/clock cases; the first
+combined lifecycle fixture hit the valid local-four-aux exclusion. Splitting it
+into the two admitted configurations passed both lifecycle cases, preserving that
+production exclusion. GP05, PA-v2 and the two current-artifact GP21 delay-wrapper
+checks passed **15**. The old-library and generic-without-delay GP21 fixtures were
+not selected against the current artifact.
+
+The focused command adds `remote::fx_execution::tests` and
+`remote::aux_execution::tests` to the existing clock/actual-runner/module selectors,
+with the verified artifact environment and `--include-ignored --test-threads=1`.
+The four new legacy-owner checks cover retained settled status through closure and
+observation saturation, idle cancellation/expiry/closure, absolute run expiry and
+retirement pressure. Every native quantum/idle test execution uses the host
+allocation/destruction guard; it does not intercept allocations inside the dylib.
+Normal loopback TLS/authentication regressions ran. Historical/audition/exhaustive,
+corpus-generation, accelerated release bridge and actual TLS witness/falsifier
+opt-ins were intentionally not rerun. The earlier hold-authority timing failure was not diagnosed in that checkpoint.
+The later native-window correction closes the local TLS queue-drop mechanism;
+these earlier passing reruns alone did not establish combined timing acceptance.
+
+Stereo extraction closeout: both configurations passed all-target Clippy with
+warnings denied, formatting and whitespace checks. All builds used Rust 1.97.1,
+`--locked -j1`, `CARGO_INCREMENTAL=0`, `RUST_MIN_STACK` unset and the shared
+nonblocking build lock. All nine module bindings and six PA receipt entries were
+reverified, and both TLS witnesses retain their recorded lengths and SHA-256.
+After shared-lock/process/open-file/mapping/runtime-alias/inode checks, removal of
+**128 task-created test executables** and **five temporary logs/inventory files**
+reclaimed **11,961,311,232 allocated bytes (11.14 GiB)**. Canonical target retains
+**8,813,375,488 bytes (8.21 GiB)** of shared runtime/build artifacts; free space is
+**45,373,280,256 bytes (42.26 GiB)**. No task runner scratch remains. Retained
+deliverables are the source/tests and this checklist, blueprint and transport
+reference; no one-use runner was added. Live heads remain GigPies `main/d4adff4`
+and SHR PA `main/5f487d5`, with **53 modified tracked files / 14 untracked entries**
+in GigPies and the same eight modified SHR PA files. Nothing is staged. No
+physical activation, two-node traffic, host/network/service changes, sibling
+writes, commits or publication. T0–T2 remain open; T3 remains review-only.
+
+Previous continuation validation note (November 5): the first complete-build
+hardware-host attempt reached the library tests and exposed a malformed new
+synchronous revision fixture; the corrected output-route request passes. A later
+normal library run had one intermittent failure in
+`local_audio::clocked_control_tests::clocked_authority_release_and_writer_revocation_close_copied_hold`:
+the second command observed revision **1**, expected **2** (`src/local_audio.rs`,
+assertion after `clocked_control`). The immediate isolated rerun passed. No numeric
+refusal receipt was captured at that assertion, so the cause remains unresolved;
+passing reruns do not establish timing acceptance. Both prior TLS witnesses are historical evidence for the later native-window
+correction. An overbroad remote opt-in selector also reached
+three unrelated environment-gated cases (EQ manifest, prebuilt Desk and fixture
+output destination) and failed setup; no corpus was generated. The intended
+remote selection passed 96 checks, including the new actual-aux stall and
+recovery/rearm cases. The normal hardware-host all-target rerun passed **665 / 70 ignored**, with
+seven unchanged automix library cases skipped after passing earlier. After the
+final negotiation correction, hardware-host library checks passed **209 / 24
+ignored / seven unchanged automix skipped**; focused clock/owner checks passed
+**26**, and actual GP05/PA-v2 checks passed **13**. Negotiation now reserves against
+the next mixer source frame rather than the media owner's previous rendered
+frame; its first emitted packet must equal the reserved frame exactly. This final
+correction received source/actual-owner validation after the broad run. Default-feature
+affected source/control validation passed **221 / 11 ignored**, skipping the same
+seven unchanged automix library cases. Both configurations passed all-target
+Clippy with warnings denied, formatting and whitespace checks. Commands used
+Rust 1.97.1, `--locked -j1`, `CARGO_INCREMENTAL=0`, `RUST_MIN_STACK` unset and the
+shared nonblocking build lock. Reproduce focused coverage with
+`cargo +1.97.1 test --locked -j1 --features hardware-host --lib -- clock
+actual_runner_source actual_module_detached_pa_packet_and_retirement
+--include-ignored --test-threads=1`, plus the GP05/PA-v2 selectors and current
+artifact environment. All nine artifact bindings and six PA receipt entries were
+reverified before the final actual-owner group and at closeout. Historical,
+audition, exhaustive, corpus-generation, accelerated release bridge and actual
+TLS witness/falsifier opt-ins were not intentionally selected; the accidental
+fixture selector failed before generation as noted above. Normal loopback
+TLS/authentication tests ran. No physical activation, two-node traffic, host/
+network/service changes, sibling writes, staging, commits or publication.
+
+Previous continuation closeout: shared-lock, process, open-file/mapping, runtime
+alias and inode checks preceded removal of **98 task-created test executables**,
+five temporary logs/inventory files and one failed-setup temporary fixture.
+Reclaimed **10,110,099,456 allocated bytes (9.42 GiB)**. Canonical target retains
+**8,811,261,952 bytes (8.21 GiB)** of shared runtime/debug/build artifacts; free
+space is **45,385,015,296 bytes (42.27 GiB)**. Source/tests and the updated owning
+checklist/blueprint/reference remain; no task scratch directories or logs remain.
+Both historical TLS witnesses retain their original lengths and SHA-256 values.
+Live heads remain GigPies `main/d4adff4` and SHR PA `main/5f487d5`, with **52 modified
+tracked files and 13 untracked entries** in GigPies, the same eight modified SHR PA
+files, and nothing staged. Whole-source acceptance remains open.
+
+Runner cutover validation (November 5; Rust 1.97.1, locked dependencies, one build
+job, incremental off and shared nonblocking lock): the complete normal hardware-host
+all-target run passed **665 / 69 ignored**. Final hardware-host library checks
+passed **202 / 23 ignored** with seven unchanged automix cases skipped; selected
+actual-owner checks passed **17** (runner lifecycle, clock PA/FX/REC, repeated PA
+replacement/context, detached module, GP05 and PA v2). These final checks cover
+queued monitor silence/closure and source-owned physical-start wiring added after
+the broad compilation. Default-feature affected paths passed **277 / 14 ignored**,
+again skipping those seven unchanged automix cases. The earlier focused clock
+selection passed **18**, including independent rendered hold closure, expired
+preparation and device intent. Both original TLS witnesses and all nine module/six
+PA receipt bindings remain unchanged. Actual-owner TLS witness/falsifier opt-ins
+were not rerun; normal loopback authentication regressions ran with the normal suite. No physical activation,
+two-node traffic, host/service/network changes, sibling writes, staging, commits
+or publication. Historical/audition/exhaustive/corpus and accelerated release
+bridge opt-ins were intentionally skipped. Both configurations passed all-target
+Clippy with warnings denied; formatting and whitespace checks passed.
+Reproduce the new actual runner case with the artifact environment recorded below:
+`cargo +1.97.1 test --locked -j1 --features hardware-host --lib actual_runner_source
+-- --include-ignored --test-threads=1`, with `RUST_MIN_STACK` unset and the same lock.
+
+After shared-lock, process, open-file/mapping and inode checks, task cleanup removed
+**104 test executables and four temporary logs**, reclaiming **10,388,705,280
+allocated bytes (9.68 GiB)**. No task fixture directories remain. Retained
+source/tests and this checklist/blueprint are the deliverables; shared runtime/debug
+artifacts, historical receipts and both TLS witnesses are preserved. The canonical
+target retains **8,808,665,088 bytes (8.20 GiB)** for shared libraries/runtime builds;
+free space is about **42.28 GiB**. No rebuild was performed to verify cleanup.
+
+Earlier autonomous owner continuation (November 5; historical baseline): the
+following validation predates the runner cutover and is not whole-source acceptance.
+The complete normal hardware-host all-target invocation passed **657 tests / 67
+ignored**. The bounded clock cases include ordinary preparation continuing past
+its expired admission, local lease/session cancellation before delayed commit,
+independent stop, and actual PA/local-aux/raw-REC under both saturated return
+lanes. This is owner-API evidence; the runner still uses synchronous quanta.
+Default-feature affected-path selection passed **336 / 16 ignored**, excluding
+unchanged automix already covered by the broad run. Final focused/owner checks
+passed **18** (clock API 4, GP05 10, PA v2 3, detached module 1), with
+`RUST_MIN_STACK` unset and all nine artifact bindings/six PA receipt entries
+reverified. The later clock-frame overflow guard passed **4 / 1 ignored**; its
+actual-library case was already covered above. Preparation time is charged from
+entry, before buffer allocation, so it cannot extend copied local deadlines.
+Both configurations' all-target Clippy, formatting and whitespace checks passed.
+Reproduce the new actual case using the current manifest/config bindings and
+`cargo +1.97.1 test --locked -j1 --features hardware-host --lib source_clock --
+--include-ignored --test-threads=1`, under the shared nonblocking build lock with
+`CARGO_INCREMENTAL=0`. Unchanged historical/audition/exhaustive/corpus and release
+bridge opt-ins were skipped. TLS was not rerun at that checkpoint; both historical witnesses remain
+byte-for-byte unchanged. No sibling source/ABI/artifacts, physical activation,
+two-node traffic, host/service/network settings, staging, commits or publication.
+
+After process, open-file/mapping, runtime-alias/inode and shared-lock checks,
+cleanup removed **124 task-created test executables** and **nine temporary
+logs/inventory files**, reclaiming **11,603,509,248 allocated bytes (10.81 GiB)**.
+No task fixture directories remain. Retained deliverables are source/tests and
+this checklist/blueprint; shared debug/runtime artifacts, receipts and both TLS
+witnesses remain. Target retains **8,681,078,784 bytes (8.08 GiB)**, justified by
+current shared debug libraries and runtime builds; free space is about **42.43
+GiB**. The final deadline-anchor check used Clippy metadata only and did not
+recreate cleaned test executables.
+
+
+
+Dedicated source-executor continuation validation (November 5; Rust 1.97.1,
+`--locked -j1`, incremental off, canonical targets and nonblocking shared lock):
+RenderGraph and HostSourceMedia now share the production `gp-source` worker, with
+16 prepared-command slots, 128 numeric completion slots and 16 retirement slots;
+return capacity is checked before mutation. Owned commands cover routing reset,
+media negotiation/replacement and terminal retirement. Source-issued admission
+rejects stale/expired preparation; the future-frame regression renders unchanged
+frames before application without another controller pump. Production still uses
+current-frame synchronous rendezvous. Structural acknowledgments precede graph
+reattachment/next PA exchange, and refused module exchanges restore preparation
+and retirement reservations. Recovery reinstalls the graph on the same worker.
+Graph/quantum storage is boxed: actual TLS exposed construction-stack overflow,
+fixed without increasing the default test-thread stack. Final owner validation
+ran with `RUST_MIN_STACK` unset.
+
+Normal hardware-host coverage across the broad run and corrected reruns:
+**644 passed/66 ignored** (not one uninterrupted full-suite invocation). Final
+compiled affected-path selection: **454 passed/62 ignored**; default-feature
+selection: **349 passed/18 ignored**. Seven unchanged automix library cases and
+unchanged integration algorithms were covered by the broad run rather than
+repeated in affected selections. Reverified all nine artifact bindings and six
+PA receipt entries before actual-owner tests: **23 passed** (library 10, GP05 10,
+PA v2 3), including shared-worker recovery and actual detached PA/FX/REC paths.
+Final isolated TLS checked 690 blocks and 67,680 Main samples. Before that pass,
+a TLS source-gap refusal recurred with input drops 1/output drops 5 while a
+read-only GDB layout inspection overlapped; that run did not isolate scheduling.
+The native-window regression in this card subsequently reproduces and fixes the local
+queue-drop mechanism. Preserve
+`user/node-lab/gp-h1-source-executor-tls-witness.log` (2,133 bytes, SHA256
+`0414aa8f150cc6797fbda800073fd1cd18035739fedbfdfbac0deb13af392398`), alongside the
+unchanged original 2,040-byte TLS witness. The isolated rerun alone did not diagnose that failure or establish whole-source acceptance. Historical/audition/exhaustive,
+old-artifact corpus and unchanged accelerated release bridge opt-ins were
+intentionally skipped. No physical activation, two-node traffic/load or T3 work.
+Both configurations passed all-target Clippy with warnings denied; formatting and
+whitespace checks passed. The final lint-only closure simplification did not
+change tested behavior.
+
+After nonblocking build-lock, idle-process, open-file/map and runtime-alias checks,
+removed **127 task-created test executables**, **10 temporary logs** and **seven
+known disposable fixture directories**, reclaiming **11,755,495,424 allocated
+bytes (10.95 GiB)**. Retained production source, runtime binaries, shared debug/
+build artifacts, native bindings/receipts and both small TLS witnesses. Canonical
+target remains **8,799,387,648 bytes (8.20 GiB)**; free space approximately
+**42.31 GiB**. No rebuilding after cleanup. Final Git state: GigPies `d4adff4`,
+51 tracked modifications/10 untracked entries; SHR PA `5f487d5`, eight preexisting
+modified files. Nothing staged, committed or published; no sibling writes.
+
+Persistent-graph/ingress continuation validation (November 4; Rust 1.97.1,
+`--locked -j1`, incremental off, canonical targets and nonblocking shared lock):
+complete normal hardware-host `--all-targets` **638 passed/66 ignored**. Subsequent
+actual-owner checks exposed terminal recorder retirement without a final capture
+block and two remote aux readbacks still borrowing the detached mixer. A bounded
+terminal module exchange and copied applied FX-send observations fixed those paths.
+Final affected hardware source/control/transport targets (library, binaries and
+all integrations except unchanged offline mixing/analysis algorithms already run
+in the complete suite): **453 passed/62 ignored**. Final default library and
+source/control/transport targets: **202 passed/11 ignored**. Both configurations
+passed all-target Clippy with warnings denied; formatting and whitespace passed.
+The GP06 disconnect fixture now polls within one second at fixed provider time,
+so it checks socket EOF without assuming one scheduler tick or substituting idle
+expiry. Ingress fixtures explicitly service the source boundary before asserting
+accepted counts/readiness and retain the existing wet fade expectation.
+
+Reverified all nine artifact bindings and six PA receipt entries before the final
+actual-owner group: **22 passed** (GP05 10, PA v2 3, detached module 3, combined
+owned kernel 1, successive-EQ Unix/remote campaign 1, recording/Brain-loss recovery
+1, persistent local aux 1, four-aux roundtrip/loss 1, exact TLS 1). New normal tests
+cover detached patch/safety/operator/FX observations, saturated media ingress and
+receipts, expiry, replacement generation, same-bridge renegotiation and final
+queued-ingress retirement. These results do not establish dedicated source
+scheduling or whole-source independence. All five accelerated release
+`brain_bridge` opt-ins passed in **193.28 s**. Unrelated historical, audition,
+exhaustive and old-artifact corpus opt-ins were intentionally skipped. No physical,
+two-node or T3 work ran; sibling sources and owner artifacts were unchanged.
+
+After idle-process/open-file/map, runtime-alias, durable-reference and nonblocking
+build-lock checks, removed **94 task-created test executables** and
+**14 temporary logs/helpers/inventory files**, reclaiming
+**9,435,815,936 allocated bytes (8.79 GiB)**. Retained canonical runtime
+binaries and shared debug/build artifacts; target remains **8,778,784,768 bytes
+(8.18 GiB)** and free space approximately **42.34 GiB**. Historical receipts and
+the historical **2,040-byte TLS witness** remain unchanged. Its recorded harness
+path is invocation history; the newly rebuilt harness at that reused path was
+removed, without modifying the witness. GigPies remains `main/d4adff4`,
+48 modified tracked files and nine untracked entries; SHR PA remains `main/5f487d5`
+with its existing eight modified files. Nothing staged, committed or published.
+
+Owning-graph/command continuation validation (November 4; Rust 1.97.1,
+`--locked -j1`, incremental off, canonical targets and nonblocking shared lock):
+normal hardware-host `--all-targets` **631 passed/66 ignored**. Actual successive-EQ
+acceptance then exposed reuse of an occupied returned retirement slot; controller
+retirement/reset and a second-commit/third-preparation regression fixed it. Final
+hardware source/control/transport targets (library, binaries and all integration
+targets except the already-passed unchanged offline mixing/analysis algorithms)
+**450 passed/62 ignored**; default `--lib` plus `gp05`, `master_eq`, `brain_control`,
+`gp07_local`, `sends_local`, `structural_control`, `structural_producer`,
+`modular_engine`, `metering` and `spectrum`: **139 passed/6 ignored**. Final library
+validation after lint-only cleanup: **174 passed/20 ignored**. Both configurations
+passed all-target Clippy with warnings denied; formatting and whitespace passed.
+New guarded regressions cover detached prepared application, revocation before
+versus after commit, external receipt ordering/replay, owned capture/playback with
+32 controller-stalled quanta and controller-drop closure, and host media saturation.
+The new mapping test required valid slot permutations and separate private authority
+directories; the new fader race test required a value distinct from the initial
+−6 dB. Those fixture corrections did not weaken production checks.
+
+Reverified all nine PA/FX/REC library/header/owner-manifest bindings and the six
+PA receipt entries before the actual-owner group: **22 passed** (GP05 10, PA v2 3,
+detached module 3, combined owned kernel 1, actual master-EQ Unix/remote campaign 1,
+recording/Brain-loss recovery 1, local aux 1, four-aux roundtrip/loss 1, exact TLS 1).
+The local-aux test is under `local_audio::fx_aux::actual_tests`; an initial filter
+selected zero cases and was corrected with the exact full name. Actual inputs remain
+`user/node-lab/gp-h1-modules.json` and the existing owner fixtures; no sibling source,
+ABI, library or historical receipt changed. The TLS case passed **708 blocks/69,504
+Main sample comparisons**; the local queue-drop mechanism is now closed in this card and
+its 2,040-byte historical witness is unchanged. All five accelerated release `brain_bridge`
+opt-ins passed in **143.56 s**. Unrelated historical, audition, exhaustive and
+old-artifact corpus opt-ins were skipped; no physical, two-node or T3 work ran.
+This validates the wired ownership/command/lifecycle changes, not a persistent
+production source executor or whole-source controller-stall acceptance.
+
+Continuation cleanup, after idle-process/open-file/map, inode, runtime-alias,
+durable-reference and nonblocking build-lock checks: removed 91 task-created test
+executables and eight temporary logs/inventory files, reclaiming **8,980,271,104
+allocated bytes (8.36 GiB)**. Normal runtime binaries, shared debug/build artifacts,
+historical receipts and the historical TLS witness remain. Target retains
+**8,655,732,736 bytes (8.06 GiB)**; free space is **42.46 GiB**. Live GigPies remains
+`main/d4adff4`, 46 modified tracked files and nine untracked entries; SHR PA remains
+`main/5f487d5` with its existing eight modified files. Nothing is staged.
+
+Numeric-render/observation/egress continuation validation (Rust 1.97.1,
+`--locked -j1`, incremental off, canonical targets/shared nonblocking lock):
+hardware-host all-target check passed; final normal hardware-host `--all-targets`
+**624 passed/65 ignored**. Default `--lib` plus `gp05`, `master_eq`,
+`brain_control`, `gp07_local`, `sends_local`, `structural_control`, `metering` and
+`spectrum`: **117 passed/5 ignored**. Unchanged automix integrations ran only in
+the hardware-host suite. Actual-owner group **23 passed**: GP05 (10),
+`module_graph_pa_v2` (3), module detached/numeric PA (2), combined numeric kernel
+(1), local aux (1), scoped `remote::aux_execution::tests::actual_owner_` (5), and
+the exact four-aux TLS test (1), with required owner bindings and
+`--include-ignored`. The final TLS run checked **727 blocks/71,424 Main samples**;
+the local queue-drop mechanism is now closed in this card and its 2,040-byte witness
+is unchanged. Library/header/owner-manifest hashes and the private PA source
+receipt matched. No sibling code/ABI or owner artifacts changed. ASRC delivery is
+unchanged: accelerated bridge and SHR PA suites were not repeated. Historical,
+audition, exhaustive, physical and two-node/T3 tests remained skipped.
+Review restored output clearing on preparation refusal, preserved the existing
+end-frame talkback authorization semantics and replaced the local-aux numeric
+failure-path reset with the existing bounded reset. The final suites include
+those fixes. Formatting/whitespace passed; no fixture changes. This remains a
+synchronous production integration checkpoint, **not completion of the requested
+whole-source owner/global admission/lifecycle/caller transfer**. T0–T2 stay open.
+The combined kernel check is repeatable with hardware-host `--lib
+actual_combined_render_pa_fx_raw_rec_without_controller_pump -- --include-ignored`
+and the verified GP05/PA bindings above. After all workers/builds/tests were idle,
+checked processes, the shared lock, open files, tracked paths and executable
+provenance. Removed 88 task-built test executables, three logs and one inventory:
+**8,865,681,408 allocated bytes reclaimed**. Preserved source/tests/docs, historical
+receipts/TLS witness and shared runtime/build artifacts. Canonical target retains
+**8,556,134,400 allocated bytes**; 43 GiB is free. No rebuild followed cleanup.
+Live state: GigPies main/d4adff4, **45 modified tracked/9 untracked entries**;
+SHR PA main/5f487d5 retains its original eight modifications. Nothing staged,
+committed or published.
+
+Detached-PA/session-closure continuation validation (Rust 1.97.1, locked,
+one job, incremental off, canonical targets and the nonblocking shared lock):
+hardware-host all-target check passed; normal hardware-host all-target tests
+**621 passed/63 ignored**. Default-feature `--lib --test gp05 --test master_eq`:
+**84 passed/2 ignored**; unchanged shared automix integrations passed in the
+hardware-host run and were not repeated. Formatting/whitespace passed; no fixtures
+changed. Native-library group **17 passed**: `--lib
+actual_module_detached_pa_packet_and_retirement`, `--lib
+remote::aux_execution::tests::actual_owner_`, `--test gp05` (all with
+`--include-ignored`), plus the exact four-aux TLS test. The module regression checks
+actual PA/local-FX samples and guarded capture/retirement; GP05 covers raw REC
+lifecycle/faults separately. These do **not** establish whole-source acceptance.
+PA/FX/REC library/header/owner-manifest bindings and the private PA source receipt
+matched; no sibling source or owner binaries changed. ASRC execution/delivery is
+unchanged, so accelerated ASRC and SHR PA normal suites were not rerun. Historical,
+audition, exhaustive, physical and two-node/T3 tests remained skipped.
+The exact local four-aux TLS test passed with **72,480 Main sample comparisons**.
+The local queue-drop/source-gap mechanism is now closed in this card; its 2,040-byte historical witness is
+unchanged. Production still requires controller prepare/finish and synchronous
+external commits; no whole-source rendering through controller stalls is claimed.
+After all validation/agents were idle, checked the shared lock, processes, open
+files, tracked paths and executable provenance. Removed 82 task-built test
+executables plus three logs and one temporary inventory: **8,272,543,744 allocated
+bytes reclaimed**. Preserved shared runtime/build artifacts, source/tests/docs and
+historical evidence; canonical target retains **8,555,651,072 allocated bytes**,
+with 43 GiB free. No rebuild after cleanup. Live state: GigPies main/d4adff4,
+44 modified tracked/9 untracked entries; SHR PA main/5f487d5 retains its original
+eight modifications. Nothing staged, committed or published.
+
+Mixer-observation continuation validation (Rust 1.97.1, `--locked -j1`,
+`CARGO_INCREMENTAL=0`, canonical target/shared nonblocking build lock): focused
+`--features hardware-host --lib mixer_control::` **6 passed**, including
+allocation/destruction guards, retained retirement and pending-readback isolation.
+Hardware-host `--all-targets`: **620 passed/61 ignored**. Default-feature `--lib`
+plus `gp03`, `gp03_alloc`, `gp07`, `gp07_alloc`, `gp07_local`, `sends`,
+`sends_alloc`, `sends_local`, `gate`: **147 passed/5 ignored**. The unchanged
+shared automix integration suite was not repeated under default features after
+passing the complete hardware-host suite. Formatting/whitespace passed; no fixture
+regeneration. Reverified PA/FX/REC library/header/owner-manifest bindings and the
+private PA source receipt. Exact local
+`remote::tests::fx_aux_tls_tests::actual_four_aux_tls_brain_controls_and_samples`
+with `--exact --include-ignored --nocapture` and `GP_FX_LIBRARY` passed once
+(**1 test**, 72,384 Main sample comparisons). The later native-window regression
+supplies the causal evidence for the local queue-drop mechanism; the 2,040-byte
+historical witness is preserved. No ASRC execution/delivery
+or SHR PA changes: their suites were not repeated. Historical/audition/exhaustive
+opt-ins, physical and two-node/T3 work were skipped. These checks validate the
+mixer observation/retirement change, not complete source independence.
+After process, shared-lock, open-file and tracked-path checks, removed 89 task-built
+test executables and three temporary logs: **8,926,613,504 allocated bytes reclaimed**.
+Retained source/tests/docs, historical receipts/TLS witness and shared runtime/build
+artifacts. Canonical target retains 8,556,298,240 allocated bytes; 43 GiB is free.
+No rebuild after cleanup.
+
+Preceding source-acquisition continuation validation used Rust 1.97.1, locked dependencies,
+one job, incremental off, canonical target and the shared nonblocking build lock.
+Focused measurement unit tests: **9 passed**; detached capture allocation/destruction:
+**1 passed**; measurement contracts/provider: **5 passed**; spectrum integration:
+**2 passed/1 ignored**. Verified PA/FX/REC library/header/manifest bindings and the
+private detached-PA source receipt. The actual PA measurement test
+`gp20_owner -- --include-ignored` passed with the unchanged historical two-output
+graph (SHA256 `c8be83f3908e2da937d2ccd088d7203fd3cb649aef6b832ca85bfa08c64b5ba7`)
+and a temporary pinned configuration for the existing `shr-pa-measure` executable
+(SHA256 `ef773d4e7a9ddfd9f0a52504f088d9599b56ef55d0af29a33518f70f539a7d83`).
+No fixture or owner binary changed. Default all-target: **525 passed/22 ignored**
+before the final progress-publication ordering and startup-storage corrections.
+Hardware-host validation exposed a stack overflow in
+`remote::runner::output_window_tests::legacy_provider_config_defaults_fake_and_physical_denies_before_io`.
+Boxing spectrum acquisition at startup fixed the exact regression with normal test
+stack settings; it adds no allocation to acquisition. Final hardware-host all-target:
+**620 passed/61 ignored**. Final default-feature library: **77 passed/2 ignored**.
+The actual PA measurement case was repeated against the final executable and passed
+(**1 test**) after rechecking library/header/manifest/source bindings. Formatting
+and whitespace checks passed. These are synchronous integration/acquisition results,
+not whole-source independence.
+ASRC execution/delivery and SHR PA are unchanged; accelerated ASRC and the SHR PA
+normal suite are intentionally skipped. Unrelated historical/audition/exhaustive
+opt-ins, physical and two-node/T3 tests are skipped. The exact four-aux TLS
+reproduction was not rerun during that acquisition continuation; the latest
+check at that checkpoint is recorded above; native-window closure is recorded in this card.
+
+The exact four-aux TLS check FAILED: bus 0 accepted; bus 1 request `5`, epoch `9`,
+progressed preparing → prepared → unknown, reason **`FX aux source gap`**, null
+`effective_frame`. This is numeric refusal cause 1: the FX executor received a
+frame different from its expected next frame. It does not locate the upstream
+loss or establish the cause of the older bus-3 generic refusal. Failure cleanup
+in `remote/fx_aux_tls_tests.rs` now joins owners and prints existing execution,
+media and source-egress reports before preserving the assertion failure; it does
+not retry mutations or change deadlines/queues. One explicit diagnostic reproduction passed (1 test); the queue-drop mechanism
+was subsequently reproduced and closed by the native-window regression. Exact failed output and both outcomes are retained in ignored
+`user/node-lab/gp-h1-tls-witness.log`.
+After shared-lock, process, open-file and mapping checks, cleanup removed
+155 task-built test executables plus six temporary files (validation logs, pinned
+measurement config and generated protocol corpus): **13,810,147,328 allocated bytes
+reclaimed**. No rebuild after cleanup. Retained source/tests/docs, historical receipts,
+the unchanged **2,040-byte** TLS witness and shared runtime/build artifacts:
+GigPies target **8,554,262,528 bytes**, SHR PA target **753,475,584 bytes**. These
+normal shared outputs remain justified; free space is approximately43GiB.
+GigPies remains `main/d4adff4`, **40 modified tracked / 9 untracked entries**, nothing
+staged. SHR PA remains `main/5f487d5`, its original **8 modified tracked files**,
+nothing staged. No commits, publication, extra checkouts, workers, sibling writes,
+hardware activation or host/network changes. No dedicated Stagebox execution owner
+was wired; the requested combined production source isolation remains incomplete.
+
+
+
+
+Acceptance checklist:
+
+- [x] Reviewable architecture, execution map, exact existing binary media profile,
+  conditional UDP session design, clock/safety/resource limits and alternatives.
+- [x] Preliminary mechanism-specific patent/openness review, with unverified status
+  and licensing adoption clearly separated from engineering claims.
+- [ ] T0 contract vectors/resource fixtures accepted.
+- [ ] T1 source/FX execution, prepared commits, atomic closure and off-thread
+  retirement accepted by local code validation; traffic acceptance belongs to T3.
+- [ ] T2 independent duplex/background execution and both ASRC crossings accepted.
+- [ ] T3 clean combined5/30/60 gates, samples and recovery accepted.
+- [ ] T4 comparison completed or explicitly declined as unnecessary after T3.
+- [ ] T5 security-preserving replacement accepted, or QUIC retained and candidate removed.
+- [ ] T6 one production path and concise handoff; physical qualification remains separate.
+
+Next action: follow the exact action in the numbered source-owner checklist
+above. Keep the implemented duplex, stereo delay and four-aux execution boundaries;
+complete lifecycle acceptance before separate analysis/resource reconciliation.
+Do not send two-node test traffic during code preparation. A separately authorized
+5s pass qualifies proposing30s, not an automatic run or a jump to60s; failures
+require diagnosis before escalation. Only audio uses the wet-return deadline;
+commands/meters/analysis retain their own contracts. Keep768frames and the60s
+synthetic cap. Never subtract unsynchronized clocks or label application dequeue
+as socket arrival. Minimum4ms wet margin and material2ms replacement benefit are
+new proposed acceptance thresholds, not historical results.
+
+Historical local implementation increment before the dedicated duplex service
+(not T1/T2 acceptance):
+
+Continuation inspected live HEAD `d4adff4239b71e143e9a33e8105d5a0624fb5e9f`:
+two dependency-maintenance commits follow the planning base. Existing unstaged
+work was preserved. The task0026 manifest still describes the historical base;
+it is not a current source/artifact receipt. PA/FX/REC library, header and owner
+manifest SHA-256 values freshly match `ethernet-0026/modules.json` locally.
+All twelve sibling heads/lock/toolchain hashes still match that manifest and their
+trees are clean. No peer inspection, source synchronization or sibling writes
+were needed.
+
+- Added an independent GPA1 FX-send vector and malformed-header/sequence-origin
+  coverage. Actual jitter/assembly requested-layout accounting now includes tags,
+  alignment, spec capacity and samples; this is still not aggregate prepared
+  memory or RSS. GBA1 reorder behavior is explicitly marked as proposed.
+- Provider evidence now includes lifetime counts for all four proxy overflow
+  lanes, including sessions retired during the run. A shared fixed ledger avoids
+  a final-sample race without retaining a growing session history.
+- BrainAux swaps prepared configurations without cloning at commit, retains old
+  storage until controller polling, and defers failed-token cancellation and owner
+  reclamation outside processing. Bounded ABI wrappers preserve allocation-free
+  error paths. The occupied pending slot blocks further preparation until its
+  result/retirement is consumed. This does not introduce separate threads.
+- T0–T2 remain incomplete. Global prepared commits, atomic closure, dedicated
+  source/FX execution, actual off-thread retirement, independent duplex service
+  and aggregate resource qualification are still absent. No sibling ABI blocker
+  was found; these are unfinished GigPies implementation requirements.
+
+Continuation validation: default all-target suite **514 passed/22 ignored**;
+hardware-host **601 passed/55 ignored**; zero failures. Five focused proxy tests
+and all eight `audio_transport_v1` tests passed, including the actual-library
+allocation/destruction guard with stalled polling, unpermitted prepared tokens,
+source gaps before publication and during transition, and panic. Both targeted
+actual-owner regressions passed (`actual_four_aux_source_brain_roundtrip_and_loss`
+and `actual_host_recording_survives_brain_loss_and_finalizes_clock_fault`). All
+five accelerated release `brain_bridge` opt-ins passed in 146.02 s test execution.
+Hardware-host all-target Clippy with warnings denied, formatting and diff checks
+passed; the embedded T3 schema/example validates and retains unresolved payload
+capacity. These local checks do not establish dedicated execution, global safety
+closure, aggregate headroom, combined-network timing or physical acceptance.
+
+Run the new actual-owner guard with verified `GP_FX_LIBRARY` and the same build
+lock/toolchain/environment below: `cargo +1.97.1 test --locked -j1 --features
+hardware-host --test audio_transport_v1 -- --include-ignored`. Historical research,
+audition/exhaustive matrices, other unrelated environment opt-ins, two-node
+traffic and physical tests were intentionally not run. No commits, publication,
+workers, extra checkouts, sibling writes or host configuration changes occurred.
+
+Continuation cleanup: after the build-lock, process/open-file, inode and live Git
+checks, removed 156 task-built test executables and the temporary validation
+journal, reclaiming **13,587,185,664 allocated bytes**. Normal target retains approximately
+7.8 GiB of runtime executables and useful library/debug/build artifacts;
+free space is approximately 42.9 GiB. Private evidence and all initial
+uncommitted work remain. HEAD is unchanged at `d4adff4`; 12 tracked files are modified
+and 3 are untracked, with nothing staged. T0–T2 remain open.
+
+Earlier prerequisite increment and historical validation:
+
+- Preserved the pre-existing blueprint/reference edits on HEAD `97a7949` and
+  verified all 13 local canonical revisions/lock/toolchain hashes against the
+  private manifest. Fresh read-only Tailscale SSH confirmed Pi4 GigPies at the
+  same clean revision. Historical executable receipts were not reused as proof
+  of current binaries. Private task0026/final receipts and concise evidence read.
+- T0 adds independent literal GPA1/GBA1 vectors, truncation/identity/float/deadline/
+  wrap/exhaustion tests and checked payload arithmetic at 16/32/48 inputs. Existing
+  suites retain authentication, role/map/replay/rearm tests. The blueprint records
+  sequence-origin, strict final-admission and algorithmic-delay reconciliations.
+- T1 prerequisites replace allocating proxy ingress payloads with inline Copy
+  datagrams, count all four proxy queue overflow paths without optional tracing,
+  and use fixed 32-slot/bitmap Brain FX assembly with a prepared completion buffer.
+  Allocation/destruction tests cover assembly success, overflow and refusals.
+  These are not dedicated source/FX execution or four-block role-only handoffs.
+- Remaining T1 work is in GigPies, not a demonstrated sibling ABI obstruction:
+  split `OfflineEngine::process_interleaved` authority cloning/readback/completions
+  from source commits; split LocalAudio control and module lifecycle; move FX
+  preparation/hash/serialization and retirement to independent execution;
+  add global prepared commits, copied coherent observations, non-droppable closure
+  generations and bounded retirement reservation. Do not move the whole allocating
+  pump and mark it complete. Source-clock and safety semantics remain unchanged.
+- T2 is not implemented: `brain_runtime::run` still shares device service with
+  control awaits and diagnostics. Both ASRC bridges and explicit device/rearm
+  contracts remain as before. Aggregate four-core scheduling headroom is unmeasured.
+- A credential-free T3 metadata schema/example and refusal/pass criteria are in the
+  owning blueprint. It is deliberately not an executable runner configuration;
+  unresolved payload capacity and unverified runtime artifacts prohibit launch.
+  No T3 traffic, T4/T5 adapter or physical work was run.
+
+Validation: focused vectors/transport and proxy regressions passed; complete
+normal default suite 511 passed/22 ignored, hardware-host 598 passed/54 ignored,
+zero failures. All five accelerated release `brain_bridge` opt-ins passed in
+146.08s. Hardware-host all-target Clippy with warnings denied, fmt and diff checks
+passed. The embedded T3 JSON schema/example validates. Fresh local library/header/
+manifest SHA-256 checks matched the recorded PA/FX/REC artifacts; both targeted
+actual-owner opt-ins passed: `actual_four_aux_source_brain_roundtrip_and_loss`
+and `actual_host_recording_survives_brain_loss_and_finalizes_clock_fault`.
+These are device-free harnesses, not the combined two-node graph.
+
+Reproduce with the existing nonblocking `/home/shome/p/.gigpies-build.lock`,
+`CARGO_INCREMENTAL=0`, Rust 1.97.1, `--locked -j1`: normal `test --all-targets`
+with and without `--features hardware-host`; focused `--test audio_transport_v1`;
+release hardware-host `--test brain_bridge -- --ignored`; the two named owner
+`--lib TEST -- --ignored` cases with verified `GP_FX_LIBRARY`/`GP05_MANIFEST`.
+Unrelated historical/audition/exhaustive and other environment opt-ins stayed
+ignored; no physical or two-node traffic test was launched. No commits or
+publication were performed. T0/T1/T2 acceptance boxes remain open: passing these
+checks does not complete the requested isolation implementation.
+
+Closeout: after build-lock/process/open-file checks, removed 156 task-built test
+executables and the disposable logs/reference copy, reclaiming 13,558,190,080
+allocated bytes. Normal target remains 6.3 GiB for runtime/debug/dependency
+artifacts; free space is 45 GiB. Existing private evidence and all initial
+uncommitted blueprint/reference edits are preserved. No new scratch directories,
+worker sessions, checkouts, sibling changes, commits or publication were created.
 
 Remaining acceptance outside the cable-only phase: H8 timing discontinuities and
 attenuated right return; real ADAT/socket mapping; independent duplex drift and

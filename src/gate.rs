@@ -409,14 +409,31 @@ pub struct Observation {
     pub state: State,
     pub attenuation_mdb: u32,
 }
-impl Gate {
-    /// Control/readback path only: logarithm never runs in tick().
-    pub fn observation(&self) -> Observation {
+/// Numeric source capture; logarithmic presentation stays on the observer.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SourceObservation {
+    state: State,
+    gain: f64,
+}
+impl SourceObservation {
+    pub fn readback(self) -> Observation {
         Observation {
             state: self.state,
             attenuation_mdb: (-20000. * self.gain.max(1e-12).log10())
                 .round()
                 .clamp(0., 90000.) as u32,
         }
+    }
+}
+impl Gate {
+    pub(crate) fn source_observation(&self) -> SourceObservation {
+        SourceObservation {
+            state: self.state,
+            gain: self.gain,
+        }
+    }
+    /// Control/readback path only: logarithm never runs in tick().
+    pub fn observation(&self) -> Observation {
+        self.source_observation().readback()
     }
 }

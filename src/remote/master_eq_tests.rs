@@ -256,7 +256,7 @@ fn actual_new_owner_unix_remote_success_cancellation_completion_and_cached_final
     let next_final = c.wait(&mut p, &mut now, |v| {
         v["state"] == "final" && v["context"]["request_id"] == "3"
     });
-    assert!(next_final["reason"].is_null());
+    assert!(next_final["reason"].is_null(), "{next_final}");
     assert!(p.host.provider_mut().take_remote_completions().is_empty());
     for _ in 0..6 {
         now += 1;

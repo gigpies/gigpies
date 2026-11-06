@@ -71,13 +71,23 @@ struct ResultWindow {
     bins: Vec<i32>,
     fft_bins: Vec<i32>,
 }
+/// Controller readback and worker lifetime; never transferred to the source.
 pub struct Spectrum {
     selected: Arc<AtomicUsize>,
-    generation: AtomicU64,
-    expires: AtomicU64,
+    generation: Arc<AtomicU64>,
+    expires: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
-    sender: rtrb::Producer<Window>,
     latest: Arc<Mutex<Option<ResultWindow>>>,
+    acquisition: Option<Box<Acquisition>>,
+    rate: u32,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+/// Fixed acquisition storage and atomic selection only. No FFT/readback lock or join.
+pub struct Acquisition {
+    selected: Arc<AtomicUsize>,
+    generation: Arc<AtomicU64>,
+    expires: Arc<AtomicU64>,
+    sender: rtrb::Producer<Window>,
     samples: [f64; N],
     count: usize,
     first: u64,
@@ -87,7 +97,6 @@ pub struct Spectrum {
     map: u64,
     next: u64,
     rate: u32,
-    worker: Option<std::thread::JoinHandle<()>>,
 }
 /// Hann-windowed native positive FFT bins (DC through Nyquist).
 /// 0 dBFS means a bin-centred sinusoid of peak amplitude 1; floor -96 dBFS.
@@ -165,13 +174,13 @@ impl Spectrum {
                 }
             }
         });
-        Self {
-            selected,
-            generation: AtomicU64::new(0),
-            expires: AtomicU64::new(0),
-            stop,
+        let generation = Arc::new(AtomicU64::new(0));
+        let expires = Arc::new(AtomicU64::new(0));
+        let acquisition = Box::new(Acquisition {
+            selected: selected.clone(),
+            generation: generation.clone(),
+            expires: expires.clone(),
             sender,
-            latest,
             samples: [0.; N],
             count: 0,
             first: 0,
@@ -181,9 +190,42 @@ impl Spectrum {
             map: 0,
             next: 0,
             rate,
+        });
+        Self {
+            selected,
+            generation,
+            expires,
+            stop,
+            latest,
+            acquisition: Some(acquisition),
+            rate,
             worker: Some(worker),
         }
     }
+    pub fn take_acquisition(&mut self) -> Option<Box<Acquisition>> {
+        self.acquisition.take()
+    }
+    pub fn offer(&mut self, pcm: &[f64], channels: usize, frame: u64, received: u64, map: u64) {
+        if let Some(a) = &mut self.acquisition {
+            a.offer(pcm, channels, frame, received, map);
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn offer_tap(
+        &mut self,
+        pcm: &[f64],
+        channels: usize,
+        frame: u64,
+        received: u64,
+        map: u64,
+        base: usize,
+    ) {
+        if let Some(a) = &mut self.acquisition {
+            a.offer_tap(pcm, channels, frame, received, map, base);
+        }
+    }
+}
+impl Acquisition {
     /// No locks, allocation, syscalls or FFT. Input is interleaved source PCM.
     pub fn offer(&mut self, pcm: &[f64], channels: usize, frame: u64, received: u64, map: u64) {
         self.offer_tap(pcm, channels, frame, received, map, 0);
@@ -252,11 +294,12 @@ impl Spectrum {
             }
         }
     }
+}
+impl Spectrum {
     /// Source-epoch fence, called off render during owner recovery.
     pub fn reset(&mut self) {
         self.selected.store(usize::MAX, Ordering::Relaxed);
         self.generation.fetch_add(1, Ordering::Relaxed);
-        self.count = 0;
         self.expires.store(0, Ordering::Relaxed);
         *self.latest.lock().unwrap() = None;
     }
@@ -322,6 +365,41 @@ impl Drop for Spectrum {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detached_acquisition_survives_stalled_readback_and_reset() {
+        let mut s = Spectrum::new(48000);
+        let mut acquisition = s.take_acquisition().unwrap();
+        let r = Request {
+            contract: "GP-SPECTRUM".into(),
+            version: 2,
+            show_id: "test".into(),
+            epoch: 1,
+            map: 1,
+            query: 1,
+            input: "input-01".into(),
+        };
+        assert!(!s.snapshot(&r, 0, 1000).valid);
+        let acquisition = std::thread::spawn(move || {
+            for b in 0..1024 {
+                acquisition.offer(&[0.5; 48], 1, b * 48, 1000, 1);
+            }
+            acquisition
+        })
+        .join()
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !s.snapshot(&r, 0, 1100).valid {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        s.reset();
+        assert!(!s.snapshot(&r, 0, 1100).valid);
+        // Controller teardown joins its worker; it never requires the source
+        // acquisition to return, nor can later source delivery join anything.
+        drop(s);
+        let mut acquisition = acquisition;
+        acquisition.offer(&[0.5; 48], 1, 49152, 1100, 1);
+    }
     #[test]
     fn stale_selection_and_bounded_handoff() {
         let mut s = Spectrum::new(48000);

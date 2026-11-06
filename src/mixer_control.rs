@@ -307,10 +307,42 @@ struct SendsPending {
     ticket: u64,
     frame: u64,
 }
+/// Controller-owned validation. Neither authority nor protocol objects are
+/// accessible through the owned source render state.
+#[derive(Debug)]
+struct ValidatedRender {
+    staged: Authority,
+    reply: Reply,
+    now_ms: u64,
+}
+#[derive(Debug)]
+struct ValidatedExternal {
+    staged: Authority,
+    reply: Reply,
+    request: Request,
+    scope: Scope,
+    now_ms: u64,
+    ticket: u64,
+    epoch: u64,
+    frame: u64,
+}
+pub(crate) mod source;
+use source::{RenderPlan, SourceState};
 #[derive(Debug)]
 pub struct OfflineEngine {
     authority: Authority,
-    mixer: Mixer,
+    validated_render: Option<ValidatedRender>,
+    validated_external: Option<ValidatedExternal>,
+    source: Option<SourceState>,
+    source_topology: crate::topology::EngineTopology,
+    source_closure: source::SourceClosure,
+    pending_operator_tap: Option<crate::brain_control::MonitorSource>,
+    pending_fx_sends: crate::mixer::PreparedFxSends,
+    pending_source_prepared: Option<(Prepared, u64, u64)>,
+    source_command: Option<source::SourceCommand>,
+    detached_in_flight: bool,
+    source_admission: Option<source::SourceAdmission>,
+    observed: crate::mixer::SourceObservation,
     pending: Option<Pending>,
     next_ticket: u64,
     outcomes: BTreeMap<String, VecDeque<(Request, RenderedReply)>>,
@@ -348,24 +380,38 @@ impl OfflineEngine {
         let mut authority = Authority::with_dimensions(show, epoch, revision, inputs, monitors)?;
         authority.set_wire_version(if topology.is_legacy() { 1 } else { 2 });
         authority.enable_rendered_release();
+        let legacy = topology.is_legacy();
+        let mut source = SourceState::new(epoch.0, {
+            let legacy = topology.is_legacy();
+            let mut m = Mixer::from_topology(frame, topology)?;
+            if !legacy {
+                m.quiesce();
+            }
+            m
+        });
+        source.applied_revision = revision.0;
         Ok(Self {
+            validated_render: None,
+            validated_external: None,
             external_pending: None,
             clock: {
                 let mut c = crate::clock_domain::ClockDomain::new(epoch.0, frame);
-                if topology.is_legacy() {
+                if legacy {
                     c.rearm().map_err(String::from)?;
                 }
                 c
             },
             authority,
-            mixer: {
-                let legacy = topology.is_legacy();
-                let mut m = Mixer::from_topology(frame, topology)?;
-                if !legacy {
-                    m.quiesce();
-                }
-                m
-            },
+            observed: source.observation.clone(),
+            source_topology: source.mixer.topology().clone(),
+            source_closure: source.closure(),
+            pending_operator_tap: None,
+            pending_fx_sends: Default::default(),
+            pending_source_prepared: None,
+            source_command: None,
+            detached_in_flight: false,
+            source_admission: None,
+            source: Some(source),
             pending: None,
             next_ticket: 1,
             outcomes: BTreeMap::new(),
@@ -427,7 +473,12 @@ impl OfflineEngine {
                 Err("backpressure".into())
             };
         }
-        if self.pending.is_some()
+        if self.source.as_ref().is_some_and(SourceState::busy)
+            || self.detached_in_flight
+            || self.source_command.is_some()
+            || self.pending_source_prepared.is_some()
+            || self.validated_external.is_some()
+            || self.pending.is_some()
             || self.processing_pending.is_some()
             || self.sends_pending.is_some()
         {
@@ -446,7 +497,15 @@ impl OfflineEngine {
                 ),
             ));
         }
-        let frame = self.mixer.next_boundary()?;
+        let frame = match self.admission_frame() {
+            Some(frame) => frame,
+            None => self
+                .frame()
+                .checked_div(48)
+                .and_then(|n| n.checked_add(1))
+                .and_then(|n| n.checked_mul(48))
+                .ok_or("clock exhausted")?,
+        };
         self.external_pending = Some((history, scope, frame));
         Ok((frame, None))
     }
@@ -458,7 +517,8 @@ impl OfflineEngine {
         fingerprint: &str,
         frame: u64,
     ) -> Result<()> {
-        if !self.external_matches(request, fingerprint)
+        if self.validated_external.is_some()
+            || !self.external_matches(request, fingerprint)
             || frame < self.frame()
             || frame
                 .checked_sub(self.frame())
@@ -481,6 +541,10 @@ impl OfflineEngine {
                 .as_ref()
                 .is_some_and(|p| p.1 == Scope::FxConfiguration)
         {
+            if let Some(validated) = &mut self.validated_external {
+                self.source_closure.cancel(validated.ticket);
+                return;
+            }
             let (history, scope, _) = self.external_pending.take().unwrap();
             self.authority.cancel_external(&history, scope);
         }
@@ -491,6 +555,16 @@ impl OfflineEngine {
         self.external_pending
             .as_ref()
             .is_some_and(|(pending, _, _)| pending == &history)
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn abort_external_preparation(&mut self) -> Result<()> {
+        if self.validated_external.is_some() {
+            return Err("external source outcome pending".into());
+        }
+        if let Some((request, scope, _)) = self.external_pending.take() {
+            self.authority.cancel_external(&request, scope);
+        }
+        Ok(())
     }
     pub fn external_boundary(&self) -> Option<u64> {
         self.external_pending.as_ref().map(|p| p.2)
@@ -511,27 +585,124 @@ impl OfflineEngine {
         now: u64,
         apply: impl FnOnce(&mut Self) -> Result<()>,
     ) -> Result<Reply> {
+        let permit = self.prepare_external(now)?;
+        let code = if permit.permitted() && apply(self).is_err() {
+            1
+        } else {
+            0
+        };
+        self.finish_external(permit.receipt(code))
+    }
+    /// Validate once on the controller while preserving the global reservation.
+    /// Only the returned numeric permit crosses into source execution.
+    pub(crate) fn prepare_external(&mut self, now: u64) -> Result<source::ExternalPermit> {
+        if self.validated_external.is_some() || self.validated_render.is_some() {
+            return Err("external completion pending".into());
+        }
         let (request, scope, frame) = self.external_pending.as_ref().ok_or("external missing")?;
-        if self.frame() != *frame {
+        if self.preparation_frame() != *frame {
             return Err("external boundary".into());
         }
+        let ticket = self.next_ticket;
+        let next = ticket.checked_add(1).ok_or("ticket exhausted")?;
         let mut staged = self.authority.clone();
-        let checked = staged.scoped_transaction(request, now, None, *scope);
-        let (request, scope, _) = self.external_pending.take().unwrap();
-        if checked.kind != "applied" {
-            self.authority = staged;
-            return Ok(checked);
+        let reply = staged.scoped_transaction(request, now, None, *scope);
+        let mut permit = source::ExternalPermit::new(
+            self.source_closure.clone(),
+            self.clock.epoch,
+            *frame,
+            ticket,
+            reply.kind == "applied",
+        );
+        permit.revision = reply.body.revision.0;
+        permit.admission = self.source_admission.clone();
+        // Delayed source application rechecks local lease expiry independently.
+        if self.source_admission.is_some() {
+            permit.expires = Some(
+                std::time::Instant::now()
+                    + std::time::Duration::from_millis(
+                        self.authority
+                            .live_lease_witness(request, now)
+                            .map_or(0, |(_, remaining)| u64::from(remaining)),
+                    ),
+            );
         }
-        if apply(self).is_err() {
+        self.validated_external = Some(ValidatedExternal {
+            staged,
+            reply,
+            request: request.clone(),
+            scope: *scope,
+            now_ms: now,
+            ticket,
+            epoch: self.clock.epoch,
+            frame: *frame,
+        });
+        self.next_ticket = next;
+        Ok(permit)
+    }
+    /// Install authority only after the exact numeric source outcome returns.
+    pub(crate) fn finish_external(&mut self, receipt: source::ExternalReceipt) -> Result<Reply> {
+        let validated = self
+            .validated_external
+            .as_ref()
+            .ok_or("external completion missing")?;
+        if receipt.ticket != validated.ticket
+            || receipt.epoch != validated.epoch
+            || receipt.frame != validated.frame
+            || self.source_closure.identity() != receipt.owner_id
+        {
+            return Err("external completion identity".into());
+        }
+        if let Some(output) = receipt.output {
+            self.observed.output = output;
+        }
+        let mut validated = self.validated_external.take().unwrap();
+        self.external_pending = None;
+        if validated.reply.kind != "applied" {
+            validated.staged.preserve_observations(&self.authority);
+            self.authority = validated.staged;
+            return Ok(validated.reply);
+        }
+        if receipt.code != 0 {
             return Ok(self.authority.scoped_transaction(
-                &request,
-                now,
+                &validated.request,
+                validated.now_ms,
                 Some("configuration_failed"),
-                scope,
+                validated.scope,
             ));
         }
-        self.authority = staged;
-        Ok(checked)
+        validated.staged.preserve_observations(&self.authority);
+        self.authority = validated.staged;
+        // Compatibility callers may commit an external operation while the
+        // source is still locally owned, before autonomous startup. Preserve
+        // that completed identity on transfer; detached owners update it at the
+        // numeric boundary and must never be overwritten from controller polls.
+        if let Some(source) = &mut self.source {
+            source.applied_revision = validated.reply.body.revision.0;
+        }
+        Ok(validated.reply)
+    }
+    /// Readiness acknowledgment after a successful source-side output rearm.
+    /// Terminal closure is never reopened by a delayed completion.
+    pub(crate) fn acknowledge_output_rearm(&mut self) -> Result<()> {
+        if self.clock.state == crate::clock_domain::ClockState::Disarmed {
+            self.clock.rearm().map_err(String::from)?;
+        }
+        if self.clock.state != crate::clock_domain::ClockState::Running {
+            return Err("clock recovery required".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn acknowledge_startup_rearm(
+        &mut self,
+        output: crate::mixer::OutputObservation,
+    ) -> Result<()> {
+        if self.frame() != 0 || self.source_closure.closed() {
+            return Err("startup rearm identity".into());
+        }
+        self.acknowledge_output_rearm()?;
+        self.observed.output = output;
+        Ok(())
     }
     pub fn admit_source(&mut self, epoch: u64, frame: u64, frames: usize) -> Result<()> {
         if self.clock.state == crate::clock_domain::ClockState::Disarmed {
@@ -560,22 +731,62 @@ impl OfflineEngine {
         Ok(())
     }
     pub fn topology(&self) -> &crate::topology::EngineTopology {
-        self.mixer.topology()
+        self.source
+            .as_ref()
+            .map_or(&self.source_topology, |s| s.mixer.topology())
     }
     pub fn enable_fx_aux(&mut self) -> Result<()> {
-        self.mixer.enable_fx_aux()
+        if let Some(source) = &mut self.source {
+            source.mixer.enable_fx_aux()
+        } else if self.observed.fx_aux_enabled {
+            Ok(())
+        } else {
+            self.pending_fx_sends.enable(&self.source_topology)
+        }
     }
     pub fn set_fx_sends(&mut self, bus: usize, levels: &[f64]) -> Result<()> {
-        self.mixer.set_fx_sends(bus, levels)
+        if let Some(source) = &mut self.source {
+            source.mixer.set_fx_sends(bus, levels)
+        } else {
+            self.enable_fx_aux()?;
+            self.pending_fx_sends
+                .set(self.source_topology.inputs.len(), bus, levels)
+        }
+    }
+    /// Controller readback of applied source send targets. Detached pending
+    /// commands cannot appear here before their coherent source observation.
+    pub fn fx_sends(&self, bus: usize) -> Option<Vec<f64>> {
+        if let Some(source) = &self.source {
+            source.mixer.fx_sends(bus)
+        } else {
+            (bus < 4 && self.observed.fx_aux_enabled)
+                .then(|| self.observed.fx_sends.iter().map(|row| row[bus]).collect())
+        }
     }
     pub fn set_operator_tap(&mut self, source: crate::brain_control::MonitorSource) {
-        self.mixer.set_operator_tap(source);
+        if let Some(active) = &mut self.source {
+            active.mixer.set_operator_tap(source);
+        } else {
+            self.pending_operator_tap = Some(source);
+        }
     }
     pub fn operator_tap(&self) -> &[f64; 96] {
-        self.mixer.operator_tap()
+        self.source
+            .as_ref()
+            .expect("operator samples belong to source owner")
+            .mixer
+            .operator_tap()
     }
     pub fn output_safety_gain(&self, frame: u64) -> f64 {
-        self.mixer.output_safety_gain(frame)
+        // Independent terminal closure overrides the last observed envelope.
+        // It does not invent a new completed-source quiescence observation.
+        if self.source_closure.closed() {
+            return 0.;
+        }
+        self.source.as_ref().map_or_else(
+            || self.observed.output.gain_at(frame),
+            |s| s.mixer.output_safety_gain(frame),
+        )
     }
     pub fn maintain_lease(
         &mut self,
@@ -610,13 +821,29 @@ impl OfflineEngine {
     }
     pub fn quiesce(&mut self, reason: &str) {
         self.clock.quiesce(reason);
-        self.mixer.quiesce();
+        self.source_admission = None;
+        self.validated_external = None;
+        self.validated_render = None;
+        self.pending_source_prepared = None;
+        self.source_command = None;
+        self.source_closure.close();
+        if let Some(source) = &mut self.source {
+            source.mixer.quiesce();
+        }
         self.pending = None;
         self.processing_pending = None;
         self.sends_pending = None;
         self.sends_completions.clear();
         self.external_pending = None;
         self.authority.revoke_all();
+    }
+    pub(crate) fn acknowledge_source_quiescence(
+        &mut self,
+        output: crate::mixer::OutputObservation,
+    ) {
+        if self.source_closure.closed() {
+            self.observed.output = output;
+        }
     }
     pub fn recover(&mut self, epoch: Counter, frame: u64) -> Result<()> {
         let mut clock = self.clock.clone();
@@ -628,7 +855,13 @@ impl OfflineEngine {
             .checked_add(1)
             .ok_or("map exhausted")?;
         let mut next = Self::restore_intent(&intent, epoch, frame)?;
-        next.mixer.inherit_fx_send_intent(&self.mixer)?;
+        next.source.as_mut().unwrap().mixer.inherit_fx_send_intent(
+            &self
+                .source
+                .as_ref()
+                .ok_or("source must return before recovery")?
+                .mixer,
+        )?;
         next.clock = clock;
         *self = next;
         Ok(())
@@ -637,8 +870,8 @@ impl OfflineEngine {
         let snapshot = self.authority.snapshot()?;
         Ok(EngineIntent {
             version: if self
-                .mixer
-                .processing_observations()
+                .observed
+                .processing
                 .iter()
                 .any(|o| !o.1.gate.is_default())
             {
@@ -648,10 +881,10 @@ impl OfflineEngine {
             },
             show_id: snapshot.show_id,
             send_taps: Some(
-                self.mixer
-                    .send_observations()
-                    .into_iter()
-                    .map(|r| r.into_iter().map(|s| s.1).collect())
+                self.observed
+                    .sends
+                    .iter()
+                    .map(|r| r.iter().map(|s| s.1).collect())
                     .collect(),
             ),
             topology: self.topology().clone(),
@@ -663,12 +896,7 @@ impl OfflineEngine {
                     value: p.target_value,
                 })
                 .collect(),
-            processing: self
-                .mixer
-                .processing_observations()
-                .into_iter()
-                .map(|o| o.1)
-                .collect(),
+            processing: self.observed.processing.iter().map(|o| o.1).collect(),
         })
     }
     pub fn restore_intent_for(
@@ -701,7 +929,10 @@ impl OfflineEngine {
             frame,
             intent.topology.clone(),
         )?;
-        e.mixer
+        e.source
+            .as_mut()
+            .unwrap()
+            .mixer
             .restore_intent(&intent.parameters, &intent.processing)?;
         e.authority.restore_parameters(&intent.parameters)?;
         if let Some(taps) = &intent.send_taps {
@@ -713,20 +944,33 @@ impl OfflineEngine {
             {
                 return Err("legacy monitor taps".into());
             }
-            e.mixer.restore_sends(taps)?;
+            e.source.as_mut().unwrap().mixer.restore_sends(taps)?;
         }
         e.clock.state = crate::clock_domain::ClockState::Disarmed;
-        e.mixer.quiesce();
+        e.source.as_mut().unwrap().mixer.quiesce();
+        e.source
+            .as_mut()
+            .unwrap()
+            .mixer
+            .observe_into(&mut e.observed);
         Ok(e)
     }
     pub fn mute_outputs(&mut self) -> Result<()> {
-        self.mixer.mute_outputs().map_err(|e| format!("{e:?}"))
+        self.source
+            .as_mut()
+            .ok_or("source detached")?
+            .mixer
+            .mute_outputs()
+            .map_err(|e| format!("{e:?}"))
     }
     pub fn outputs_quiesced(&self) -> bool {
-        self.mixer.outputs_quiesced()
+        self.source.as_ref().map_or_else(
+            || self.observed.output.quiesced_at(self.observed.frame),
+            |s| s.mixer.outputs_quiesced(),
+        )
     }
     pub fn rearm_outputs(&mut self) -> Result<()> {
-        if self.mixer.faulted()
+        if self.source_faulted()
             || self
                 .frame()
                 .checked_add(crate::mixer::RAMP_FRAMES)
@@ -740,19 +984,50 @@ impl OfflineEngine {
         if self.clock.state != crate::clock_domain::ClockState::Running {
             return Err("clock recovery required".into());
         }
-        self.mixer.rearm().map_err(|e| format!("{e:?}"))
+        self.source
+            .as_mut()
+            .ok_or("source detached")?
+            .mixer
+            .rearm()
+            .map_err(|e| format!("{e:?}"))?;
+        self.source_closure.reopen();
+        Ok(())
     }
     pub fn prepare_output_patch(
         &self,
         outputs: Vec<crate::topology::OutputPort>,
     ) -> Result<crate::mixer::PreparedOutputPatch> {
-        self.mixer.prepare_output_patch(outputs)
+        crate::mixer::PreparedOutputPatch::for_topology(self.topology(), outputs)
+    }
+    /// Publish only the returned, successfully applied patch after its external
+    /// receipt has been accepted. No active source access is required.
+    pub(crate) fn acknowledge_output_patch(
+        &mut self,
+        prepared: &crate::mixer::PreparedOutputPatch,
+    ) -> Result<()> {
+        let topology = prepared
+            .applied_topology()
+            .ok_or("output patch not applied")?;
+        if topology.map_revision
+            != self
+                .source_topology
+                .map_revision
+                .checked_add(1)
+                .ok_or("map exhausted")?
+        {
+            return Err("output patch publication order".into());
+        }
+        self.source_topology.clone_from(topology);
+        Ok(())
     }
     pub fn apply_output_patch(
         &mut self,
         prepared: &mut crate::mixer::PreparedOutputPatch,
     ) -> Result<()> {
-        self.mixer
+        self.source
+            .as_mut()
+            .ok_or("source detached")?
+            .mixer
             .apply_output_patch(prepared)
             .map_err(String::from)
     }
@@ -760,10 +1035,14 @@ impl OfflineEngine {
         &mut self,
         outputs: Vec<crate::topology::OutputPort>,
     ) -> Result<()> {
-        self.mixer.replace_output_patch(outputs)
+        self.source
+            .as_mut()
+            .ok_or("source detached")?
+            .mixer
+            .replace_output_patch(outputs)
     }
     pub fn rearm(&mut self) -> Result<()> {
-        if self.mixer.faulted()
+        if self.source_faulted()
             || self
                 .frame()
                 .checked_add(crate::mixer::RAMP_FRAMES)
@@ -772,7 +1051,14 @@ impl OfflineEngine {
             return Err("fault/clock recovery required".into());
         }
         self.clock.rearm().map_err(String::from)?;
-        self.mixer.rearm().map_err(|e| format!("{e:?}"))
+        self.source
+            .as_mut()
+            .ok_or("source detached")?
+            .mixer
+            .rearm()
+            .map_err(|e| format!("{e:?}"))?;
+        self.source_closure.reopen();
+        Ok(())
     }
     pub(crate) fn pending_sends_ticket_for(&self, writer: &str) -> Option<u64> {
         self.sends_pending
@@ -780,39 +1066,81 @@ impl OfflineEngine {
             .filter(|p| p.request.writer.as_deref() == Some(writer))
             .map(|p| p.ticket)
     }
+    /// Returns true when the source may already have applied the operation.
+    /// Keep its authority record until its actual outcome returns; cancellation
+    /// is only a source-boundary request, never proof that DSP did not commit.
+    fn revoke_source_ticket(&mut self, writer: &str, ticket: u64) -> bool {
+        self.source_closure.cancel(ticket);
+        let transferred = self.source.is_none()
+            && self
+                .pending_source_prepared
+                .as_ref()
+                .is_none_or(|(_, pending, _)| *pending != ticket);
+        if transferred {
+            if let Some(validated) = &mut self.validated_render {
+                validated.staged.revoke_writer(writer);
+            }
+            return true;
+        }
+        self.validated_render = None;
+        if self
+            .pending_source_prepared
+            .as_ref()
+            .is_some_and(|(_, pending, _)| *pending == ticket)
+        {
+            self.pending_source_prepared = None;
+        }
+        if let Some(source) = &mut self.source {
+            source.mixer.cancel(ticket);
+        }
+        false
+    }
     pub fn revoke_writer(&mut self, writer: &str) {
         self.authority.revoke_writer(writer);
+        if let Some(validated) = &mut self.validated_render {
+            validated.staged.revoke_writer(writer);
+        }
+        if let Some(validated) = &mut self.validated_external {
+            validated.staged.revoke_writer(writer);
+            if validated.request.writer.as_deref() == Some(writer) {
+                self.source_closure.cancel(validated.ticket);
+            }
+        }
         if self
             .external_pending
             .as_ref()
             .is_some_and(|p| p.0.writer.as_deref() == Some(writer))
+            && self.validated_external.is_none()
         {
             self.external_pending = None;
         }
-        if self
+        if let Some(ticket) = self
             .pending
             .as_ref()
-            .is_some_and(|p| p.request.writer.as_deref() == Some(writer))
+            .filter(|p| p.request.writer.as_deref() == Some(writer))
+            .map(|p| p.ticket)
+            && !self.revoke_source_ticket(writer, ticket)
         {
-            let p = self.pending.take().unwrap();
-            self.mixer.cancel(p.ticket);
+            self.pending = None;
         }
-        if self
+        if let Some(ticket) = self
             .processing_pending
             .as_ref()
-            .is_some_and(|p| p.request.writer.as_deref() == Some(writer))
+            .filter(|p| p.request.writer.as_deref() == Some(writer))
+            .map(|p| p.ticket)
+            && !self.revoke_source_ticket(writer, ticket)
         {
-            let p = self.processing_pending.take().unwrap();
-            self.mixer.cancel(p.ticket);
+            self.processing_pending = None;
         }
         self.outcomes.remove(writer);
-        if self
+        if let Some(ticket) = self
             .sends_pending
             .as_ref()
-            .is_some_and(|p| p.request.writer.as_deref() == Some(writer))
+            .filter(|p| p.request.writer.as_deref() == Some(writer))
+            .map(|p| p.ticket)
+            && !self.revoke_source_ticket(writer, ticket)
         {
-            let p = self.sends_pending.take().unwrap();
-            self.mixer.cancel(p.ticket);
+            self.sends_pending = None;
         }
         self.sends_outcomes.remove(writer);
         self.sends_completions
@@ -826,14 +1154,48 @@ impl OfflineEngine {
     pub fn wire_version(&self) -> u32 {
         self.authority.version()
     }
+    fn schedule_source(&mut self, prepared: Prepared, ticket: u64) -> Result<u64> {
+        if let Some(source) = &mut self.source {
+            return source.schedule(prepared, ticket);
+        }
+        if self.pending_source_prepared.is_some()
+            || self.source_command.is_some()
+            || self.validated_render.is_some()
+            || self.detached_in_flight
+        {
+            return Err("capacity".into());
+        }
+        let frame = self
+            .preparation_frame()
+            .checked_div(48)
+            .and_then(|n| n.checked_add(1))
+            .and_then(|n| n.checked_mul(48))
+            .ok_or("clock exhausted")?;
+        frame
+            .checked_add(crate::mixer::RAMP_FRAMES)
+            .ok_or("clock exhausted")?;
+        self.pending_source_prepared = Some((prepared, ticket, frame));
+        Ok(frame)
+    }
+    fn source_faulted(&self) -> bool {
+        self.source
+            .as_ref()
+            .map_or(self.observed.faulted, |s| s.mixer.faulted())
+    }
     pub fn frame(&self) -> u64 {
-        self.mixer.frame()
+        self.source
+            .as_ref()
+            .map_or(self.observed.frame, |s| s.mixer.frame())
     }
     pub fn revision(&self) -> Counter {
         self.authority.revision()
     }
     pub fn mixer(&self) -> &Mixer {
-        &self.mixer
+        &self
+            .source
+            .as_ref()
+            .expect("active mixer belongs to source owner")
+            .mixer
     }
     fn wrapped(reply: Reply) -> RenderedReply {
         RenderedReply {
@@ -882,15 +1244,15 @@ impl OfflineEngine {
         }
     }
     pub fn snapshot(&mut self) -> Result<RenderedSnapshot> {
-        let current = self.mixer.coefficients();
-        let target = self.mixer.targets();
+        let current = &self.observed.current;
+        let target = &self.observed.targets;
         Ok(RenderedSnapshot {
             capability: "GP03-rendered".into(),
             capability_version: self.authority.version(),
             rendered_application: true,
             release_commit: true,
-            frame: Counter(self.frame()),
-            faulted: self.mixer.faulted(),
+            frame: Counter(self.observed.frame),
+            faulted: self.observed.faulted,
             protection: "offline-unprotected".into(),
             meters: None,
             resources: if self.authority.version() == 2 {
@@ -909,11 +1271,11 @@ impl OfflineEngine {
             topology: (self.authority.version() == 2).then(|| self.topology().clone()),
             clock: (self.authority.version() == 2).then(|| {
                 let mut c = self.clock.clone();
-                c.next_frame = self.frame();
+                c.next_frame = self.observed.frame;
                 c
             }),
             authority: self.authority.snapshot()?,
-            coefficients: (0..self.mixer.input_count())
+            coefficients: (0..self.observed.current.len())
                 .map(|i| Observation {
                     input: format!("input-{:02}", i + 1),
                     current_nanogain: current[i].iter().copied().map(nano).collect(),
@@ -930,7 +1292,7 @@ impl OfflineEngine {
             epoch: a.epoch,
             revision: a.revision,
             sequence: a.sequence,
-            frame: Counter(self.frame()),
+            frame: Counter(self.observed.frame),
             sample_rate: 48000,
             foh_tap: crate::processing_wire::FOH_TAP.into(),
             monitor_tap: if self.topology().is_legacy() {
@@ -939,11 +1301,12 @@ impl OfflineEngine {
                 crate::processing_wire::PER_SEND_TAP
             }
             .into(),
-            faulted: self.mixer.faulted(),
+            faulted: self.observed.faulted,
             channels: self
-                .mixer
-                .processing_observations()
-                .into_iter()
+                .observed
+                .processing
+                .iter()
+                .copied()
                 .enumerate()
                 .map(|(i, (current, target, remaining, gr))| Channel {
                     input: format!("input-{:02}", i + 1),
@@ -952,7 +1315,7 @@ impl OfflineEngine {
                     transition_remaining_frames: remaining,
                     ready: remaining == 0,
                     gain_reduction_mdb: gr,
-                    gate: self.mixer.gate_observation(i),
+                    gate: self.observed.gates[i].map(|g| g.readback()),
                 })
                 .collect(),
         })
@@ -993,8 +1356,8 @@ impl OfflineEngine {
             && !(self.processing_version() == 4 && r.version == 5))
             || (r.version < 5
                 && self
-                    .mixer
-                    .processing_observations()
+                    .observed
+                    .processing
                     .iter()
                     .any(|o| !o.0.gate.is_default() || !o.1.gate.is_default()))
         {
@@ -1006,7 +1369,7 @@ impl OfflineEngine {
             ));
         }
         if let ProcessingCommand::ProcessingSet { input, .. } = &r.command
-            && crate::processing_wire::input_index(input)? >= self.mixer.input_count()
+            && crate::processing_wire::input_index(input)? >= self.topology().inputs.len()
         {
             return Ok(ProcessingReply::new(
                 r,
@@ -1095,7 +1458,7 @@ impl OfflineEngine {
         let refusal = if !fresh {
             Some("stale_snapshot")
         } else {
-            self.mixer.faulted().then_some("faulted")
+            self.source_faulted().then_some("faulted")
         };
         let checked = check.processing_transaction(&history, now, refusal);
         if matches!(
@@ -1113,7 +1476,7 @@ impl OfflineEngine {
             || self.pending.is_some()
             || self.processing_pending.is_some()
             || self.sends_pending.is_some()
-            || !self.mixer.processing_ready()
+            || self.observed.processing.iter().any(|p| p.2 != 0)
             || !self.processing_completions.is_empty()
         {
             return Ok(ProcessingReply::new(
@@ -1137,8 +1500,8 @@ impl OfflineEngine {
             unreachable!()
         };
         let prepared = Prepared::processing_for(
-            self.mixer.input_count(),
-            self.mixer.monitor_count(),
+            self.topology().inputs.len(),
+            self.topology().monitors,
             crate::processing_wire::input_index(&input)?,
             crate::channel_processing::Prepared::new(config)?,
         )?;
@@ -1150,7 +1513,7 @@ impl OfflineEngine {
                 self.revision(),
             ));
         };
-        let Ok(frame) = self.mixer.schedule(prepared, self.next_ticket) else {
+        let Ok(frame) = self.schedule_source(prepared, self.next_ticket) else {
             return Ok(ProcessingReply::new(
                 r,
                 "backpressure",
@@ -1178,26 +1541,27 @@ impl OfflineEngine {
             epoch: a.epoch,
             revision: a.revision,
             sequence: a.sequence,
-            frame: Counter(self.frame()),
+            frame: Counter(self.observed.frame),
             sample_rate: 48000,
             supported_modes: crate::sends_wire::MODES.to_vec(),
             tap_positions: crate::sends_wire::POSITIONS
                 .iter()
                 .map(|s| (*s).into())
                 .collect(),
-            monitors: (1..=self.mixer.monitor_count())
+            monitors: (1..=self.topology().monitors)
                 .map(|m| format!("monitor-{m}"))
                 .collect(),
-            faulted: self.mixer.faulted(),
+            faulted: self.observed.faulted,
             channels: self
-                .mixer
-                .send_observations()
-                .into_iter()
+                .observed
+                .sends
+                .iter()
                 .enumerate()
                 .map(|(i, row)| crate::sends_wire::Channel {
                     input: format!("input-{:02}", i + 1),
                     sends: row
-                        .into_iter()
+                        .iter()
+                        .copied()
                         .enumerate()
                         .map(
                             |(m, (current, target, remaining))| crate::sends_wire::Send {
@@ -1250,8 +1614,8 @@ impl OfflineEngine {
             ));
         }
         if let SendsCommand::SendTapSet { input, monitor, .. } = &r.command
-            && (crate::processing_wire::input_index(input)? >= self.mixer.input_count()
-                || crate::sends_wire::monitor_index(monitor)? >= self.mixer.monitor_count())
+            && (crate::processing_wire::input_index(input)? >= self.topology().inputs.len()
+                || crate::sends_wire::monitor_index(monitor)? >= self.topology().monitors)
         {
             return Ok(SendsReply::new(
                 r,
@@ -1344,7 +1708,7 @@ impl OfflineEngine {
         let refusal = if !fresh {
             Some("stale_snapshot")
         } else {
-            self.mixer.faulted().then_some("faulted")
+            self.source_faulted().then_some("faulted")
         };
         let checked = check.scoped_transaction(&history, now, refusal, r.scope()?);
         if matches!(
@@ -1362,7 +1726,7 @@ impl OfflineEngine {
             || self.pending.is_some()
             || self.sends_pending.is_some()
             || self.processing_pending.is_some()
-            || !self.mixer.sends_ready()
+            || self.observed.sends.iter().flatten().any(|s| s.2 != 0)
             || !self.sends_completions.is_empty()
         {
             return Ok(SendsReply::new(r, "backpressure", None, self.revision()));
@@ -1386,8 +1750,8 @@ impl OfflineEngine {
             unreachable!()
         };
         let prepared = Prepared::send_for(
-            self.mixer.input_count(),
-            self.mixer.monitor_count(),
+            self.topology().inputs.len(),
+            self.topology().monitors,
             crate::processing_wire::input_index(input)?,
             crate::sends_wire::monitor_index(monitor)?,
             *tap,
@@ -1395,7 +1759,7 @@ impl OfflineEngine {
         let Some(next) = self.next_ticket.checked_add(1) else {
             return Ok(SendsReply::new(r, "backpressure", None, self.revision()));
         };
-        let Ok(frame) = self.mixer.schedule(prepared, self.next_ticket) else {
+        let Ok(frame) = self.schedule_source(prepared, self.next_ticket) else {
             return Ok(SendsReply::new(r, "backpressure", None, self.revision()));
         };
         let pending = SendsPending {
@@ -1642,13 +2006,15 @@ impl OfflineEngine {
         let scope = self.authority.live_scope(r, now).ok_or("lease")?;
         let prepared = match &r.command {
             Command::Set { targets } => Prepared::edits_for(
-                self.mixer.input_count(),
-                self.mixer.monitor_count(),
+                self.topology().inputs.len(),
+                self.topology().monitors,
                 targets,
             )?,
-            Command::SetMode { .. } => {
-                Prepared::freeze_for(self.mixer.input_count(), self.mixer.monitor_count(), scope)
-            }
+            Command::SetMode { .. } => Prepared::freeze_for(
+                self.topology().inputs.len(),
+                self.topology().monitors,
+                scope,
+            ),
             Command::ReleasePreview { .. } => {
                 let (old, _) = self.authority.state();
                 let (new, _) = staged.state();
@@ -1661,14 +2027,18 @@ impl OfflineEngine {
                         value: n.target_value.clone(),
                     })
                     .collect();
-                Prepared::edits_for(self.mixer.input_count(), self.mixer.monitor_count(), &edits)?
+                Prepared::edits_for(
+                    self.topology().inputs.len(),
+                    self.topology().monitors,
+                    &edits,
+                )?
             }
             _ => unreachable!(),
         };
         let Some(next) = self.next_ticket.checked_add(1) else {
             return Ok(Self::backpressure(r));
         };
-        let frame = match self.mixer.schedule(prepared, self.next_ticket) {
+        let frame = match self.schedule_source(prepared, self.next_ticket) {
             Ok(frame) => frame,
             Err(_) => return Ok(Self::backpressure(r)),
         };
@@ -1694,7 +2064,7 @@ impl OfflineEngine {
         output: &mut [[f64; 4]],
         now_ms: u64,
     ) -> Result<Vec<RenderedReply>> {
-        if !self.mixer.topology().is_legacy() {
+        if !self.topology().is_legacy() {
             return Err("legacy shape".into());
         }
         self.process_interleaved(input.as_flattened(), output.as_flattened_mut(), now_ms)
@@ -1705,171 +2075,484 @@ impl OfflineEngine {
         output: &mut [f64],
         now_ms: u64,
     ) -> Result<Vec<RenderedReply>> {
-        let ni = self.mixer.input_count();
-        let no = self.mixer.monitor_count() + 2;
+        let ni = self.topology().inputs.len();
+        let no = self.topology().monitors + 2;
         if !input.len().is_multiple_of(ni) || output.len() != input.len() / ni * no {
             return Err("buffer length".into());
         }
-        self.authority.observe_control_time(now_ms)?;
+        let frames = input.len() / ni;
         let end = self
             .frame()
-            .checked_add((input.len() / ni) as u64)
+            .checked_add(frames as u64)
             .ok_or("clock exhausted")?;
-        if self
-            .external_boundary()
-            .is_some_and(|boundary| end > boundary)
+        if self.validated_external.is_none()
+            && self
+                .external_boundary()
+                .is_some_and(|boundary| end > boundary)
         {
             return Err("external boundary requires commit before render".into());
         }
-        let mut replies = Vec::new();
-        if let Some(split) = self
+        // Preserve the historical offline API's boundary-sample snapshot. The
+        // production source caller uses a complete prepared quantum and observes
+        // it after PA/REC; it does not interleave this compatibility pump with DSP.
+        let boundary = self
             .processing_pending
             .as_ref()
-            .filter(|p| p.frame < end)
-            .map(|p| (p.frame - self.frame()) as usize)
+            .map(|p| p.frame)
+            .or_else(|| self.sends_pending.as_ref().map(|p| p.frame))
+            .or_else(|| self.pending.as_ref().map(|p| p.frame));
+        let first = boundary
+            .filter(|f| *f < end)
+            .map_or(frames, |f| (f - self.frame()) as usize + 1);
+        self.prepare_render(first, now_ms)?;
+        let _ = self.render_prepared(&input[..first * ni], &mut output[..first * no]);
+        let replies = self.finish_render()?;
+        if first < frames {
+            self.prepare_render(frames - first, now_ms)?;
+            let _ = self.render_prepared(&input[first * ni..], &mut output[first * no..]);
+            debug_assert!(self.validated_render.is_none());
+            self.finish_render()?;
+        }
+        Ok(replies)
+    }
+
+    /// Enter a source-issued preparation window. Public frame/readback continues
+    /// to report the last observed source state, never this future reservation.
+    pub(crate) fn begin_source_admission(
+        &mut self,
+        admission: source::SourceAdmission,
+    ) -> Result<()> {
+        if self.source.is_some()
+            || self.detached_in_flight
+            || self.source_command.is_some()
+            || self.validated_render.is_some()
+            || self.validated_external.is_some()
+            || self.source_admission.is_some()
+            || admission.epoch != self.clock.epoch
+            || !self.source_closure.same_owner(&admission.owner)
+            || self.source_closure.closed()
+            || admission.frame < self.frame()
         {
-            self.mixer
-                .process_interleaved(&input[..split * ni], &mut output[..split * no])
-                .map_err(|e| format!("{e:?}"))?;
-            let p = self.processing_pending.take().expect("pending");
+            return Err("source admission ownership/state".into());
+        }
+        self.source_admission = Some(admission);
+        Ok(())
+    }
+    pub(crate) fn admission_frame(&self) -> Option<u64> {
+        self.source_admission
+            .as_ref()
+            .map(source::SourceAdmission::frame)
+    }
+    pub(crate) fn end_source_admission(&mut self) {
+        self.source_admission = None;
+    }
+    fn preparation_frame(&self) -> u64 {
+        self.admission_frame().unwrap_or_else(|| self.frame())
+    }
+
+    /// Controller phase: validate the one globally reserved transaction and
+    /// admit a numeric plan to owned DSP state. No metadata is published yet.
+    pub(crate) fn prepare_render(&mut self, frames: usize, now_ms: u64) -> Result<()> {
+        if self.source.as_ref().is_some_and(SourceState::busy)
+            || self.source_command.is_some()
+            || self.validated_render.is_some()
+            || self.detached_in_flight
+        {
+            return Err("render completion not observed".into());
+        }
+        self.authority.observe_control_time(now_ms)?;
+        let frame = self.preparation_frame();
+        let end = frame.checked_add(frames as u64).ok_or("clock exhausted")?;
+        if self.validated_external.is_none()
+            && self
+                .external_boundary()
+                .is_some_and(|boundary| end > boundary)
+        {
+            return Err("external boundary requires commit before render".into());
+        }
+        if !self.topology().is_legacy() && frames > self.topology().max_block_frames {
+            return Err("buffer length".into());
+        }
+        let validation_end = if self
+            .source_admission
+            .as_ref()
+            .is_some_and(|a| a.frame > self.frame())
+        {
+            end.checked_add(1).ok_or("clock exhausted")?
+        } else {
+            end
+        };
+        let mut commit = None;
+        let fault = self.source_faulted().then_some("faulted");
+        if let Some(p) = self
+            .processing_pending
+            .as_ref()
+            .filter(|p| p.frame < validation_end)
+        {
             let mut staged = self.authority.clone();
-            let checked = staged.processing_transaction(
+            let reply = staged.processing_transaction(&p.request.history_request(), now_ms, fault);
+            commit = Some((p.ticket, p.frame, reply.kind == "applied", true));
+            self.validated_render = Some(ValidatedRender {
+                staged,
+                reply,
+                now_ms,
+            });
+        } else if let Some(p) = self
+            .sends_pending
+            .as_ref()
+            .filter(|p| p.frame < validation_end)
+        {
+            let mut staged = self.authority.clone();
+            let reply = staged.scoped_transaction(
                 &p.request.history_request(),
                 now_ms,
-                self.mixer.faulted().then_some("faulted"),
+                fault,
+                p.request.scope()?,
             );
-            if checked.kind != "applied" {
-                self.mixer.cancel(p.ticket);
-                self.authority = staged;
-                let reply =
-                    ProcessingReply::new(&p.request, "final", checked.body.reason, self.revision());
-                self.remember_processing(p.request, reply.clone());
-                self.processing_completions.push(reply);
-                self.mixer
-                    .process_interleaved(&input[split * ni..], &mut output[split * no..])
-                    .map_err(|e| format!("{e:?}"))?;
-            } else {
-                self.mixer
-                    .process_interleaved(
-                        &input[split * ni..(split + 1) * ni],
-                        &mut output[split * no..(split + 1) * no],
-                    )
-                    .map_err(|e| format!("{e:?}"))?;
-                let done = self.mixer.take_completion().ok_or("completion missing")?;
-                if done.ticket != p.ticket || done.frame != p.frame {
-                    return Err("completion identity".into());
-                }
-                self.authority = staged;
-                let mut reply = ProcessingReply::new(&p.request, "final", None, self.revision());
+            commit = Some((p.ticket, p.frame, reply.kind == "applied", true));
+            self.validated_render = Some(ValidatedRender {
+                staged,
+                reply,
+                now_ms,
+            });
+        } else if let Some(p) = self.pending.as_ref().filter(|p| p.frame < validation_end) {
+            let mut staged = self.authority.clone();
+            let reply = staged.handle(&p.request, now_ms);
+            commit = Some((p.ticket, p.frame, reply.kind == "applied", false));
+            self.validated_render = Some(ValidatedRender {
+                staged,
+                reply,
+                now_ms,
+            });
+        }
+        let fence = self
+            .external_boundary()
+            .filter(|_| self.validated_external.is_none())
+            .into_iter()
+            .chain(
+                self.processing_pending
+                    .as_ref()
+                    .map(|p| p.frame)
+                    .or_else(|| self.sends_pending.as_ref().map(|p| p.frame))
+                    .or_else(|| self.pending.as_ref().map(|p| p.frame))
+                    .filter(|_| commit.is_none()),
+            )
+            .min();
+        let plan = RenderPlan {
+            revision: self
+                .validated_render
+                .as_ref()
+                .map_or(self.revision().0, |validated| {
+                    validated.reply.body.revision.0
+                }),
+            frame,
+            frames,
+            commit,
+            fence,
+        };
+        if let Some(source) = &mut self.source {
+            source.admit(plan);
+        } else {
+            self.detached_in_flight = true;
+            self.source_command = Some(source::SourceCommand {
+                owner: self.source_closure.clone(),
+                epoch: self.clock.epoch,
+                prepared: self.pending_source_prepared.take(),
+                plan,
+                operator_tap: self.pending_operator_tap.take(),
+                fx_sends: std::mem::take(&mut self.pending_fx_sends),
+                admission: self.source_admission.clone(),
+                installed: false,
+                expires: None,
+                #[cfg(feature = "hardware-host")]
+                authority_fence: None,
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn queued_render_replies(&self) -> usize {
+        self.processing_completions.len() + self.sends_completions.len()
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn pending_lease_remaining(&self, now: u64) -> Option<u32> {
+        let request = self
+            .pending
+            .as_ref()
+            .map(|p| p.request.clone())
+            .or_else(|| {
+                self.processing_pending
+                    .as_ref()
+                    .map(|p| p.request.history_request())
+            })
+            .or_else(|| {
+                self.sends_pending
+                    .as_ref()
+                    .map(|p| p.request.history_request())
+            });
+        request.and_then(|r| {
+            self.authority
+                .live_lease_witness(&r, now)
+                .ok()
+                .map(|(_, ms)| ms)
+        })
+    }
+    pub(crate) fn take_source_command(&mut self) -> Option<source::SourceCommand> {
+        self.source_command.take()
+    }
+
+    /// Finish a returned packet which was refused before any source mutation.
+    /// Refusal is protocol history, not a source fault or a published revision.
+    pub(crate) fn reject_source_command(
+        &mut self,
+        command: &source::SourceCommand,
+    ) -> Result<Vec<RenderedReply>> {
+        if command.installed
+            || !self.detached_in_flight
+            || self.source.is_some()
+            || command.epoch != self.clock.epoch
+            || !self.source_closure.same_owner(&command.owner)
+        {
+            return Err("source refusal ownership/state".into());
+        }
+        self.reject_uninstalled_preparation()
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn abort_source_preparation(&mut self) -> Result<Vec<RenderedReply>> {
+        if self.source.is_some() || self.detached_in_flight || self.source_command.is_some() {
+            return Err("source preparation already published".into());
+        }
+        self.reject_uninstalled_preparation()
+    }
+    fn reject_uninstalled_preparation(&mut self) -> Result<Vec<RenderedReply>> {
+        self.detached_in_flight = false;
+        self.validated_render = None;
+        self.pending_source_prepared = None;
+        let mut replies = Vec::new();
+        if let Some(p) = self.pending.take() {
+            let reply = Self::wrapped(self.authority.reply(
+                &p.request,
+                "rejected",
+                Some("source_admission"),
+            ));
+            self.remember(p.request, reply.clone());
+            replies.push(reply);
+        }
+        if let Some(p) = self.processing_pending.take() {
+            let reply = ProcessingReply::new(
+                &p.request,
+                "final",
+                Some("source_admission".into()),
+                self.revision(),
+            );
+            self.remember_processing(p.request, reply.clone());
+            self.processing_completions.push(reply);
+        }
+        if let Some(p) = self.sends_pending.take() {
+            let reply = SendsReply::new(
+                &p.request,
+                "final",
+                Some("source_admission".into()),
+                self.revision(),
+            );
+            self.remember_sends(p.request, reply.clone());
+            self.sends_completions.push(reply);
+        }
+        Ok(replies)
+    }
+
+    /// Transfer the sole DSP owner. Controller readback remains at its last
+    /// coherent observation; synchronous mutation entry points refuse detachment.
+    pub(crate) fn take_source(&mut self) -> Result<SourceState> {
+        let source = self.source.take().ok_or("source already transferred")?;
+        self.source_topology.clone_from(source.mixer.topology());
+        self.detached_in_flight = source.busy();
+        Ok(source)
+    }
+    pub(crate) fn restore_source(&mut self, mut source: SourceState) -> Result<()> {
+        if self.source.is_some()
+            || source.epoch() != self.clock.epoch
+            || !self.source_closure.same_owner(&source.closure())
+        {
+            return Err("source ownership/epoch mismatch".into());
+        }
+        self.source_topology.clone_from(source.mixer.topology());
+        if let Some(tap) = self.pending_operator_tap.take() {
+            source.mixer.set_operator_tap(tap);
+        }
+        if !source.mixer.apply_fx_sends(&mut self.pending_fx_sends) {
+            return Err("FX aux deferred command refused".into());
+        }
+        self.pending_fx_sends = Default::default();
+        self.source = Some(source);
+        self.detached_in_flight = false;
+        Ok(())
+    }
+    pub(crate) fn source_completion(&self) -> source::SourceCompletion {
+        source::SourceCompletion {
+            owner: self.source_closure.clone(),
+            epoch: self.clock.epoch,
+            receipt: None,
+            observation: self.observed.clone(),
+        }
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn finish_source_observation(
+        &mut self,
+        packet: &mut source::SourceCompletion,
+    ) -> Result<()> {
+        if self.source.is_some()
+            || packet.epoch != self.clock.epoch
+            || !self.source_closure.same_owner(&packet.owner)
+            || packet.receipt.is_some()
+            || self.detached_in_flight
+        {
+            return Err("source observation ownership/state".into());
+        }
+        std::mem::swap(&mut self.observed, &mut packet.observation);
+        self.clock.next_frame = self.observed.frame;
+        Ok(())
+    }
+    pub(crate) fn finish_source_completion(
+        &mut self,
+        packet: &mut source::SourceCompletion,
+    ) -> Result<Vec<RenderedReply>> {
+        if self.source.is_some()
+            || packet.epoch != self.clock.epoch
+            || !self.source_closure.same_owner(&packet.owner)
+        {
+            return Err("source completion ownership/epoch".into());
+        }
+        let receipt = packet.receipt.take().ok_or("render receipt missing")?;
+        self.detached_in_flight = false;
+        std::mem::swap(&mut self.observed, &mut packet.observation);
+        self.finish_receipt(receipt)
+    }
+    /// Bounded source phase; the owned state retains its receipt until observed.
+    pub(crate) fn render_prepared(
+        &mut self,
+        input: &[f64],
+        output: &mut [f64],
+    ) -> std::result::Result<(), crate::mixer::ProcessError> {
+        let Some(source) = &mut self.source else {
+            output.fill(0.);
+            return Err(crate::mixer::ProcessError::Faulted);
+        };
+        source.render(self.clock.epoch, input, output)
+    }
+
+    /// Controller phase: observe the numeric result, destroy retired storage,
+    /// install applied authority and create coherent end-of-quantum readback.
+    pub(crate) fn finish_render(&mut self) -> Result<Vec<RenderedReply>> {
+        let source = self.source.as_mut().ok_or("source detached")?;
+        let receipt = source.take_receipt().ok_or("render receipt missing")?;
+        std::mem::swap(&mut self.observed, &mut source.observation);
+        self.finish_receipt(receipt)
+    }
+
+    fn finish_receipt(&mut self, receipt: source::RenderReceipt) -> Result<Vec<RenderedReply>> {
+        self.clock.next_frame = self.observed.frame;
+        if let Err(error) = receipt.result {
+            self.validated_render = None;
+            return Err(format!("{error:?}"));
+        }
+        let mut replies = Vec::new();
+        let Some(mut validated) = self.validated_render.take() else {
+            return Ok(replies);
+        };
+        let done = receipt.retirement.completion; // owned storage drops on this controller
+        if let Some(p) = self.processing_pending.take() {
+            if receipt.fault_before_commit || receipt.cancelled_before_commit {
+                validated.staged = self.authority.clone();
+                validated.reply = validated.staged.processing_transaction(
+                    &p.request.history_request(),
+                    validated.now_ms,
+                    Some(if receipt.cancelled_before_commit {
+                        "lease"
+                    } else {
+                        "faulted"
+                    }),
+                );
+            }
+            let applied = validated.reply.kind == "applied";
+            if applied
+                && done
+                    .as_ref()
+                    .is_none_or(|d| d.ticket != p.ticket || d.frame != p.frame)
+            {
+                return Err("completion identity".into());
+            }
+            self.authority = validated.staged;
+            let mut reply = ProcessingReply::new(
+                &p.request,
+                "final",
+                validated.reply.body.reason,
+                self.revision(),
+            );
+            if applied {
                 reply.ticket = Some(Counter(p.ticket));
                 reply.effective_frame = Some(Counter(p.frame));
                 reply.ramp_frames = Some(240);
                 reply.snapshot = Some(self.processing_snapshot()?);
-                self.remember_processing(p.request, reply.clone());
-                self.processing_completions.push(reply);
-                self.mixer
-                    .process_interleaved(
-                        &input[(split + 1) * ni..],
-                        &mut output[(split + 1) * no..],
-                    )
-                    .map_err(|e| format!("{e:?}"))?;
             }
-            self.clock.next_frame = self.frame();
-            return Ok(replies);
-        }
-        if let Some(split) = self
-            .sends_pending
-            .as_ref()
-            .filter(|p| p.frame < end)
-            .map(|p| (p.frame - self.frame()) as usize)
-        {
-            self.mixer
-                .process_interleaved(&input[..split * ni], &mut output[..split * no])
-                .map_err(|e| format!("{e:?}"))?;
-            let p = self.sends_pending.take().expect("pending");
-            let mut staged = self.authority.clone();
-            let checked = staged.scoped_transaction(
-                &p.request.history_request(),
-                now_ms,
-                self.mixer.faulted().then_some("faulted"),
-                p.request.scope()?,
+            self.remember_processing(p.request, reply.clone());
+            self.processing_completions.push(reply);
+        } else if let Some(p) = self.sends_pending.take() {
+            if receipt.fault_before_commit || receipt.cancelled_before_commit {
+                validated.staged = self.authority.clone();
+                validated.reply = validated.staged.scoped_transaction(
+                    &p.request.history_request(),
+                    validated.now_ms,
+                    Some(if receipt.cancelled_before_commit {
+                        "lease"
+                    } else {
+                        "faulted"
+                    }),
+                    p.request.scope()?,
+                );
+            }
+            let applied = validated.reply.kind == "applied";
+            if applied
+                && done
+                    .as_ref()
+                    .is_none_or(|d| d.ticket != p.ticket || d.frame != p.frame)
+            {
+                return Err("completion identity".into());
+            }
+            self.authority = validated.staged;
+            let mut reply = SendsReply::new(
+                &p.request,
+                "final",
+                validated.reply.body.reason,
+                self.revision(),
             );
-            if checked.kind != "applied" {
-                self.mixer.cancel(p.ticket);
-                self.authority = staged;
-                let reply =
-                    SendsReply::new(&p.request, "final", checked.body.reason, self.revision());
-                self.remember_sends(p.request, reply.clone());
-                self.sends_completions.push(reply);
-                self.mixer
-                    .process_interleaved(&input[split * ni..], &mut output[split * no..])
-                    .map_err(|e| format!("{e:?}"))?;
-            } else {
-                self.mixer
-                    .process_interleaved(
-                        &input[split * ni..(split + 1) * ni],
-                        &mut output[split * no..(split + 1) * no],
-                    )
-                    .map_err(|e| format!("{e:?}"))?;
-                let done = self.mixer.take_completion().ok_or("completion missing")?;
-                if done.ticket != p.ticket || done.frame != p.frame {
-                    return Err("completion identity".into());
-                }
-                self.authority = staged;
-                let mut reply = SendsReply::new(&p.request, "final", None, self.revision());
+            if applied {
                 reply.ticket = Some(Counter(p.ticket));
                 reply.effective_frame = Some(Counter(p.frame));
                 reply.ramp_frames = Some(240);
                 reply.snapshot = Some(self.sends_snapshot()?);
-                self.remember_sends(p.request, reply.clone());
-                self.sends_completions.push(reply);
-                self.mixer
-                    .process_interleaved(
-                        &input[(split + 1) * ni..],
-                        &mut output[(split + 1) * no..],
-                    )
-                    .map_err(|e| format!("{e:?}"))?;
             }
-            self.clock.next_frame = self.frame();
-            return Ok(replies);
-        }
-        let split = self
-            .pending
-            .as_ref()
-            .filter(|p| p.frame < end)
-            .map(|p| (p.frame - self.frame()) as usize);
-        if let Some(split) = split {
-            self.mixer
-                .process_interleaved(&input[..split * ni], &mut output[..split * no])
-                .map_err(|e| format!("{e:?}"))?;
-            if let Some(p) = &mut self.pending {
-                // Re-run authority validation at commit, before any DSP application.
-                // No mutating requests were admitted while pending, so only time and
-                // observation sequence can differ. This validates preview expiry too.
-                let mut current = self.authority.clone();
-                let reply = current.handle(&p.request, now_ms);
-                if reply.kind != "applied" {
-                    let p = self.pending.take().unwrap();
-                    self.mixer.cancel(p.ticket);
-                    self.authority = current;
-                    let final_reply = Self::wrapped(reply);
-                    self.remember(p.request, final_reply.clone());
-                    replies.push(final_reply);
-                } else {
-                    p.staged = current;
-                    p.reply = reply;
-                }
+            self.remember_sends(p.request, reply.clone());
+            self.sends_completions.push(reply);
+        } else {
+            let mut p = self.pending.take().ok_or("completion without pending")?;
+            p.staged = validated.staged;
+            p.reply = validated.reply;
+            if receipt.cancelled_before_commit {
+                p.staged = self.authority.clone();
+                p.reply = p.staged.reply(&p.request, "rejected", Some("lease"));
             }
-            // Render exactly the boundary sample, then drain primitive completion.
-            self.mixer
-                .process_interleaved(
-                    &input[split * ni..(split + 1) * ni],
-                    &mut output[split * no..(split + 1) * no],
-                )
-                .map_err(|e| format!("{e:?}"))?;
-            if let Some(done) = self.mixer.take_completion() {
-                let mut p = self.pending.take().ok_or("completion without pending")?;
-                if done.ticket != p.ticket || done.frame != p.frame {
+            if p.reply.kind != "applied" {
+                self.authority = p.staged;
+                let reply = Self::wrapped(p.reply);
+                self.remember(p.request, reply.clone());
+                replies.push(reply);
+            } else {
+                if done
+                    .as_ref()
+                    .is_none_or(|d| d.ticket != p.ticket || d.frame != p.frame)
+                {
                     return Err("completion identity".into());
                 }
                 self.update_holds(&p);
@@ -1885,21 +2568,13 @@ impl OfflineEngine {
                 self.remember(p.request, reply.clone());
                 replies.push(reply);
             }
-            self.mixer
-                .process_interleaved(&input[(split + 1) * ni..], &mut output[(split + 1) * no..])
-                .map_err(|e| format!("{e:?}"))?;
-        } else {
-            self.mixer
-                .process_interleaved(input, output)
-                .map_err(|e| format!("{e:?}"))?;
         }
-        self.clock.next_frame = self.frame();
         Ok(replies)
     }
     fn update_holds(&mut self, p: &Pending) {
         let (new, _) = p.staged.state();
-        let c = self.mixer.coefficients();
-        let targets = self.mixer.targets();
+        let c = &self.observed.current;
+        let targets = &self.observed.targets;
         for (i, row) in self.holds.iter_mut().enumerate() {
             if matches!(p.request.command, Command::SetMode { .. }) {
                 let indices: &[usize] = match p.scope {
@@ -2026,5 +2701,859 @@ impl EngineIntent {
     pub fn save(&self, directory: &std::path::Path, name: &str) -> Result<()> {
         OfflineEngine::restore_intent(self, Counter(1), 0)?;
         crate::show::persist_bounded(directory, name, self, crate::snapshot_pages::ASSEMBLY_BYTES)
+    }
+}
+
+#[cfg(test)]
+mod render_boundary_tests {
+    use super::*;
+
+    fn unprepared_processing() -> (OfflineEngine, ProcessingRequest) {
+        let mut engine = OfflineEngine::new(
+            "11111111-1111-4111-8111-111111111111",
+            Counter(9),
+            Counter(0),
+            0,
+        )
+        .unwrap();
+        let request = Request {
+            contract: "C-AUDIO".into(),
+            version: 1,
+            show_id: "11111111-1111-4111-8111-111111111111".into(),
+            module: "audio".into(),
+            epoch: Counter(9),
+            writer: Some("desk".into()),
+            lease: None,
+            request_id: Some(Counter(1)),
+            expected_revision: Some(Counter(0)),
+            command: Command::Grant { scope: Scope::Foh },
+        };
+        let lease = engine
+            .handle(&request, 0)
+            .unwrap()
+            .outcome
+            .unwrap()
+            .body
+            .granted_lease;
+        let request = ProcessingRequest {
+            contract: "GP07-processing".into(),
+            version: 2,
+            show_id: request.show_id,
+            module: request.module,
+            epoch: request.epoch,
+            writer: request.writer,
+            lease,
+            request_id: Some(Counter(2)),
+            expected_revision: Some(Counter(0)),
+            command: ProcessingCommand::ProcessingSet {
+                input: "input-01".into(),
+                config: crate::channel_processing::Config {
+                    eq_bypass: false,
+                    band2_gain_mdb: 6000,
+                    ..Default::default()
+                },
+            },
+        };
+        (engine, request)
+    }
+    fn prepared_processing() -> (OfflineEngine, ProcessingRequest) {
+        let (mut engine, request) = unprepared_processing();
+        assert_eq!(
+            engine.handle_processing(&request, 1).unwrap().state,
+            "pending"
+        );
+        (engine, request)
+    }
+
+    #[test]
+    fn admitted_future_processing_keeps_observed_time_and_runs_without_second_pump() {
+        let (mut engine, request) = unprepared_processing();
+        let mut packet = engine.source_completion();
+        let mut source = engine.take_source().unwrap();
+        let mut output = [0.; 48 * 4];
+        engine.prepare_render(48, 1).unwrap();
+        let mut bootstrap = engine.take_source_command().unwrap();
+        source.install_command(&mut bootstrap).unwrap();
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        assert!(source.publish_completion(&mut packet));
+        engine.finish_source_completion(&mut packet).unwrap();
+
+        let admission = source.reserve_admission(144).unwrap();
+        assert_eq!(
+            (admission.epoch(), admission.frame(), admission.ticket()),
+            (9, 144, 1)
+        );
+        engine.begin_source_admission(admission).unwrap();
+        assert_eq!(engine.frame(), 48);
+        assert_eq!(engine.snapshot().unwrap().frame, Counter(48));
+        assert_eq!(
+            engine.handle_processing(&request, 2).unwrap().state,
+            "pending"
+        );
+        assert_eq!(engine.processing_pending.as_ref().unwrap().frame, 192);
+        engine.prepare_render(48, 2).unwrap();
+        let mut command = engine.take_source_command().unwrap();
+        engine.end_source_admission();
+        crate::remote::assert_no_allocations(|| {
+            for _ in 0..2 {
+                source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            }
+            assert!(!source.publish_completion(&mut packet));
+            source.install_command(&mut command).unwrap();
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            assert_eq!(source.mixer.frame(), 192);
+            assert!(!source.publish_completion(&mut packet));
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            assert!(source.publish_completion(&mut packet));
+        });
+        assert_eq!(engine.frame(), 48);
+        engine.finish_source_completion(&mut packet).unwrap();
+        assert_eq!(engine.frame(), 240);
+        assert_eq!(engine.revision(), Counter(1));
+        assert_eq!(
+            engine.take_processing_completions()[0].effective_frame,
+            Some(Counter(192))
+        );
+        assert!(engine.reject_source_command(&command).is_err());
+    }
+
+    #[test]
+    fn clocked_lease_expiry_cancels_installed_future_mutation_without_publication() {
+        let (mut engine, request) = unprepared_processing();
+        let mut packet = engine.source_completion();
+        let mut source = engine.take_source().unwrap();
+        let mut output = [0.; 48 * 4];
+        engine.prepare_render(48, 1).unwrap();
+        let mut bootstrap = engine.take_source_command().unwrap();
+        source.install_command(&mut bootstrap).unwrap();
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        source.publish_completion(&mut packet);
+        engine.finish_source_completion(&mut packet).unwrap();
+        let admission = source.reserve_admission(96).unwrap();
+        engine.begin_source_admission(admission).unwrap();
+        assert_eq!(
+            engine.handle_processing(&request, 2).unwrap().state,
+            "pending"
+        );
+        engine.prepare_render(48, 2).unwrap();
+        let mut command = engine.take_source_command().unwrap();
+        engine.end_source_admission();
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        // Exercise the numeric commit's own deadline check, independently of
+        // the executor's pre-install deadline gate.
+        command.expires = Some(std::time::Instant::now());
+        source.install_command(&mut command).unwrap();
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        assert!(source.publish_completion(&mut packet));
+        engine.finish_source_completion(&mut packet).unwrap();
+        assert_eq!(engine.revision(), Counter(0));
+        assert_eq!(
+            engine.take_processing_completions()[0].reason.as_deref(),
+            Some("lease")
+        );
+        assert_eq!(source.mixer.frame(), 192);
+    }
+
+    #[test]
+    #[cfg(feature = "hardware-host")]
+    fn clocked_session_closure_cancels_delayed_commit_without_controller_service() {
+        let (mut engine, request) = unprepared_processing();
+        let mut packet = engine.source_completion();
+        let mut source = engine.take_source().unwrap();
+        let mut output = [0.; 48 * 4];
+        engine.prepare_render(48, 1).unwrap();
+        let mut bootstrap = engine.take_source_command().unwrap();
+        source.install_command(&mut bootstrap).unwrap();
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        source.publish_completion(&mut packet);
+        engine.finish_source_completion(&mut packet).unwrap();
+        let admission = source.reserve_admission(96).unwrap();
+        engine.begin_source_admission(admission).unwrap();
+        assert_eq!(
+            engine.handle_processing(&request, 2).unwrap().state,
+            "pending"
+        );
+        engine.prepare_render(48, 2).unwrap();
+        let mut command = engine.take_source_command().unwrap();
+        engine.end_source_admission();
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        use sha2::{Digest, Sha256};
+        let policy = crate::remote::PolicyStore::new(vec![crate::remote::Peer {
+            id: "clock-peer".into(),
+            certificate_sha256: format!("{:x}", Sha256::digest(b"clock-peer")),
+            permissions: [crate::remote::Permission::Foh].into_iter().collect(),
+        }])
+        .unwrap();
+        let context = policy.authenticate(b"clock-peer", 1).unwrap();
+        command.authority_fence = Some(context.audio_fence());
+        source.install_command(&mut command).unwrap();
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        context.close_audio();
+        crate::remote::assert_no_allocations(|| {
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        });
+        assert!(source.publish_completion(&mut packet));
+        engine.finish_source_completion(&mut packet).unwrap();
+        assert_eq!(engine.revision(), Counter(0));
+        assert_eq!(
+            engine.take_processing_completions()[0].reason.as_deref(),
+            Some("lease")
+        );
+        assert_eq!(source.mixer.frame(), 192);
+    }
+
+    #[test]
+    fn expired_or_superseded_admission_returns_storage_without_stopping_source() {
+        for superseded in [false, true] {
+            let (mut engine, request) = unprepared_processing();
+            let mut packet = engine.source_completion();
+            let mut source = engine.take_source().unwrap();
+            let mut output = [0.; 48 * 4];
+            engine.prepare_render(48, 1).unwrap();
+            let mut bootstrap = engine.take_source_command().unwrap();
+            source.install_command(&mut bootstrap).unwrap();
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            assert!(source.publish_completion(&mut packet));
+            engine.finish_source_completion(&mut packet).unwrap();
+            let admission = source.reserve_admission(96).unwrap();
+            engine.begin_source_admission(admission).unwrap();
+            engine.handle_processing(&request, 2).unwrap();
+            engine.prepare_render(48, 2).unwrap();
+            let mut command = engine.take_source_command().unwrap();
+            engine.end_source_admission();
+            if superseded {
+                source.reserve_admission(96).unwrap();
+            }
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            if !superseded {
+                source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            }
+            crate::remote::assert_no_allocations(|| {
+                assert!(source.install_command(&mut command).is_err());
+                for _ in 0..4 {
+                    source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+                }
+            });
+            assert!(command.prepared.is_some());
+            engine.reject_source_command(&command).unwrap();
+            assert_eq!(engine.revision(), Counter(0));
+            assert_eq!(
+                engine.take_processing_completions()[0].reason.as_deref(),
+                Some("source_admission")
+            );
+            assert!(!source.mixer.faulted());
+            assert!(engine.processing_pending.is_none());
+        }
+    }
+
+    #[test]
+    fn admission_binds_owner_epoch_and_terminal_closure() {
+        let (mut engine, _) = unprepared_processing();
+        let mut source = engine.take_source().unwrap();
+        let admission = source.reserve_admission(48).unwrap();
+        let (mut other, _) = unprepared_processing();
+        let _other_source = other.take_source().unwrap();
+        assert!(other.begin_source_admission(admission.clone()).is_err());
+        source.closure().close();
+        assert!(engine.begin_source_admission(admission).is_err());
+        assert!(source.reserve_admission(48).is_err());
+    }
+
+    #[test]
+    fn detached_output_observation_and_patch_publication_do_not_borrow_source() {
+        let (mut engine, _) = unprepared_processing();
+        let mut completion = engine.source_completion();
+        let mut source = engine.take_source().unwrap();
+        source.mixer.mute_outputs().unwrap();
+        engine.prepare_render(48, 1).unwrap();
+        let mut command = engine.take_source_command().unwrap();
+        source.install_command(&mut command).unwrap();
+        let mut output = [0.; 48 * 4];
+        for _ in 0..5 {
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        }
+        assert!(source.publish_completion(&mut completion));
+        engine.finish_source_completion(&mut completion).unwrap();
+        assert!(engine.outputs_quiesced());
+        assert_eq!(engine.output_safety_gain(engine.frame()), 0.);
+        let revision = engine.topology().map_revision;
+        let mut patch = engine
+            .prepare_output_patch(engine.topology().outputs.clone())
+            .unwrap();
+        assert!(engine.acknowledge_output_patch(&patch).is_err());
+        crate::remote::assert_no_allocations(|| {
+            source.mixer.apply_output_patch(&mut patch).unwrap()
+        });
+        engine.acknowledge_output_patch(&patch).unwrap();
+        assert_eq!(engine.topology().map_revision, revision + 1);
+        assert!(engine.acknowledge_output_patch(&patch).is_err());
+        assert_eq!(engine.topology(), source.mixer.topology());
+    }
+
+    #[test]
+    fn detached_operator_and_fx_commands_retain_storage_until_controller_return() {
+        let (mut engine, _) = unprepared_processing();
+        let mut completion = engine.source_completion();
+        let mut source = engine.take_source().unwrap();
+        engine.set_operator_tap(crate::brain_control::MonitorSource::Pfl { input: 0 });
+        engine.enable_fx_aux().unwrap();
+        engine.set_fx_sends(2, &[0.5; 8]).unwrap();
+        engine.prepare_render(48, 1).unwrap();
+        let mut command = engine.take_source_command().unwrap();
+        let mut output = [0.; 48 * 4];
+        crate::remote::assert_no_allocations(|| {
+            source.install_command(&mut command).unwrap();
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            assert!(source.publish_completion(&mut completion));
+        });
+        assert!(source.mixer.operator_tap().iter().any(|v| *v != 0.));
+        assert_eq!(source.mixer.fx_sends(2).unwrap(), vec![0.5; 8]);
+        engine.finish_source_completion(&mut completion).unwrap();
+        assert!(engine.observed.fx_aux_enabled);
+        drop(command); // allocating payloads are retired only on the controller.
+        engine.set_fx_sends(2, &[0.25; 8]).unwrap();
+        engine.prepare_render(48, 2).unwrap();
+        let mut command = engine.take_source_command().unwrap();
+        crate::remote::assert_no_allocations(|| source.install_command(&mut command).unwrap());
+        assert_eq!(source.mixer.fx_sends(2).unwrap(), vec![0.25; 8]);
+        assert_eq!(engine.fx_sends(2).unwrap(), vec![0.5; 8]);
+        crate::remote::assert_no_allocations(|| {
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            assert!(source.publish_completion(&mut completion));
+        });
+        engine.finish_source_completion(&mut completion).unwrap();
+        assert_eq!(engine.fx_sends(2).unwrap(), vec![0.25; 8]);
+        engine.quiesce("detached_source_close");
+        assert_eq!(engine.output_safety_gain(engine.frame()), 0.);
+    }
+
+    #[test]
+    fn detached_revocation_before_and_after_processing_commit_uses_actual_receipt() {
+        for revoke_before in [true, false] {
+            let (mut engine, request) = unprepared_processing();
+            let mut packet = engine.source_completion();
+            let mut source = engine.take_source().unwrap();
+            assert_eq!(
+                engine.handle_processing(&request, 1).unwrap().state,
+                "pending"
+            );
+            engine.prepare_render(96, 2).unwrap();
+            let mut command = engine.take_source_command().unwrap();
+            source.install_command(&mut command).unwrap();
+            if revoke_before {
+                engine.revoke_writer("desk");
+            }
+            let mut output = [0.; 96 * 4];
+            crate::remote::assert_no_allocations(|| {
+                source.render(9, &[0.25; 96 * 8], &mut output).unwrap();
+                assert!(source.publish_completion(&mut packet));
+            });
+            if !revoke_before {
+                engine.revoke_writer("desk");
+            }
+            assert_eq!(engine.revision(), Counter(0));
+            engine.finish_source_completion(&mut packet).unwrap();
+            let replies = engine.take_processing_completions();
+            assert_eq!(replies.len(), 1);
+            assert_eq!(
+                replies[0].effective_frame,
+                if revoke_before {
+                    None
+                } else {
+                    Some(Counter(48))
+                }
+            );
+            assert_eq!(replies[0].reason.is_some(), revoke_before);
+            assert_eq!(engine.revision(), Counter(u64::from(!revoke_before)));
+            assert_eq!(
+                engine.observed.processing[0].1.band2_gain_mdb,
+                if revoke_before { 0 } else { 6000 }
+            );
+            assert!(!engine.authority.writer_live("desk", 3));
+            assert!(engine.processing_pending.is_none());
+        }
+    }
+
+    #[test]
+    fn detached_revocation_before_and_after_mixer_commit_preserves_dsp_authority_agreement() {
+        for revoke_before in [true, false] {
+            let (mut engine, processing) = unprepared_processing();
+            let mut request = processing.history_request();
+            request.contract = "C-AUDIO".into();
+            request.version = engine.wire_version();
+            request.command = Command::Set {
+                targets: vec![Edit {
+                    target: crate::control_model::Target::Fader {
+                        input: "input-01".into(),
+                    },
+                    value: crate::control_model::Value::Integer(0),
+                }],
+            };
+            let before = engine.observed.targets[0][0];
+            assert_eq!(before, 10_f64.powf(-6.0 / 20.0));
+            let mut packet = engine.source_completion();
+            let mut source = engine.take_source().unwrap();
+            assert_eq!(engine.handle(&request, 1).unwrap().state, "pending");
+            engine.prepare_render(96, 2).unwrap();
+            let mut command = engine.take_source_command().unwrap();
+            source.install_command(&mut command).unwrap();
+            if revoke_before {
+                engine.revoke_writer("desk");
+            }
+            let mut output = [0.; 96 * 4];
+            crate::remote::assert_no_allocations(|| {
+                source.render(9, &[0.25; 96 * 8], &mut output).unwrap();
+                assert!(source.publish_completion(&mut packet));
+            });
+            if !revoke_before {
+                engine.revoke_writer("desk");
+            }
+            let replies = engine.finish_source_completion(&mut packet).unwrap();
+            assert_eq!(replies.len(), 1);
+            assert_eq!(
+                replies[0].effective_frame,
+                if revoke_before {
+                    None
+                } else {
+                    Some(Counter(48))
+                }
+            );
+            assert_eq!(engine.revision(), Counter(u64::from(!revoke_before)));
+            assert_eq!(
+                engine.observed.targets[0][0],
+                if revoke_before { before } else { 1.0 }
+            );
+            assert!(!engine.authority.writer_live("desk", 3));
+            assert!(engine.pending.is_none());
+        }
+    }
+
+    #[test]
+    fn synchronous_external_revision_transfers_only_after_success() {
+        for fail in [false, true] {
+            let mut engine = OfflineEngine::with_topology(
+                "11111111-1111-4111-8111-111111111111",
+                Counter(9),
+                Counter(0),
+                0,
+                crate::topology::EngineTopology::software(8, 2, 0).unwrap(),
+            )
+            .unwrap();
+            let mut request = Request {
+                contract: "C-AUDIO".into(),
+                version: 2,
+                show_id: "11111111-1111-4111-8111-111111111111".into(),
+                module: "audio".into(),
+                epoch: Counter(9),
+                writer: Some("desk".into()),
+                lease: None,
+                request_id: Some(Counter(1)),
+                expected_revision: Some(Counter(0)),
+                command: Command::Grant {
+                    scope: Scope::OutputRoutes,
+                },
+            };
+            request.lease = engine
+                .handle(&request, 0)
+                .unwrap()
+                .outcome
+                .unwrap()
+                .body
+                .granted_lease;
+            request.request_id = Some(Counter(2));
+            request.command = Command::Renew {};
+            assert_eq!(
+                engine
+                    .begin_external(&request, "source-evidence", Scope::OutputRoutes, 1)
+                    .unwrap()
+                    .0,
+                48
+            );
+            engine
+                .process_interleaved(&[0.25; 48 * 8], &mut [0.; 48 * 4], 1)
+                .unwrap();
+            let reply = engine
+                .commit_external(2, || {
+                    if fail {
+                        Err("refused preparation".into())
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap();
+            assert_eq!(reply.kind == "applied", !fail);
+            let source = engine.take_source().unwrap();
+            assert_eq!(source.applied_revision(), u64::from(!fail));
+            assert_eq!(source.applied_revision(), engine.revision().0);
+        }
+        let mut engine = OfflineEngine::new(
+            "11111111-1111-4111-8111-111111111111",
+            Counter(9),
+            Counter(17),
+            0,
+        )
+        .unwrap();
+        assert_eq!(engine.take_source().unwrap().applied_revision(), 17);
+    }
+
+    #[test]
+    fn detached_external_exact_boundary_retirement_order_and_revocation() {
+        for refusal in 0..3 {
+            let cancel = refusal == 1;
+            let expired = refusal == 2;
+            let refused = cancel || expired;
+            let show = "11111111-1111-4111-8111-111111111111";
+            let mut engine = OfflineEngine::with_topology(
+                show,
+                Counter(9),
+                Counter(0),
+                0,
+                crate::topology::EngineTopology::software(8, 2, 0).unwrap(),
+            )
+            .unwrap();
+            let mut request = Request {
+                contract: "C-AUDIO".into(),
+                version: 2,
+                show_id: show.into(),
+                module: "audio".into(),
+                epoch: Counter(9),
+                writer: Some("desk".into()),
+                lease: None,
+                request_id: Some(Counter(1)),
+                expected_revision: Some(Counter(0)),
+                command: Command::Grant {
+                    scope: Scope::OutputRoutes,
+                },
+            };
+            request.lease = engine
+                .handle(&request, 0)
+                .unwrap()
+                .outcome
+                .unwrap()
+                .body
+                .granted_lease;
+            request.request_id = Some(Counter(2));
+            request.command = Command::Renew {};
+            let mut packet = engine.source_completion();
+            let mut source = engine.take_source().unwrap();
+            assert_eq!(
+                engine
+                    .begin_external(&request, "detached-test", Scope::OutputRoutes, 1)
+                    .unwrap()
+                    .0,
+                48
+            );
+            engine.prepare_render(48, 1).unwrap();
+            let mut command = engine.take_source_command().unwrap();
+            let mut output = [0.; 48 * 4];
+            source.install_command(&mut command).unwrap();
+            source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            assert!(source.publish_completion(&mut packet));
+            engine.finish_source_completion(&mut packet).unwrap();
+            let mut permit = engine.prepare_external(2).unwrap();
+            if expired {
+                permit.expires = Some(std::time::Instant::now());
+            }
+            if cancel {
+                engine.revoke_writer("desk");
+            }
+            let mut applications = 0;
+            let mut receipt = None;
+            crate::remote::assert_no_allocations(|| {
+                receipt = Some(source.commit_external(&permit, |mixer| {
+                    applications += 1;
+                    mixer.mute_outputs().unwrap();
+                    0
+                }));
+            });
+            let receipt = receipt.unwrap();
+            assert_eq!(applications, usize::from(!refused));
+            assert_eq!(receipt.code, if refused { -3 } else { 0 });
+            assert_eq!(engine.revision(), Counter(0));
+            crate::remote::assert_no_allocations(|| {
+                assert_eq!(
+                    source
+                        .commit_external(&permit, |_| panic!("permit replay"))
+                        .code,
+                    if expired { -3 } else { -4 }
+                );
+                // Completed/refused external boundary no longer stops dry frames
+                // while the controller retains the unapplied authority receipt.
+                source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+            });
+            let reply = engine.finish_external(receipt).unwrap();
+            assert_eq!(reply.kind == "applied", !refused);
+            assert_eq!(engine.revision(), Counter(u64::from(!refused)));
+            assert!(engine.finish_external(receipt).is_err());
+        }
+    }
+
+    #[test]
+    fn detached_prepared_command_observation_and_terminal_closure() {
+        let (mut engine, request) = unprepared_processing();
+        let mut packet = engine.source_completion();
+        let mut source = engine.take_source().unwrap();
+        assert_eq!(
+            engine.handle_processing(&request, 1).unwrap().state,
+            "pending"
+        );
+        engine.prepare_render(96, 2).unwrap();
+        let mut command = engine.take_source_command().unwrap();
+        let mut output = [0.; 96 * 4];
+        crate::remote::assert_no_allocations(|| {
+            source.install_command(&mut command).unwrap();
+            source.render(9, &[0.25; 96 * 8], &mut output).unwrap();
+            assert!(source.publish_completion(&mut packet));
+        });
+        engine.finish_source_completion(&mut packet).unwrap();
+        assert_eq!(engine.revision(), Counter(1));
+        assert_eq!(engine.frame(), 96);
+        assert_eq!(
+            engine.take_processing_completions()[0].effective_frame,
+            Some(Counter(48))
+        );
+        // Exporting the completion must not make unchanged rendering depend on
+        // another controller command, even while the observer remains stalled.
+        crate::remote::assert_no_allocations(|| {
+            for _ in 0..8 {
+                source.render(9, &[0.25; 96 * 8], &mut output).unwrap();
+            }
+        });
+        engine.quiesce("detached closure");
+        crate::remote::assert_no_allocations(|| {
+            source.render(9, &[0.25; 96 * 8], &mut output).unwrap();
+        });
+        assert!(output.iter().all(|v| *v == 0.));
+        assert_eq!(engine.frame(), 96); // no invented progress before observation
+    }
+
+    #[test]
+    fn detached_stale_command_retains_prepared_storage() {
+        let (mut engine, request) = unprepared_processing();
+        engine.prepare_render(48, 1).unwrap();
+        let mut source = engine.take_source().unwrap();
+        let mut packet = engine.source_completion();
+        let mut output = [0.; 48 * 4];
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        assert!(source.publish_completion(&mut packet));
+        engine.finish_source_completion(&mut packet).unwrap();
+        assert_eq!(
+            engine.handle_processing(&request, 2).unwrap().state,
+            "pending"
+        );
+        engine.prepare_render(96, 3).unwrap();
+        let mut command = engine.take_source_command().unwrap();
+        // Source progress races the controller's observed frame. Refuse without
+        // destroying or silently moving the accepted boundary.
+        source.render(9, &[0.25; 48 * 8], &mut output).unwrap();
+        crate::remote::assert_no_allocations(|| {
+            assert!(source.install_command(&mut command).is_err());
+        });
+        assert!(command.prepared.is_some());
+        assert_eq!(engine.revision(), Counter(0));
+    }
+
+    #[test]
+    fn source_commit_and_expiry_have_no_allocation_or_retirement() {
+        for expired in [false, true] {
+            let (mut engine, request) = prepared_processing();
+            let input = [0.25; 96 * 8];
+            let mut output = [0.; 96 * 4];
+            engine
+                .prepare_render(96, if expired { 2001 } else { 2 })
+                .unwrap();
+            crate::remote::assert_no_allocations(|| {
+                engine.render_prepared(&input, &mut output).unwrap()
+            });
+            // Authority advances only after observing the actual source result;
+            // the occupied retirement slot cannot be reused during that delay.
+            assert_eq!(engine.revision(), Counter(0));
+            let unobserved = engine.processing_snapshot().unwrap();
+            assert_eq!(unobserved.frame, Counter(0));
+            assert_eq!(
+                unobserved.channels[0].target,
+                crate::channel_processing::Config::default()
+            );
+            assert!(engine.prepare_render(48, 2002).is_err());
+            engine.finish_render().unwrap();
+            let replies = engine.take_processing_completions();
+            assert_eq!(replies.len(), 1);
+            if expired {
+                assert!(replies[0].reason.is_some());
+                assert_eq!(engine.revision(), Counter(0));
+            } else {
+                assert_eq!(engine.revision(), Counter(1));
+                assert_eq!(replies[0].effective_frame, Some(Counter(48)));
+                assert_eq!(replies[0].snapshot.as_ref().unwrap().frame, Counter(96));
+                assert_eq!(engine.handle_processing(&request, 3).unwrap(), replies[0]);
+            }
+        }
+    }
+
+    #[test]
+    fn owned_mixer_continues_with_unobserved_completion_and_retirement() {
+        let (mut engine, _) = prepared_processing();
+        engine.prepare_render(96, 2).unwrap();
+        let epoch = engine.clock.epoch;
+        let (mut reference, _) = prepared_processing();
+        let mut expected = Vec::new();
+        for _ in 0..32 {
+            let mut output = [0.; 96 * 4];
+            reference.prepare_render(96, 2).unwrap();
+            reference
+                .render_prepared(&[0.25; 96 * 8], &mut output)
+                .unwrap();
+            reference.finish_render().unwrap();
+            expected.push(output);
+        }
+        // Transfer the actual production mixer state, with no borrowed engine.
+        let source = engine.take_source().unwrap();
+        let source = std::thread::spawn(move || {
+            let mut source = source;
+            let mut output = [0.; 96 * 4];
+            crate::remote::assert_no_allocations(|| {
+                for expected in &expected {
+                    source.render(epoch, &[0.25; 96 * 8], &mut output).unwrap();
+                    assert_eq!(&output, expected);
+                }
+            });
+            assert_eq!(source.mixer.frame(), 32 * 96);
+            assert!(source.busy());
+            // Unconsumed retirement refuses another mutation while audio advanced.
+            let next = Prepared::freeze_for(8, 2, Scope::Foh);
+            assert!(source.schedule(next, 99).is_err());
+            source
+        })
+        .join()
+        .unwrap();
+        engine.restore_source(source).unwrap();
+        assert_eq!(engine.revision(), Counter(0));
+        engine.finish_render().unwrap();
+        let replies = engine.take_processing_completions();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].effective_frame, Some(Counter(48)));
+        assert_eq!(
+            replies[0].snapshot.as_ref().unwrap().frame,
+            Counter(32 * 96)
+        );
+        assert_eq!(engine.revision(), Counter(1));
+    }
+
+    #[test]
+    fn unobserved_unchanged_quantum_refuses_new_mixer_admission() {
+        let mut engine = OfflineEngine::new(
+            "11111111-1111-4111-8111-111111111111",
+            Counter(9),
+            Counter(0),
+            0,
+        )
+        .unwrap();
+        engine.prepare_render(48, 0).unwrap();
+        let mut output = [0.; 48 * 4];
+        engine
+            .render_prepared(&[0.25; 48 * 8], &mut output)
+            .unwrap();
+        assert!(
+            engine
+                .source
+                .as_mut()
+                .unwrap()
+                .schedule(Prepared::freeze_for(8, 2, Scope::Foh), 1)
+                .is_err()
+        );
+        crate::remote::assert_no_allocations(|| {
+            engine
+                .render_prepared(&[0.25; 48 * 8], &mut output)
+                .unwrap();
+        });
+        assert_eq!(engine.frame(), 96);
+        engine.finish_render().unwrap();
+        assert_eq!(
+            engine
+                .source
+                .as_mut()
+                .unwrap()
+                .schedule(Prepared::freeze_for(8, 2, Scope::Foh), 1)
+                .unwrap(),
+            144
+        );
+    }
+
+    #[test]
+    fn owned_mixer_stops_at_unvalidated_boundary_and_rejects_stale_epoch() {
+        let (mut engine, _) = prepared_processing();
+        engine.prepare_render(48, 2).unwrap();
+        let mut output = [0.; 48 * 4];
+        engine
+            .render_prepared(&[0.25; 48 * 8], &mut output)
+            .unwrap();
+        crate::remote::assert_no_allocations(|| {
+            assert!(
+                engine
+                    .source
+                    .as_mut()
+                    .unwrap()
+                    .render(engine.clock.epoch + 1, &[0.; 48 * 8], &mut output)
+                    .is_err()
+            );
+            assert!(engine.render_prepared(&[0.; 48 * 8], &mut output).is_err());
+        });
+        assert_eq!(engine.frame(), 48);
+        assert!(output.iter().all(|v| *v == 0.));
+        engine.finish_render().unwrap();
+        assert!(engine.take_processing_completions().is_empty());
+        engine.prepare_render(48, 3).unwrap();
+        engine
+            .render_prepared(&[0.25; 48 * 8], &mut output)
+            .unwrap();
+        engine.finish_render().unwrap();
+        assert_eq!(
+            engine.take_processing_completions()[0].effective_frame,
+            Some(Counter(48))
+        );
+    }
+
+    #[test]
+    fn source_fault_before_boundary_refuses_prevalidated_processing() {
+        let (mut engine, _) = prepared_processing();
+        let mut input = [0.25; 96 * 8];
+        input[0] = f64::NAN;
+        let mut output = [0.; 96 * 4];
+        engine.prepare_render(96, 2).unwrap();
+        crate::remote::assert_no_allocations(|| {
+            engine.render_prepared(&input, &mut output).unwrap()
+        });
+        engine.finish_render().unwrap();
+        let replies = engine.take_processing_completions();
+        assert_eq!(replies[0].reason.as_deref(), Some("faulted"));
+        assert_eq!(engine.revision(), Counter(0));
+        assert!(output.iter().all(|v| *v == 0.));
+    }
+
+    #[test]
+    fn invalid_source_shape_does_not_apply_prepared_transaction() {
+        let (mut engine, _) = prepared_processing();
+        let mut output = [0.; 96 * 4];
+        engine.prepare_render(96, 2).unwrap();
+        crate::remote::assert_no_allocations(|| {
+            assert_eq!(
+                engine.render_prepared(&[0.; 8], &mut output),
+                Err(crate::mixer::ProcessError::BufferLength)
+            );
+        });
+        assert!(engine.finish_render().is_err());
+        assert_eq!(engine.frame(), 0);
+        assert_eq!(engine.revision(), Counter(0));
+        // The original prepared state remains available for a correctly shaped
+        // quantum; a malformed buffer is not an applied or discarded command.
+        engine.prepare_render(96, 3).unwrap();
+        crate::remote::assert_no_allocations(|| {
+            engine
+                .render_prepared(&[0.25; 96 * 8], &mut output)
+                .unwrap()
+        });
+        engine.finish_render().unwrap();
+        assert_eq!(engine.revision(), Counter(1));
     }
 }

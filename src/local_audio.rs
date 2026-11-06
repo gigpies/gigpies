@@ -20,6 +20,7 @@ use std::{
 };
 mod fx_aux;
 mod measurement;
+pub(crate) mod source;
 pub const MAX_CLIENTS: usize = 4;
 pub const MAX_FRAME: usize = 65536;
 pub const MAX_REPLIES: usize = 32;
@@ -459,11 +460,28 @@ enum StructuralAction {
     Failed(String),
 }
 pub struct LocalAudio {
+    source: source::RoutingSlot,
+    render_graph: Option<Box<source::RenderGraph>>,
+    source_executor: Option<crate::source_executor::SourceExecutor<Box<source::RenderGraph>>>,
+    source_quantum: Option<Box<source::Quantum>>,
+    persistent_source: bool,
+    #[cfg(feature = "hardware-host")]
+    clocked_source: bool,
+    #[cfg(feature = "hardware-host")]
+    clocked_fence: Option<crate::remote::PolicyFence>,
+    #[cfg(feature = "hardware-host")]
+    clocked_preparation_started: Option<(u64, std::time::Instant)>,
+    #[cfg(all(test, feature = "hardware-host"))]
+    pub(crate) last_brain_source_receipt: Option<crate::mixer_control::source::ExternalReceipt>,
+    routing_observed: source::RoutingObservation,
+    source_closure: std::sync::Arc<std::sync::atomic::AtomicBool>,
     spectrum: crate::spectrum::Spectrum,
-    metering: Option<(crate::metering::Acquisition, crate::metering::Latest)>,
-    meter_main: [f64; 96],
-    meter_map: u64,
+    metering: Option<crate::metering::Latest>,
     brain: crate::brain_control::State,
+    #[cfg(feature = "hardware-host")]
+    brain_hold_fence: Option<crate::remote::PolicyFence>,
+    #[cfg(feature = "hardware-host")]
+    brain_foh_fence: Option<crate::remote::PolicyFence>,
     brain_pending: Option<(
         crate::brain_control::Request,
         crate::brain_control::State,
@@ -471,15 +489,13 @@ pub struct LocalAudio {
         Option<u64>,
     )>,
     brain_cache: VecDeque<(crate::brain_control::Request, crate::brain_control::Reply)>,
-    brain_monitor: [f64; 96],
     brain_path_readiness: (bool, bool),
     brain_frame_times: [Option<(u64, u64)>; 64],
-    brain_send: [f64; 96],
-    brain_talkback: Vec<f64>,
     listener: UnixListener,
     _epoch_owner: EpochOwner,
     _endpoint: Endpoint,
     engine: OfflineEngine,
+    source_completion: crate::mixer_control::source::SourceCompletion,
     clients: Vec<Client>,
     next_client: u64,
     ticks: u64,
@@ -491,15 +507,9 @@ pub struct LocalAudio {
     show: String,
     epoch: Counter,
     synthetic_fouraux: bool,
-    raw_scratch: Vec<f64>,
-    bus_scratch: Vec<f64>,
-    pa_silence: Vec<f64>,
-    capture_scratch: Vec<f64>,
-    playback_scratch: Vec<f64>,
-    pcm_scratch: Vec<i32>,
     remote_completions: VecDeque<serde_json::Value>,
     #[cfg(feature = "hardware-host")]
-    fx_aux: Option<fx_aux::Rack>,
+    fx_aux: Option<fx_aux::Controller>,
     #[cfg(feature = "hardware-host")]
     remote_fx_aux: bool,
     #[cfg(feature = "hardware-host")]
@@ -529,11 +539,71 @@ pub struct LocalAudio {
     modules: Option<crate::module_graph::ModuleGraph>,
     #[cfg(feature = "hardware-host")]
     module_pending: Vec<(crate::module_wire::ModuleRequest, u64)>,
-    analysis: Option<(
-        crate::analysis_stream::Tap,
-        crate::analysis_stream::local::Worker,
-        u64,
-    )>,
+    analysis: Option<crate::analysis_stream::local::Worker>,
+}
+impl Drop for LocalAudio {
+    fn drop(&mut self) {
+        // A detached owner must observe teardown even if every ordinary command
+        // or completion slot is occupied. Never wait for it from this signal.
+        self.source_closure
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(all(test, feature = "hardware-host"))]
+mod executor_tests {
+    use super::*;
+    #[test]
+    fn recovery_retains_shared_worker_and_refuses_unaligned_epoch_before_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("gp-source-recovery-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        struct Directory(std::path::PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _directory = Directory(path.clone());
+        let mut provider = LocalAudio::bind(
+            &path,
+            "audio",
+            "11111111-1111-4111-8111-111111111111",
+            Counter(9),
+        )
+        .unwrap();
+        provider.enable_persistent_source();
+        let media = provider.source_executor_for(0u8).unwrap();
+        let before = provider
+            .graph_command(None, |_, p| *p = Some(std::thread::current().id()))
+            .unwrap();
+        assert_eq!(
+            before,
+            media
+                .transact(None, |_, p| *p = Some(std::thread::current().id()))
+                .unwrap()
+        );
+        provider.rearm().unwrap();
+        provider.tick(0).unwrap();
+        assert!(provider.recover_source(Counter(10), 1).is_err());
+        assert_eq!(provider.source_epoch(), 9);
+        assert_eq!(provider.frame(), 48);
+        provider.recover_source(Counter(10), 0).unwrap();
+        assert_eq!(
+            before,
+            provider
+                .graph_command(None, |_, p| *p = Some(std::thread::current().id()))
+                .unwrap()
+        );
+        provider.rearm().unwrap();
+        provider.tick(1).unwrap();
+        assert_eq!(provider.source_epoch(), 10);
+        assert_eq!(provider.frame(), 48);
+        drop(provider);
+        drop(media);
+        std::fs::remove_dir_all(path).unwrap();
+    }
 }
 impl LocalAudio {
     pub fn bind(directory: &Path, name: &str, show: &str, epoch: Counter) -> Result<Self> {
@@ -576,17 +646,23 @@ impl LocalAudio {
             _ => return Err("preexisting endpoint".into()),
         }
         let ni = topology.inputs.len();
-        let nb = topology.monitors + 2;
-        let np = topology.pa_outputs;
-        let nc = topology.capture_channels;
-        let no = topology.playback_channels;
-        let spectrum = crate::spectrum::Spectrum::new(topology.sample_rate);
-        let meter_map = topology.map_revision;
+        let mut spectrum = crate::spectrum::Spectrum::new(topology.sample_rate);
         let metering = topology
             .meter_admission(crate::topology::ResourceBudget::default())
             .ok()
             .and_then(|_| crate::metering::prepare(ni, topology.monitors, topology.sample_rate));
+        let (meter_tap, metering) = match metering {
+            Some((tap, latest)) => (Some(tap), Some(latest)),
+            None => (None, None),
+        };
+        let source = source::SourceRouting::with_spectrum(
+            &topology,
+            meter_tap,
+            spectrum.take_acquisition().unwrap(),
+        );
         let engine = OfflineEngine::with_topology(show, epoch, Counter(0), 0, topology)?;
+        let source_completion = engine.source_completion();
+        let routing_observed = source::RoutingObservation::new(engine.topology());
         let epoch_owner = EpochOwner::reserve(directory, show, epoch)?;
         let listener = UnixListener::bind(&path).map_err(|e| e.to_string())?;
         let m = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
@@ -599,26 +675,41 @@ impl LocalAudio {
             .map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         Ok(Self {
+            source: source::RoutingSlot::new(source),
+            render_graph: None,
+            source_executor: None,
+            source_quantum: None,
+            persistent_source: false,
+            #[cfg(feature = "hardware-host")]
+            clocked_source: false,
+            #[cfg(feature = "hardware-host")]
+            clocked_fence: None,
+            #[cfg(feature = "hardware-host")]
+            clocked_preparation_started: None,
+            #[cfg(all(test, feature = "hardware-host"))]
+            last_brain_source_receipt: None,
+            routing_observed,
+            source_closure: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             spectrum,
             metering,
-            meter_main: [0.; 96],
-            meter_map,
             brain: crate::brain_control::State::default(),
+            #[cfg(feature = "hardware-host")]
+            brain_hold_fence: None,
+            #[cfg(feature = "hardware-host")]
+            brain_foh_fence: None,
             brain_pending: None,
             brain_cache: VecDeque::with_capacity(256),
-            brain_monitor: [0.; 96],
             brain_path_readiness: (false, false),
             brain_frame_times: {
                 let mut times = [None; 64];
                 times[0] = Some((0, 0));
                 times
             },
-            brain_send: [0.; 96],
-            brain_talkback: vec![0.; 48 * nb],
             listener,
             _epoch_owner: epoch_owner,
             _endpoint: endpoint,
             engine,
+            source_completion,
             clients: Vec::with_capacity(MAX_CLIENTS),
             next_client: 1,
             ticks: 0,
@@ -643,12 +734,6 @@ impl LocalAudio {
             measurement_cache: VecDeque::with_capacity(256),
             structural_pending: None,
             structural_cache: VecDeque::with_capacity(256),
-            raw_scratch: vec![0.; 48 * ni],
-            bus_scratch: vec![0.; 48 * nb],
-            pa_silence: vec![0.; 48 * np],
-            capture_scratch: vec![0.; 48 * nc],
-            playback_scratch: vec![0.; 48 * no],
-            pcm_scratch: vec![0; 48 * ni],
             #[cfg(feature = "hardware-host")]
             private_directory: directory.into(),
             module_cache: VecDeque::with_capacity(256),
@@ -745,14 +830,14 @@ impl LocalAudio {
         let now = crate::analysis_stream::local::monotonic_ms()?;
         let topology = self.topology().clone();
         let quiesced = false; // Raw observations remain available through downstream safety zeros.
-        let s = if let Some((tap, latest)) = &mut self.metering {
+        let s = if let Some(latest) = &mut self.metering {
             latest.snapshot(
                 request,
                 &topology,
                 self.epoch.0,
                 generation,
                 now,
-                tap.losses,
+                self.routing_observed.meter_losses,
                 quiesced,
             )
         } else {
@@ -784,24 +869,43 @@ impl LocalAudio {
         Ok(s)
     }
     pub fn brain_monitor_output(&self) -> &[f64] {
-        &self.brain_monitor
+        &self.routing_observed.monitor
     }
     pub fn brain_fx_send(&self) -> &[f64] {
-        &self.brain_send
+        &self.routing_observed.send
     }
     pub fn close_brain_audio(&mut self) {
         self.brain.fault();
         self.brain_path_readiness = (false, false);
-        self.brain_monitor.fill(0.);
-        self.brain_talkback.fill(0.);
+        self.routing_observed.monitor.fill(0.);
+        #[cfg(feature = "hardware-host")]
+        if self.clocked_source {
+            let generation = self.brain.selection_generation;
+            let _ = self.graph_command(generation, |graph, generation| {
+                graph.routing.close_brain_audio();
+                if let Some(routing) = &mut graph.clock_routing {
+                    routing.monitor = crate::brain_control::MonitorSource::None;
+                    routing.monitor_silent = true;
+                    routing.selection_generation = *generation;
+                    routing.deadline_frame = None;
+                    routing.deadline_ms = None;
+                    routing.foh = false;
+                }
+            });
+            return;
+        }
+        let _ = self.routing_command((), |routing, _| routing.close_brain_audio());
     }
     pub fn brain_media_authorized(&self, now: u64) -> bool {
+        self.brain_media_authorized_at(now, self.frame())
+    }
+    fn brain_media_authorized_at(&self, now: u64, source_frame: u64) -> bool {
         self.brain
             .hold
             .as_ref()
             .is_some_and(|(r, _, deadline, frame)| {
                 now < *deadline
-                    && self.frame() < *frame
+                    && source_frame < *frame
                     && self.engine.writer_scope(r, now)
                         == Some(crate::control_model::Scope::TalkbackDestinations)
             })
@@ -811,7 +915,7 @@ impl LocalAudio {
                     self.engine.writer_scope(r, now)
                         == Some(crate::control_model::Scope::TalkbackFoh)
                 }))
-            && self.engine.output_safety_gain(self.frame()) > 0.
+            && self.engine.output_safety_gain(source_frame) > 0.
     }
     /// Authenticated media owner supplies observations after checking current
     /// descriptors, device status and bridge acquisition. Configuration alone is
@@ -1090,7 +1194,14 @@ impl LocalAudio {
         }
     }
     fn commit_brain(&mut self, now: u64) -> Result<()> {
-        if self.engine.external_boundary() != Some(self.frame()) || self.brain_pending.is_none() {
+        if self.engine.external_boundary()
+            != Some(
+                self.engine
+                    .admission_frame()
+                    .unwrap_or_else(|| self.frame()),
+            )
+            || self.brain_pending.is_none()
+        {
             return Ok(());
         }
         let (r, mut prepared, failure, owner) = self.brain_pending.take().unwrap();
@@ -1101,7 +1212,10 @@ impl LocalAudio {
             self.close_brain_audio();
             return Err("brain prepared identity".into());
         }
-        let frame = self.frame();
+        let frame = self
+            .engine
+            .admission_frame()
+            .unwrap_or_else(|| self.frame());
         // Re-evaluate held deadlines at the actual consumer boundary, never extend
         // a delayed heartbeat using preparation-time permission.
         let mut failure = failure;
@@ -1133,6 +1247,55 @@ impl LocalAudio {
                 Err(reason) => failure = Some(reason),
             }
         }
+        #[cfg(feature = "hardware-host")]
+        let result = if self.clocked_source {
+            // Preparing routing may allocate, but publication and replacement are
+            // one retained source packet. The old routing returns for destruction.
+            std::mem::swap(&mut self.brain, &mut prepared);
+            let mut routing = self.clock_routing(now);
+            if matches!(
+                r.command,
+                crate::brain_control::Command::Hold { .. }
+                    | crate::brain_control::Command::Heartbeat { .. }
+            ) {
+                routing.hold_fence = self.clocked_fence.clone();
+            }
+            if matches!(
+                r.command,
+                crate::brain_control::Command::TalkbackFoh { enabled: true }
+            ) {
+                routing.foh_fence = self.clocked_fence.clone();
+            }
+            std::mem::swap(&mut self.brain, &mut prepared);
+            let permit = self.prepare_source_external(now)?;
+            let (_, _, _, receipt) = self.graph_boundary_command(
+                frame,
+                (permit, Some(routing), failure.is_some(), None),
+                |graph, packet| {
+                    let mixer = &mut graph.mixer;
+                    let routing = &mut graph.clock_routing;
+                    packet.3 = Some(mixer.commit_external(&packet.0, |mixer| {
+                        if packet.2 {
+                            return -10;
+                        }
+                        mixer
+                            .set_operator_tap(packet.1.as_ref().expect("prepared routing").monitor);
+                        std::mem::swap(routing, &mut packet.1);
+                        0
+                    }));
+                },
+            )?;
+            let receipt = receipt.ok_or("Brain source receipt")?;
+            #[cfg(test)]
+            {
+                self.last_brain_source_receipt = Some(receipt);
+            }
+            self.engine.finish_external(receipt)?
+        } else {
+            self.engine
+                .commit_external(now, || failure.clone().map_or(Ok(()), Err))?
+        };
+        #[cfg(not(feature = "hardware-host"))]
         let result = self
             .engine
             .commit_external(now, || failure.clone().map_or(Ok(()), Err))?;
@@ -1144,6 +1307,31 @@ impl LocalAudio {
                 self.brain_path_readiness = (false, false);
             }
             self.brain = prepared;
+            #[cfg(feature = "hardware-host")]
+            {
+                if self.brain.hold.is_none() {
+                    self.brain_hold_fence = None;
+                } else if matches!(
+                    r.command,
+                    crate::brain_control::Command::Hold { .. }
+                        | crate::brain_control::Command::Heartbeat { .. }
+                ) {
+                    self.brain_hold_fence = self.clocked_fence.clone();
+                }
+                if !self.brain.foh {
+                    self.brain_foh_fence = None;
+                } else if matches!(
+                    r.command,
+                    crate::brain_control::Command::TalkbackFoh { enabled: true }
+                ) {
+                    self.brain_foh_fence = self.clocked_fence.clone();
+                }
+            }
+            #[cfg(feature = "hardware-host")]
+            if !self.clocked_source {
+                self.engine.set_operator_tap(self.brain.source);
+            }
+            #[cfg(not(feature = "hardware-host"))]
             self.engine.set_operator_tap(self.brain.source);
         }
         let reply = crate::brain_control::Reply::new(
@@ -1168,12 +1356,37 @@ impl LocalAudio {
         }
         Ok(())
     }
-    fn prepare_brain_talkback(&mut self, now: u64, frame: u64, samples: Option<&[f64]>) {
-        self.brain_talkback.fill(0.);
-        if !self.brain_media_authorized(now) {
+    #[cfg(feature = "hardware-host")]
+    fn enforce_clock_brain_authority(&mut self, now: u64) -> Result<()> {
+        if !self.clocked_source {
+            return Ok(());
+        }
+        if self.brain_hold_fence.as_ref().is_some_and(|f| !f.valid())
+            || (self.brain.foh && self.brain_foh_fence.as_ref().is_some_and(|f| !f.valid()))
+        {
             self.brain.close();
         }
-        let held = self.brain.hold.is_some() && samples.is_some();
+        self.prepare_brain_authority(now, self.frame());
+        let held = self.brain_media_authorized(now);
+        let foh = self.brain.foh;
+        self.graph_command((held, foh), |graph, p| {
+            if let Some(routing) = &mut graph.clock_routing {
+                // Closure only: a service tick cannot renew a copied hold.
+                if !p.0 {
+                    routing.deadline_ms = None;
+                    routing.deadline_frame = None;
+                }
+                if !p.1 {
+                    routing.foh = false;
+                }
+            }
+        })?;
+        Ok(())
+    }
+    fn prepare_brain_authority(&mut self, now: u64, end_frame: u64) {
+        if !self.brain_media_authorized_at(now, end_frame) {
+            self.brain.close();
+        }
         if self.brain.foh_authority.as_ref().is_some_and(|r| {
             self.engine.writer_scope(r, now) != Some(crate::control_model::Scope::TalkbackFoh)
         }) {
@@ -1181,37 +1394,6 @@ impl LocalAudio {
             self.brain.foh_authority = None;
             self.brain.close();
         }
-        let gain = 10_f64.powf(self.brain.gain_cdb as f64 / 2000.);
-        let buses = self.topology().monitors + 2;
-        let safety = std::array::from_fn(|f| self.engine.output_safety_gain(frame + f as u64));
-        #[cfg(feature = "hardware-host")]
-        let foh = self.brain.foh && self.modules.is_some() && self.topology().pa_outputs > 0;
-        #[cfg(not(feature = "hardware-host"))]
-        let foh = false;
-        let view = crate::brain_control::TalkbackRender {
-            first_frame: frame,
-            deadline_frame: if held {
-                self.brain.hold.as_ref().map(|h| h.3)
-            } else {
-                None
-            },
-            monitors: &self.brain.monitors,
-            foh,
-            gain,
-            safety: &safety,
-        };
-        // Lease/String retirement above is controller work. This helper is the
-        // separately guarded, allocation/deallocation-free sample render section.
-        let (microphone, outgoing) = crate::brain_control::render_talkback_block(
-            &view,
-            &mut self.brain.envelope,
-            samples,
-            &mut self.brain_talkback,
-            buses,
-        )
-        .unwrap_or((0., 0.));
-        self.brain.microphone_peak = microphone;
-        self.brain.outgoing_peak = outgoing;
     }
     pub fn persisted_intent(&mut self) -> Result<crate::structural_control::Intent> {
         let snapshot = self.structural_snapshot()?;
@@ -1231,6 +1413,8 @@ impl LocalAudio {
     ) -> Result<()> {
         intent.validate()?;
         if self.frame() != 0
+            || self.render_graph.is_some()
+            || self.source_executor.is_some()
             || !self.clients.is_empty()
             || self.engine.revision() != Counter(0)
             || self.show != intent.engine.show_id
@@ -1263,6 +1447,8 @@ impl LocalAudio {
             return Err("persisted PA unavailable".into());
         }
         self.engine = restored;
+        self.source_completion = self.engine.source_completion();
+        self.routing_command((), |routing, _| routing.close_brain_audio())?;
         self.brain = intent
             .brain
             .as_ref()
@@ -1586,7 +1772,12 @@ impl LocalAudio {
         ))
     }
     fn commit_structure(&mut self, now: u64) -> Result<()> {
-        if self.engine.external_boundary() != Some(self.frame())
+        if self.engine.external_boundary()
+            != Some(
+                self.engine
+                    .admission_frame()
+                    .unwrap_or_else(|| self.frame()),
+            )
             || self.structural_pending.is_none()
         {
             return Ok(());
@@ -1602,65 +1793,70 @@ impl LocalAudio {
             self.quiesce_source("structural_identity_mismatch")?;
             return Err("structural prepared identity mismatch".into());
         }
-        let frame = self.frame();
+        let frame = self
+            .engine
+            .admission_frame()
+            .unwrap_or_else(|| self.frame());
         let epoch = self.epoch.0;
+        let rearm_allowed = matches!(
+            self.engine.clock_status().state,
+            crate::clock_domain::ClockState::Running | crate::clock_domain::ClockState::Disarmed
+        );
+        let permit = self.prepare_source_external(now)?;
+        let (permit, returned_action, _, _, _, receipt) = self.graph_boundary_command(
+            frame,
+            (permit, action, epoch, frame, rearm_allowed, None),
+            |graph, packet| {
+                packet.5 = Some(graph.apply_structure(
+                    &packet.0,
+                    &mut packet.1,
+                    packet.2,
+                    packet.3,
+                    packet.4,
+                ));
+            },
+        )?;
+        let _ = permit;
+        action = returned_action;
+        let receipt = receipt.expect("structural receipt");
+        let code = receipt.code;
         #[cfg(feature = "hardware-host")]
-        let modules = &mut self.modules;
-        let mut failure = None;
-        let result = self.engine.commit_external_with_engine(now, |engine| {
-            let applied = match &mut action {
-                StructuralAction::Failed(reason) => Err(reason.clone()),
-                StructuralAction::Patch(prepared) => engine.apply_output_patch(prepared),
-                StructuralAction::Mute => {
-                    engine.mute_outputs()?;
-                    #[cfg(feature = "hardware-host")]
-                    if let Some(g) = modules {
-                        g.mute_pa()?;
-                    }
-                    Ok(())
-                }
-                StructuralAction::Rearm => {
-                    if !matches!(
-                        engine.clock_status().state,
-                        crate::clock_domain::ClockState::Running
-                            | crate::clock_domain::ClockState::Disarmed
-                    ) {
-                        return Err("clock recovery required".into());
-                    }
-                    #[cfg(feature = "hardware-host")]
-                    if let Some(g) = modules {
-                        g.rearm_pa()?;
-                    }
-                    engine.rearm_outputs()
-                }
-                #[cfg(feature = "hardware-host")]
-                StructuralAction::MasterEq(prepared) => {
-                    let g = modules.as_mut().ok_or("live EQ unavailable")?;
-                    let code = g.commit_master_eq(prepared, epoch, frame);
-                    if code == 0 {
-                        Ok(())
-                    } else {
-                        Err(format!("EQ commit {code}"))
-                    }
-                }
-                #[cfg(feature = "hardware-host")]
-                StructuralAction::Pa(prepared) => {
-                    let g = modules.as_mut().ok_or("modules unavailable")?;
-                    let code = g.commit_pa_change(prepared, epoch, frame);
-                    if code == 0 {
-                        Ok(())
-                    } else {
-                        Err(format!("PA commit {code}"))
-                    }
-                }
-            };
-            if let Err(e) = &applied {
-                failure = Some(e.clone());
+        if let Some(modules) = &mut self.modules {
+            match &mut action {
+                StructuralAction::Pa(prepared) => modules.finish_pa_change(prepared, code),
+                StructuralAction::MasterEq(prepared) => modules.finish_master_eq(prepared, code),
+                _ => (),
             }
-            applied
-        })?;
-        #[cfg(not(feature = "hardware-host"))]
-        let _ = epoch;
+        }
+        let result = self.engine.finish_external(receipt);
+        let publication = if code == 0
+            && let StructuralAction::Patch(prepared) = &action
+        {
+            self.engine.acknowledge_output_patch(prepared)
+        } else {
+            Ok(())
+        };
+        self.finish_compat_render()?;
+        let result = result?;
+        publication?;
+        if result.kind == "applied" && matches!(action, StructuralAction::Rearm) {
+            self.engine.acknowledge_output_rearm()?;
+        }
+        let failure = if code == 0 || result.body.reason.as_deref() != Some("configuration_failed")
+        {
+            None
+        } else {
+            Some(match &action {
+                StructuralAction::Failed(reason) => reason.clone(),
+                StructuralAction::Patch(_) => "patch quiescence/identity".into(),
+                StructuralAction::Rearm if !rearm_allowed => "clock recovery required".into(),
+                #[cfg(feature = "hardware-host")]
+                StructuralAction::MasterEq(_) => format!("EQ commit {code}"),
+                #[cfg(feature = "hardware-host")]
+                StructuralAction::Pa(_) => format!("PA commit {code}"),
+                _ => format!("structural commit {code}"),
+            })
+        };
         #[cfg(feature = "hardware-host")]
         if let Some(g) = &mut self.modules {
             g.retire_pa_changes();
@@ -1713,6 +1909,15 @@ impl LocalAudio {
         self.epoch.0
     }
     pub fn quiesce_source(&mut self, reason: &str) -> Result<()> {
+        self.source_closure
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.engine.quiesce(reason);
+        #[cfg(feature = "hardware-host")]
+        let module_closure = self
+            .modules
+            .as_mut()
+            .map(|g| g.quiesce_source())
+            .transpose();
         #[cfg(feature = "hardware-host")]
         self.reset_fx_aux();
         if let Some(s) = &mut self.measurement {
@@ -1720,17 +1925,40 @@ impl LocalAudio {
         }
         self.invalidate_pending_measurement(reason);
         self.stop_analysis();
-        if let Some((tap, latest)) = &mut self.metering {
-            tap.reset();
+        self.routing_command((), |routing, _| {
+            if let Some(tap) = &mut routing.metering {
+                tap.reset();
+            }
+        })?;
+        if let Some(latest) = &mut self.metering {
             latest.clear();
         }
         self.close_brain_audio();
         self.brain_pending = None;
         self.brain_cache.clear();
-        self.engine.quiesce(reason);
+        if self.source_executor.is_some() || self.render_graph.is_some() {
+            let observation = self.graph_command(None, |graph, observation| {
+                graph.close_numeric();
+                *observation = Some(graph.mixer.mixer.output_observation());
+            })?;
+            self.engine
+                .acknowledge_source_quiescence(observation.expect("source quiescence"));
+        }
         #[cfg(feature = "hardware-host")]
         if let Some(g) = &mut self.modules {
-            g.quiesce_source()?;
+            module_closure?;
+            if self.render_graph.is_some() || self.source_executor.is_some() {
+                let packet = g.prepare_exchange()?;
+                let packet = self.graph_command(packet, |graph, packet| {
+                    if let Some(source) = &mut graph.modules {
+                        source.exchange(packet);
+                    }
+                })?;
+                self.modules
+                    .as_mut()
+                    .expect("module controller")
+                    .finish_exchange(packet)?;
+            }
         }
         self.structural_pending = None;
         self.structural_cache.clear();
@@ -1742,27 +1970,100 @@ impl LocalAudio {
         Ok(())
     }
     pub fn recover_source(&mut self, epoch: Counter, frame: u64) -> Result<()> {
-        if epoch.0 <= self.epoch.0 {
-            return Err("fresh epoch required".into());
+        if epoch.0 <= self.epoch.0 || !frame.is_multiple_of(48) {
+            return Err("fresh epoch and aligned source frame required".into());
+        }
+        #[cfg(feature = "hardware-host")]
+        if self.clocked_source {
+            return Err("stop source clock before epoch recovery".into());
         }
         self.quiesce_source("source_reopen")?;
-        self._epoch_owner.advance(epoch)?;
-        self.engine.recover(epoch, frame)?;
-        #[cfg(feature = "hardware-host")]
-        self.reset_fx_aux();
-        #[cfg(feature = "hardware-host")]
-        if let Some(g) = &mut self.modules {
-            g.discontinuity(epoch.0, frame)?;
+        let mut executor = self.source_executor.take();
+        if let Some(worker) = &mut executor {
+            match worker.suspend() {
+                Ok(graph) => self.render_graph = Some(graph),
+                Err(error) => {
+                    self.source_executor = executor;
+                    return Err(error);
+                }
+            }
         }
-        self.epoch = epoch;
-        self.spectrum.reset();
-        self.brain_frame_times.fill(None);
-        self.brain_frame_times[(frame / 48 % 64) as usize] = Some((frame, self.last_now));
-        self.analysis = None;
-        self.remote_completions.clear();
-        Ok(())
+        let recovery = (|| -> Result<()> {
+            self.source_quantum = None;
+            if let Some(graph) = self.render_graph.take() {
+                self.attach_render_graph(*graph)?;
+            }
+            self._epoch_owner.advance(epoch)?;
+            self.engine.recover(epoch, frame)?;
+            self.source_completion = self.engine.source_completion();
+            #[cfg(feature = "hardware-host")]
+            self.reset_fx_aux();
+            #[cfg(feature = "hardware-host")]
+            if let Some(g) = &mut self.modules {
+                g.discontinuity(epoch.0, frame)?;
+            }
+            self.epoch = epoch;
+            self.source_closure = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            self.spectrum.reset();
+            self.brain_frame_times.fill(None);
+            self.brain_frame_times[(frame / 48 % 64) as usize] = Some((frame, self.last_now));
+            self.analysis = None;
+            self.routing_command(None, |routing, replacement| {
+                std::mem::swap(&mut routing.analysis, replacement);
+            })?;
+            self.remote_completions.clear();
+            Ok(())
+        })();
+        // Even a failed rebuild retains the original worker reservation. Never
+        // silently fall back to inline rendering while sibling media is detached.
+        let reinstalled = if let Some(mut worker) = executor {
+            let result = self
+                .take_render_graph()
+                .and_then(|graph| worker.resume(Box::new(graph)));
+            self.source_executor = Some(worker);
+            result
+        } else {
+            Ok(())
+        };
+        recovery.and(reinstalled)
     }
+
     pub fn rearm(&mut self) -> Result<()> {
+        if self.render_graph.is_some() || self.source_executor.is_some() {
+            if self.frame() != 0
+                || self
+                    .source_closure
+                    .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err("persistent source requires structural rearm transaction".into());
+            }
+            let mut clock = self.engine.clock_status().clone();
+            if clock.state == crate::clock_domain::ClockState::Disarmed {
+                clock.rearm().map_err(String::from)?;
+            } else if clock.state != crate::clock_domain::ClockState::Running {
+                return Err("clock recovery required".into());
+            }
+            let (result, observation, module_code) =
+                self.graph_command((None, None, 0), |graph, p| {
+                    #[cfg(feature = "hardware-host")]
+                    if let Some(modules) = &mut graph.modules {
+                        p.2 = modules.rearm_pa();
+                    }
+                    if p.2 == 0 {
+                        p.0 = Some(graph.mixer.mixer.rearm());
+                        p.1 = Some(graph.mixer.mixer.output_observation());
+                    }
+                })?;
+            if module_code != 0 {
+                return Err(format!("PA rearm {module_code}"));
+            }
+            result
+                .expect("startup rearm result")
+                .map_err(|e| format!("source rearm {e:?}"))?;
+            return self
+                .engine
+                .acknowledge_startup_rearm(observation.expect("startup output observation"));
+        }
         #[cfg(feature = "hardware-host")]
         if let Some(g) = &mut self.modules {
             g.rearm_pa()?;
@@ -1771,7 +2072,7 @@ impl LocalAudio {
     }
     #[cfg(feature = "hardware-host")]
     pub fn configure_pa(&mut self, json: &[u8]) -> Result<()> {
-        if self.frame() != 0 {
+        if self.frame() != 0 || self.render_graph.is_some() || self.source_executor.is_some() {
             return Err("initial PA setup requires unprocessed provider".into());
         }
         let capacity = self.topology().pa_outputs;
@@ -1792,7 +2093,7 @@ impl LocalAudio {
         Ok(())
     }
     pub fn last_bus_samples(&self) -> &[f64] {
-        &self.bus_scratch
+        &self.routing_observed.buses
     }
     pub fn revoke_writer(&mut self, writer: &str) {
         #[cfg(feature = "hardware-host")]
@@ -1833,6 +2134,11 @@ impl LocalAudio {
         }
         let cancelled_send = self.engine.pending_sends_ticket_for(writer);
         self.engine.revoke_writer(writer);
+        #[cfg(feature = "hardware-host")]
+        if self.enforce_clock_brain_authority(self.last_now).is_err() {
+            self.source_closure
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         if cancelled_send
             .is_some_and(|ticket| self.sends_owner.is_some_and(|owner| owner.0 == ticket))
         {
@@ -1858,15 +2164,6 @@ impl LocalAudio {
         });
     }
     #[cfg(feature = "hardware-host")]
-    pub(crate) fn enable_remote_fx_aux(&mut self) -> Result<()> {
-        if self.fx_aux.is_some() {
-            return Err("local FX aux owner already enabled".into());
-        }
-        self.engine.enable_fx_aux()?;
-        self.remote_fx_aux = true;
-        Ok(())
-    }
-    #[cfg(feature = "hardware-host")]
     pub(crate) fn engine(&self) -> &OfflineEngine {
         &self.engine
     }
@@ -1884,12 +2181,10 @@ impl LocalAudio {
         Ok(())
     }
     pub fn analysis_alive(&self) -> bool {
-        self.analysis
-            .as_ref()
-            .is_some_and(|(_, worker, _)| worker.alive())
+        self.analysis.as_ref().is_some_and(|worker| worker.alive())
     }
     pub fn stop_analysis(&self) {
-        if let Some((_, worker, _)) = &self.analysis {
+        if let Some(worker) = &self.analysis {
             worker.stop();
         }
     }
@@ -1926,16 +2221,21 @@ impl LocalAudio {
         let (tap, input) = crate::analysis_stream::Tap::new(&descriptor).map_err(String::from)?;
         let service =
             crate::analysis_stream::local::LocalAnalysis::bind(directory, descriptor, input)?;
-        self.analysis = Some((
-            tap,
-            crate::analysis_stream::local::Worker::start(service)?,
-            self.topology().map_revision,
-        ));
+        let worker = crate::analysis_stream::local::Worker::start(service)?;
+        self.routing_command(
+            Some((tap, worker.source_signal(), self.topology().map_revision)),
+            |routing, replacement| std::mem::swap(&mut routing.analysis, replacement),
+        )?;
+        self.analysis = Some(worker);
         Ok(())
     }
     #[cfg(feature = "hardware-host")]
     pub fn enable_modules(&mut self, manifest: &Path) -> Result<()> {
-        if self.frame() != 0 || self.modules.is_some() {
+        if self.frame() != 0
+            || self.modules.is_some()
+            || self.render_graph.is_some()
+            || self.source_executor.is_some()
+        {
             return Err("module preparation before processing required".into());
         }
         let root = self.private_directory.join("takes");
@@ -2214,7 +2514,11 @@ impl LocalAudio {
     /// Bounded synthetic work: <=4 accepts, one frame/client,8KiB read/write/client,
     ///48 render frames. All parsing/IPC/heap work is outside Mixer::process.
     pub fn tick(&mut self, now: u64) -> Result<()> {
-        let mut capture = std::mem::take(&mut self.capture_scratch);
+        let (mut capture, mut playback) =
+            self.routing_command((Vec::new(), Vec::new()), |routing, packet| {
+                std::mem::swap(&mut routing.capture_scratch, &mut packet.0);
+                std::mem::swap(&mut routing.playback_scratch, &mut packet.1);
+            })?;
         capture.fill(0.);
         let topology = self.topology();
         let mut synthetic = self
@@ -2232,11 +2536,12 @@ impl LocalAudio {
                     };
             }
         }
-        let mut playback = std::mem::take(&mut self.playback_scratch);
         let result =
             self.tick_with_capture(now, self.epoch.0, self.frame(), &capture, &mut playback);
-        self.capture_scratch = capture;
-        self.playback_scratch = playback;
+        self.routing_command((capture, playback), |routing, packet| {
+            std::mem::swap(&mut routing.capture_scratch, &mut packet.0);
+            std::mem::swap(&mut routing.playback_scratch, &mut packet.1);
+        })?;
         result
     }
     /// Same provider pump, with caller-owned observation of the FOH/monitor block.
@@ -2296,6 +2601,10 @@ impl LocalAudio {
         wet: Option<&[f64]>,
         talkback: Option<&[f64]>,
     ) -> Result<()> {
+        #[cfg(feature = "hardware-host")]
+        if self.clocked_source {
+            return Err("source clock owns capture progression".into());
+        }
         let talkback =
             if talkback.is_some_and(|v| v.len() != 48 || v.iter().any(|s| !s.is_finite())) {
                 self.close_brain_audio();
@@ -2318,59 +2627,678 @@ impl LocalAudio {
             self.quiesce_source("source_discontinuity")?;
             return Err(e);
         }
-        let mut raw = std::mem::take(&mut self.raw_scratch);
-        let topology = self.topology();
-        for f in 0..48 {
-            for (i, p) in topology.inputs.iter().enumerate() {
-                raw[f * topology.inputs.len() + i] =
-                    capture[f * topology.capture_channels + p.capture_slot];
-            }
-        }
-        let mut buses = std::mem::take(&mut self.bus_scratch);
-        let result = self.tick_raw_with_brain(now, &raw, &mut buses, wet, talkback);
-        if result.is_ok() {
-            self.offer_measurement(epoch, first_frame, capture);
-            let topology = self.topology();
-            #[cfg(feature = "hardware-host")]
-            let pa = self
-                .modules
-                .as_ref()
-                .map(|m| m.output_interleaved())
-                .filter(|p| p.len() == self.pa_silence.len())
-                .unwrap_or(&self.pa_silence);
-            #[cfg(not(feature = "hardware-host"))]
-            let pa = &self.pa_silence;
-            for f in 0..48 {
-                topology.patch_outputs(
-                    &buses[f * (topology.monitors + 2)..(f + 1) * (topology.monitors + 2)],
-                    &pa[f * topology.pa_outputs..(f + 1) * topology.pa_outputs],
-                    &mut playback
-                        [f * topology.playback_channels..(f + 1) * topology.playback_channels],
-                )?;
-            }
-        }
-        if result.is_ok()
-            && let Ok(mono) = crate::analysis_stream::local::monotonic_ms()
-        {
-            let channels = self.topology().playback_channels;
-            let map = self.topology().map_revision;
-            self.spectrum.offer_tap(
-                playback,
-                channels,
-                first_frame,
-                mono,
-                map,
-                crate::spectrum::OUTPUT,
-            );
-        }
-        self.raw_scratch = raw;
-        self.bus_scratch = buses;
+        let result = self.tick_block(now, capture, playback, wet, talkback, true);
+
         if result.is_err() {
             self.quiesce_source("processing_failure")?;
         }
         result
     }
 
+    /// Keep the exclusive numeric graph across production source quanta. The
+    /// controller facade never regains its active mixer/module owners between blocks.
+    #[cfg(any(feature = "hardware-host", test))]
+    pub(crate) fn enable_persistent_source(&mut self) {
+        self.persistent_source = true;
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn source_executor_for<T: Send + 'static>(
+        &mut self,
+        owner: T,
+    ) -> Result<crate::source_executor::SourceExecutor<T>> {
+        self.ensure_render_graph()?;
+        if self.source_executor.is_none() {
+            let graph = self.render_graph.take().expect("source graph");
+            self.source_executor = Some(crate::source_executor::SourceExecutor::new(
+                "gp-source",
+                graph,
+            )?);
+        }
+        self.source_executor.as_ref().unwrap().sibling(owner)
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn source_pair_command<U: Send + 'static, P: Send + 'static>(
+        &mut self,
+        other: &crate::source_executor::SourceExecutor<U>,
+        packet: P,
+        advance: fn(&mut Box<source::RenderGraph>, &mut U, &mut P) -> bool,
+    ) -> Result<P> {
+        self.source_executor
+            .as_ref()
+            .ok_or("source worker absent")?
+            .transact_pair_until(other, packet, advance)
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn finish_remote_fx_aux_mode(&mut self, enabled: bool) {
+        self.remote_fx_aux = enabled;
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn source_control_time(&self) -> u64 {
+        self.last_now
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn start_source_progress<U: Send + 'static, P: Send + 'static>(
+        &mut self,
+        now: u64,
+        media: &crate::source_executor::SourceExecutor<U>,
+        state: P,
+        advance: fn(
+            &mut Box<source::RenderGraph>,
+            &mut U,
+            &mut P,
+            std::time::Instant,
+        ) -> std::time::Duration,
+    ) -> Result<()> {
+        if self.clocked_source || self.engine.external_boundary().is_some() {
+            return Err(
+                "source clock requires completed startup and no structural reservation".into(),
+            );
+        }
+        if now < self.last_now {
+            return Err("source startup clock regression".into());
+        }
+        // Startup control (including REC preparation) may already have advanced
+        // authority time without rendering a block. Use the caller's current
+        // monotonic time for the first source admission, never the initial zero.
+        self.last_now = now;
+        let routing = self.clock_routing(now);
+        self.graph_command(Some(routing), |graph, routing| {
+            std::mem::swap(&mut graph.clock_routing, routing);
+        })?;
+        if self.frame() == 0 {
+            self.engine.prepare_render(48, self.last_now)?;
+            let command = self
+                .engine
+                .take_source_command()
+                .ok_or("startup source command")?;
+            let (_, result) = self.graph_command((command, None), |graph, packet| {
+                packet.1 = Some(graph.mixer.install_command(&mut packet.0));
+            })?;
+            result
+                .ok_or("startup source result")?
+                .map_err(|e| format!("startup source {e:?}"))?;
+        }
+        self.source_executor
+            .as_ref()
+            .ok_or("source worker absent")?
+            .start_progress(media, state, advance)?;
+        self.clocked_source = true;
+        Ok(())
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn stop_source_progress<P: Send + 'static>(&mut self) -> Result<P> {
+        let executor = self
+            .source_executor
+            .as_ref()
+            .ok_or("source worker absent")?;
+        executor.transact_until((), |graph, _| {
+            graph.closure.load(std::sync::atomic::Ordering::Acquire)
+        })?;
+        let state = executor.stop_progress()?;
+        self.clocked_source = false;
+        Ok(state)
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn clocked_completion_reservation(&self) -> usize {
+        self.remote_completions.len() + self.engine.queued_render_replies() + 1
+    }
+    /// Observe and retire source work without pacing capture. The complete
+    /// module context exchange follows any synchronous structural completion.
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn service_source_clock(&mut self, now: u64) -> Result<()> {
+        self.last_now = now;
+        self.enforce_clock_brain_authority(now)?;
+        self.module_completions(now)?;
+        let modules = self
+            .modules
+            .as_mut()
+            .map(|m| m.prepare_exchange())
+            .transpose()?;
+        let packet = (
+            self.engine.source_completion(),
+            source::RoutingObservation::new(self.topology()),
+            modules,
+            false,
+            false,
+        );
+        let (mut completion, routing, modules, completed, observed) =
+            self.graph_command(packet, |graph, p| {
+                if let (Some(source), Some(exchange)) = (&mut graph.modules, &mut p.2) {
+                    source.exchange(exchange);
+                }
+                if graph.closure.load(std::sync::atomic::Ordering::Acquire) && graph.mixer.busy() {
+                    graph.mixer.finish_closed_command();
+                }
+                p.3 = graph.mixer.publish_completion(&mut p.0);
+                p.4 = p.3 || graph.mixer.observe_latest(&mut p.0);
+                graph.observe_routing(&mut p.1);
+            })?;
+        if let Some(exchange) = modules {
+            self.modules
+                .as_mut()
+                .expect("module controller")
+                .finish_exchange(exchange)?;
+        }
+        if !observed {
+            return Ok(());
+        }
+        self.routing_observed = routing;
+        if completed {
+            for reply in self.engine.finish_source_completion(&mut completion)? {
+                if self.remote_completions.len() >= 64 {
+                    return Err("remote final capacity".into());
+                }
+                self.remote_completions
+                    .push_back(serde_json::to_value(reply).map_err(|e| e.to_string())?);
+            }
+        } else {
+            self.engine.finish_source_observation(&mut completion)?;
+        }
+        self.observe_fx_aux()?;
+        self.brain_frame_times[(self.frame() / 48 % 64) as usize] = Some((self.frame(), now));
+        if let Some(latest) = &mut self.metering {
+            latest.drain();
+        }
+        self.validate_measurement(now);
+        self.module_completions(now)
+    }
+    /// Reserve source time before allocating structural/Brain/local-aux state.
+    /// Final publication waits for the retained source outcome; stale preparation
+    /// returns its storage without mutating the graph.
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn clocked_control(
+        &mut self,
+        now: u64,
+        fence: Option<crate::remote::PolicyFence>,
+        prepare: impl FnOnce(&mut Self) -> Result<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let entered = std::time::Instant::now();
+        if !self.clocked_source
+            || self.engine.external_boundary().is_some()
+            || self.clocked_completion_reservation() > 64
+        {
+            return Err("clocked control preparation state".into());
+        }
+        self.service_source_clock(now)?;
+        let admission = self
+            .graph_command(None, |graph, p| {
+                *p = Some(
+                    graph
+                        .mixer
+                        .reserve_admission(graph.mixer.mixer.frame().saturating_add(480)),
+                );
+            })?
+            .ok_or("source admission absent")?
+            .map_err(|e| format!("source admission {e:?}"))?;
+        self.engine.begin_source_admission(admission)?;
+        self.clocked_fence = fence;
+        self.clocked_preparation_started = Some((now, entered));
+        let result = (|| {
+            let reply = prepare(self)?;
+            let now = now.saturating_add(entered.elapsed().as_millis() as u64);
+            self.commit_structure(now)?;
+            self.commit_brain(now)?;
+            self.poll_fx_aux(now)?;
+            Ok(reply)
+        })();
+        self.engine.end_source_admission();
+        self.clocked_fence = None;
+        self.clocked_preparation_started = None;
+        if result.is_err() {
+            if self.engine.abort_external_preparation().is_ok() {
+                self.structural_pending = None;
+                self.brain_pending = None;
+                self.fx_aux_pending = None;
+            } else {
+                // A worker failure after transfer has no trusted numeric receipt.
+                // Close this epoch rather than publish speculative application.
+                self.quiesce_source("clocked_control_outcome_lost")?;
+            }
+        }
+        result
+    }
+    /// Complete a prepared authority-only external intent on the same ordered
+    /// source boundary as structural and Brain routing commits. The caller runs
+    /// this inside clocked_control after begin_external, then acts on its receipt.
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn commit_clocked_external(
+        &mut self,
+        now: u64,
+    ) -> Result<crate::control_model::Reply> {
+        let frame = self
+            .engine
+            .admission_frame()
+            .ok_or("clocked external admission absent")?;
+        if !self.clocked_source || self.engine.external_boundary() != Some(frame) {
+            return Err("clocked external boundary".into());
+        }
+        let permit = self.prepare_source_external(now)?;
+        let (_, receipt) =
+            self.graph_boundary_command(frame, (permit, None), |graph, packet| {
+                packet.1 = Some(graph.mixer.commit_external(&packet.0, |_| 0));
+            })?;
+        self.engine
+            .finish_external(receipt.ok_or("clocked external receipt")?)
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn remote_target_frame(&mut self, lead: u64) -> Result<u64> {
+        self.graph_command((lead, None), |graph, p| {
+            p.1 = graph.mixer.mixer.frame().checked_add(p.0);
+        })?
+        .1
+        .ok_or_else(|| "remote target frame exhausted".into())
+    }
+    /// Publish the remote owner's permission at a source-issued boundary. An aux
+    /// send packet is retained on the source until its later negotiated frame;
+    /// sending the Permit therefore never depends on polling that exact frame.
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn clocked_remote_permission(
+        &mut self,
+        now: u64,
+        request: &crate::control_model::Request,
+        fingerprint: &str,
+        target: u64,
+        fences: [crate::remote::PolicyFence; 2],
+        mut action: Option<crate::mixer_control::source::RemoteFxSends>,
+    ) -> Result<crate::control_model::Reply> {
+        let entered = std::time::Instant::now();
+        self.service_source_clock(now)?;
+        let admission = self
+            .graph_command(None, |graph, p| {
+                *p = Some(
+                    graph
+                        .mixer
+                        .reserve_admission(graph.mixer.mixer.frame().saturating_add(480)),
+                );
+            })?
+            .ok_or("remote source admission")?
+            .map_err(|e| format!("remote source admission {e:?}"))?;
+        let frame = admission.frame();
+        if frame >= target {
+            return Err("remote permission preparation expired".into());
+        }
+        self.engine.begin_source_admission(admission)?;
+        let result = (|| {
+            self.engine
+                .schedule_fx_external(request, fingerprint, frame)?;
+            let checked_now = now.saturating_add(entered.elapsed().as_millis() as u64);
+            let mut permit = self.engine.prepare_external(checked_now)?;
+            permit.authority_fence = Some(fences[0].clone());
+            if let (Some(action), Some(expiry)) = (&mut action, permit.expires) {
+                action.expires = action.expires.min(expiry);
+            }
+            let (_, _, _, receipt) =
+                self.graph_boundary_command(frame, (permit, action, fences, None), |graph, p| {
+                    let available = p.1.is_none() || graph.mixer.remote_fx.is_none();
+                    let valid = p.2.iter().all(|f| f.valid());
+                    let receipt = graph
+                        .mixer
+                        .commit_external(&p.0, |_| if !available || !valid { -3 } else { 0 });
+                    if receipt.code == 0 && p.1.is_some() {
+                        std::mem::swap(&mut graph.mixer.remote_fx, &mut p.1);
+                    }
+                    p.3 = Some(receipt);
+                })?;
+            self.engine
+                .finish_external(receipt.ok_or("remote permission receipt")?)
+        })();
+        self.engine.end_source_admission();
+        if result.is_err() && self.engine.abort_external_preparation().is_err() {
+            self.quiesce_source("remote_permission_outcome_lost")?;
+        }
+        result
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn take_remote_fx_completion(&mut self) -> Result<Option<(u64, bool)>> {
+        let packet = self.graph_command(None, |graph, p| {
+            if graph
+                .mixer
+                .remote_fx
+                .as_ref()
+                .is_some_and(|r| r.result.is_some())
+                || (graph.closure.load(std::sync::atomic::Ordering::Acquire)
+                    && graph.mixer.remote_fx.is_some())
+            {
+                std::mem::swap(&mut graph.mixer.remote_fx, p);
+            }
+        })?;
+        match packet {
+            Some(p) => Ok(Some((p.ticket, p.result.unwrap_or(false)))),
+            None => Ok(None),
+        }
+    }
+
+    /// Controller-side preparation against a source-issued future boundary. The
+    /// worker keeps rendering while this closure allocates/parses/validates.
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn clocked_engine_command(
+        &mut self,
+        now: u64,
+        fence: Option<crate::remote::PolicyFence>,
+        prepare: impl FnOnce(&mut OfflineEngine) -> Result<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let entered = std::time::Instant::now();
+        if !self.clocked_source
+            || self.engine.external_boundary().is_some()
+            || self.clocked_completion_reservation() > 64
+        {
+            return Err("clocked engine preparation state".into());
+        }
+        let admission = self
+            .graph_command(None, |graph, packet| {
+                *packet = Some(
+                    graph
+                        .mixer
+                        .reserve_admission(graph.mixer.mixer.frame().saturating_add(480)),
+                );
+            })?
+            .ok_or("source admission absent")?
+            .map_err(|e| format!("source admission {e:?}"))?;
+        let frame = admission.frame();
+        self.engine.begin_source_admission(admission)?;
+        let prepared: Result<_> = (|| {
+            let reply = prepare(&mut self.engine)?;
+            // Release/revocation takes effect on copied held authorization before
+            // waiting for an unrelated future no-op render completion.
+            self.enforce_clock_brain_authority(now)?;
+            self.engine.prepare_render(48, now)?;
+            let expiry = entered
+                + std::time::Duration::from_millis(u64::from(
+                    self.engine.pending_lease_remaining(now).unwrap_or(0),
+                ));
+            let mut command = self
+                .engine
+                .take_source_command()
+                .ok_or("clock command absent")?;
+            command.expires = Some(expiry);
+            command.authority_fence = fence;
+            // Read-only operations have no lease and no scheduled mutation.
+            if self.engine.pending_lease_remaining(now).is_none() && reply["state"] != "pending" {
+                command.expires = None;
+            }
+            Ok((reply, command))
+        })();
+        self.engine.end_source_admission();
+        let (reply, command) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                // Nothing was published to the source. Dispose prepared storage
+                // here and remember refusal instead of stranding a pending edge.
+                self.engine.abort_source_preparation()?;
+                return Err(error);
+            }
+        };
+        let packet = source::ClockCommand {
+            frame,
+            command,
+            completion: self.engine.source_completion(),
+            routing: source::RoutingObservation::new(self.topology()),
+            installed: false,
+            refused: false,
+        };
+        let mut packet = self
+            .source_executor
+            .as_ref()
+            .ok_or("source worker absent")?
+            .transact_until(packet, |graph, packet| {
+                source::ClockCommand::advance(graph, packet)
+            })?;
+        let replies = if packet.refused {
+            self.engine.reject_source_command(&packet.command)?
+        } else {
+            std::mem::swap(&mut self.routing_observed, &mut packet.routing);
+            self.engine
+                .finish_source_completion(&mut packet.completion)?
+        };
+        for final_reply in replies {
+            if self.remote_completions.len() >= 64 {
+                return Err("remote final capacity".into());
+            }
+            self.remote_completions
+                .push_back(serde_json::to_value(final_reply).map_err(|e| e.to_string())?);
+        }
+        for final_reply in self.engine.take_processing_completions() {
+            self.remote_completions
+                .push_back(serde_json::to_value(final_reply).map_err(|e| e.to_string())?);
+        }
+        for final_reply in self.engine.take_sends_completions() {
+            self.remote_completions
+                .push_back(serde_json::to_value(final_reply).map_err(|e| e.to_string())?);
+        }
+        Ok(reply)
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn clock_routing(&self, now: u64) -> source::ClockRouting {
+        let hold = self
+            .brain
+            .hold
+            .as_ref()
+            .filter(|_| self.brain_media_authorized_at(now, self.frame()));
+        let expiry = hold.and_then(|(request, _, deadline, _)| {
+            self.engine
+                .live_lease_witness(request, now)
+                .ok()
+                .map(|(_, remaining)| (*deadline).min(now.saturating_add(u64::from(remaining))))
+        });
+        let expiry = if self.brain.foh {
+            expiry
+                .zip(self.brain.foh_authority.as_ref().and_then(|request| {
+                    self.engine
+                        .live_lease_witness(request, now)
+                        .ok()
+                        .map(|(_, remaining)| now.saturating_add(u64::from(remaining)))
+                }))
+                .map(|(hold, foh)| hold.min(foh))
+        } else {
+            expiry
+        };
+        source::ClockRouting {
+            monitor: self.brain.source,
+            selection_generation: self.brain.selection_generation,
+            monitor_silent: !self.brain.monitor_armed || self.brain.monitor_mute,
+            hold_generation: hold.map(|h| h.1),
+            hold_fence: hold.and(self.brain_hold_fence.clone()),
+            foh_fence: self
+                .brain
+                .foh
+                .then(|| self.brain_foh_fence.clone())
+                .flatten(),
+            deadline_frame: hold.map(|h| h.3),
+            deadline_ms: expiry,
+            monitors: self.brain.monitors.clone(),
+            foh: self.brain.foh && self.topology().pa_outputs > 0,
+            gain: 10_f64.powf(self.brain.gain_cdb as f64 / 2000.),
+            remote_fx_aux: self.remote_fx_aux,
+        }
+    }
+    fn prepare_source_external(
+        &mut self,
+        now: u64,
+    ) -> Result<crate::mixer_control::source::ExternalPermit> {
+        #[cfg(feature = "hardware-host")]
+        let now = self
+            .clocked_preparation_started
+            .map_or(now, |(base, entered)| {
+                now.max(base.saturating_add(entered.elapsed().as_millis() as u64))
+            });
+        let permit = self.engine.prepare_external(now)?;
+        #[cfg(feature = "hardware-host")]
+        let permit = {
+            let mut permit = permit;
+            permit.authority_fence = self.clocked_fence.clone();
+            permit
+        };
+        Ok(permit)
+    }
+    fn graph_boundary_command<P: Send + 'static>(
+        &mut self,
+        frame: u64,
+        packet: P,
+        apply: fn(&mut source::RenderGraph, &mut P),
+    ) -> Result<P> {
+        #[cfg(feature = "hardware-host")]
+        if self.clocked_source {
+            let observation = self.engine.source_completion();
+            let routing = source::RoutingObservation::new(self.topology());
+            let (_, packet, _, mut observation, routing, observed) = self
+                .source_executor
+                .as_ref()
+                .ok_or("source worker absent")?
+                .transact_until(
+                    (frame, packet, apply, observation, routing, false),
+                    |graph, p| {
+                        if graph.mixer.mixer.frame() < p.0
+                            && !graph.closure.load(std::sync::atomic::Ordering::Acquire)
+                        {
+                            return false;
+                        }
+                        (p.2)(graph, &mut p.1);
+                        p.5 = graph.mixer.observe_latest(&mut p.3);
+                        graph.observe_routing(&mut p.4);
+                        true
+                    },
+                )?;
+            if observed {
+                // This is actual source state at the commit/refusal boundary,
+                // not the future admission frame promoted into readback.
+                self.engine.finish_source_observation(&mut observation)?;
+                self.routing_observed = routing;
+            }
+            return Ok(packet);
+        }
+        let _ = frame;
+        self.graph_command_retained(packet, apply)
+    }
+    #[cfg(all(test, feature = "hardware-host"))]
+    pub(crate) fn inspect_source<P: Send + 'static>(
+        &mut self,
+        packet: P,
+        inspect: fn(&mut source::RenderGraph, &mut P),
+    ) -> Result<P> {
+        self.graph_command(packet, inspect)
+    }
+    fn graph_command<P: Send + 'static>(
+        &mut self,
+        packet: P,
+        apply: fn(&mut source::RenderGraph, &mut P),
+    ) -> Result<P> {
+        let packet = self.graph_command_retained(packet, apply)?;
+        self.finish_compat_render()?;
+        Ok(packet)
+    }
+    fn graph_command_retained<P: Send + 'static>(
+        &mut self,
+        mut packet: P,
+        apply: fn(&mut source::RenderGraph, &mut P),
+    ) -> Result<P> {
+        if let Some(executor) = &self.source_executor {
+            return executor
+                .transact((packet, apply), |graph, p| (p.1)(graph, &mut p.0))
+                .map(|p| p.0);
+        }
+        self.ensure_render_graph()?;
+        apply(
+            self.render_graph.as_mut().expect("source graph"),
+            &mut packet,
+        );
+        Ok(packet)
+    }
+    fn routing_command<P: Send + 'static>(
+        &mut self,
+        mut packet: P,
+        apply: fn(&mut source::SourceRouting, &mut P),
+    ) -> Result<P> {
+        if self.source_executor.is_some() || self.render_graph.is_some() {
+            let (packet, _) = self.graph_command((packet, apply), |graph, p| {
+                (p.1)(&mut graph.routing, &mut p.0);
+            })?;
+            Ok(packet)
+        } else {
+            apply(&mut self.source, &mut packet);
+            Ok(packet)
+        }
+    }
+    fn ensure_render_graph(&mut self) -> Result<()> {
+        if self.render_graph.is_none() && self.source_executor.is_none() {
+            self.render_graph = Some(Box::new(self.take_render_graph()?));
+        }
+        Ok(())
+    }
+    fn finish_compat_render(&mut self) -> Result<()> {
+        if !self.persistent_source
+            && let Some(graph) = self.render_graph.take()
+        {
+            self.attach_render_graph(*graph)?;
+        }
+        Ok(())
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn fx_aux_samples(&self) -> &[[f64; 96]; 4] {
+        &self.routing_observed.aux
+    }
+    /// Transfer all DSP/acquisition storage together. Controller-only state and
+    /// lifecycle workers remain here. Compatibility calls restore after rendering.
+    fn take_render_graph(&mut self) -> Result<source::RenderGraph> {
+        let mixer = self.engine.take_source()?;
+        #[cfg(feature = "hardware-host")]
+        let modules = match self.modules.as_mut().map(|g| g.take_source()).transpose() {
+            Ok(modules) => modules,
+            Err(error) => {
+                self.engine.restore_source(mixer)?;
+                return Err(error);
+            }
+        };
+        #[cfg(feature = "hardware-host")]
+        let aux = match self
+            .fx_aux
+            .as_mut()
+            .map(|controller| controller.take_source())
+            .transpose()
+        {
+            Ok(aux) => aux,
+            Err(error) => {
+                if let Some(modules) = modules {
+                    self.modules
+                        .as_mut()
+                        .expect("module controller")
+                        .restore_source(modules)?;
+                }
+                self.engine.restore_source(mixer)?;
+                return Err(error);
+            }
+        };
+        Ok(source::RenderGraph {
+            #[cfg(feature = "hardware-host")]
+            clock_routing: None,
+            mixer,
+            routing: self.source.take(),
+            closure: self.source_closure.clone(),
+            #[cfg(feature = "hardware-host")]
+            modules,
+            #[cfg(feature = "hardware-host")]
+            aux,
+        })
+    }
+    fn attach_render_graph(&mut self, graph: source::RenderGraph) -> Result<()> {
+        self.engine.restore_source(graph.mixer)?;
+        self.source.restore(graph.routing);
+        #[cfg(feature = "hardware-host")]
+        {
+            if let Some(module_source) = graph.modules {
+                self.modules
+                    .as_mut()
+                    .expect("module controller")
+                    .restore_source(module_source)?;
+            }
+            if let Some(aux) = graph.aux {
+                self.fx_aux
+                    .as_mut()
+                    .ok_or("aux controller missing")?
+                    .restore_source(aux)?;
+            }
+        }
+        Ok(())
+    }
     fn tick_raw(&mut self, now: u64, inputs: &[f64], output: &mut [f64]) -> Result<()> {
         self.tick_raw_with_wet(now, inputs, output, None)
     }
@@ -2390,6 +3318,17 @@ impl LocalAudio {
         output: &mut [f64],
         wet: Option<&[f64]>,
         talkback: Option<&[f64]>,
+    ) -> Result<()> {
+        self.tick_block(now, inputs, output, wet, talkback, false)
+    }
+    fn tick_block(
+        &mut self,
+        now: u64,
+        inputs: &[f64],
+        output: &mut [f64],
+        wet: Option<&[f64]>,
+        talkback: Option<&[f64]>,
+        capture: bool,
     ) -> Result<()> {
         // Preserve the receipt time of this borrowed source block across control
         // work. This is not an ALSA converter acquisition timestamp.
@@ -2671,180 +3610,161 @@ impl LocalAudio {
         self.commit_brain(now)?;
         self.commit_structure(now)?;
         self.commit_measurement(now)?;
-        output.fill(0.);
+        // Basis/authority checks are controller work. Invalidation closes the
+        // source capture independently, including a just-queued start.
+        self.validate_measurement(now);
         let source_frame = self.frame();
-        let ni = self.topology().inputs.len();
-        let buses = self.topology().monitors + 2;
-        // Retain worker ownership until teardown: dropping it would join here.
-        // Stop on changed maps or unrepresentable PCM instead of keeping a live
-        // publisher with a permanently stalled source timeline.
-        let map_revision = self.topology().map_revision;
-        if let Some(mono) = meter_mono {
-            self.spectrum
-                .offer(inputs, ni, source_frame, mono, map_revision);
-        }
-        if let Some((tap, worker, map)) = &mut self.analysis {
-            if *map != map_revision
-                || inputs
-                    .iter()
-                    .any(|v| !v.is_finite() || *v < -1. || *v > 8_388_607. / 8_388_608.)
-            {
-                worker.stop();
-            } else if worker.alive() {
-                if let Ok(mono) = source_received {
-                    for (out, v) in self.pcm_scratch.iter_mut().zip(inputs) {
-                        *out = (v * 8_388_608.).round() as i32;
-                    }
-                    if tap
-                        .offer_interleaved(source_frame, &self.pcm_scratch, ni, mono)
-                        .is_err()
-                    {
-                        worker.stop();
-                    }
-                    worker.update_losses(tap.dropped_windows);
-                } else {
-                    worker.stop();
-                }
-            }
-        }
-        if self.meter_map != self.topology().map_revision {
-            if let Some((tap, latest)) = &mut self.metering {
-                tap.reset();
-                latest.clear();
-            }
-            self.meter_map = self.topology().map_revision;
-        }
-        if let Some((_, latest)) = &mut self.metering {
+        let ni = if capture {
+            self.topology().capture_channels
+        } else {
+            self.topology().inputs.len()
+        };
+        if let Some(latest) = &mut self.metering {
             latest.drain();
         }
-        let completions = self.engine.process_interleaved(inputs, output, now)?;
+        output.fill(0.);
+        let end_frame = source_frame
+            .checked_add((inputs.len() / ni) as u64)
+            .ok_or("clock exhausted")?;
+        // Preserve the historical completed-quantum deadline/safety check while
+        // keeping authority/lease destruction outside the numeric DSP boundary.
+        self.prepare_brain_authority(now, end_frame);
+        self.ensure_render_graph()?;
+        if self.source_executor.is_some() {
+            let (_, admission) = self.graph_command((source_frame, None), |graph, packet| {
+                packet.1 = Some(graph.mixer.reserve_admission(packet.0));
+            })?;
+            let admission = admission
+                .expect("source admission reply")
+                .map_err(|error| format!("source admission {error:?}"))?;
+            if admission.epoch() != self.epoch.0 || admission.ticket() == 0 {
+                return Err("source admission identity".into());
+            }
+            self.engine.begin_source_admission(admission)?;
+        }
+        let prepared = self.engine.prepare_render(inputs.len() / ni, now);
+        self.engine.end_source_admission();
+        if let Err(error) = prepared {
+            self.finish_compat_render()?;
+            return Err(error);
+        }
+        let Some(command) = self.engine.take_source_command() else {
+            self.finish_compat_render()?;
+            self.quiesce_source("source_command_missing")?;
+            return Err("source command missing".into());
+        };
+        let mut quantum = self.source_quantum.take().unwrap_or_else(|| {
+            Box::new(source::Quantum::new(
+                self.topology(),
+                self.engine.source_completion(),
+            ))
+        });
+        quantum.epoch = self.epoch.0;
+        quantum.frame = source_frame;
+        quantum.capture = capture;
+        quantum.received = meter_mono;
+        quantum.input.clear();
+        quantum.input.extend_from_slice(inputs);
+        quantum.output.resize(output.len(), 0.);
+        quantum.output.fill(0.);
+        quantum.wet.clear();
+        quantum.wet.extend_from_slice(wet.unwrap_or(&[]));
+        quantum.talkback.clear();
+        quantum.talkback.extend_from_slice(talkback.unwrap_or(&[]));
+        quantum.monitor = self.brain.source;
+        quantum.deadline = talkback.and(self.brain.hold.as_ref().map(|h| h.3));
+        quantum.monitors.clear();
+        quantum.monitors.extend_from_slice(&self.brain.monitors);
+        quantum.foh = self.brain.foh && self.topology().pa_outputs > 0;
+        quantum.gain = 10_f64.powf(self.brain.gain_cdb as f64 / 2000.);
         #[cfg(feature = "hardware-host")]
-        let aux_wet = self.process_fx_aux(source_frame);
+        {
+            quantum.remote_fx_aux = self.remote_fx_aux;
+            // Structural completion above has already installed the new PA
+            // context. Never prepare this exchange before that completion.
+            quantum.modules = self
+                .modules
+                .as_mut()
+                .map(|g| g.prepare_exchange())
+                .transpose()?;
+        }
+        quantum.command = Some(command);
+        std::mem::swap(&mut quantum.completion, &mut self.source_completion);
+        std::mem::swap(&mut quantum.routing, &mut self.routing_observed);
+        let mut quantum = if let Some(executor) = &self.source_executor {
+            executor.transact(quantum, |graph, packet| {
+                source::Quantum::execute(graph, packet)
+            })?
+        } else {
+            source::Quantum::execute(
+                self.render_graph.as_mut().expect("source graph"),
+                &mut quantum,
+            );
+            quantum
+        };
+        output.copy_from_slice(&quantum.output);
+        std::mem::swap(&mut quantum.completion, &mut self.source_completion);
+        std::mem::swap(&mut quantum.routing, &mut self.routing_observed);
+        let result = quantum.result.take().expect("source quantum result");
+        // Retired prepared command storage is destroyed only on this controller.
+        let completion = if quantum.refused {
+            self.engine
+                .reject_source_command(quantum.command.as_ref().expect("refused command"))
+        } else {
+            self.engine
+                .finish_source_completion(&mut self.source_completion)
+        };
+        quantum.command = None;
         #[cfg(feature = "hardware-host")]
-        let wet = aux_wet.as_ref().map(|v| v.as_slice()).or(wet);
+        let module_completion = match quantum.modules.take() {
+            Some(packet) => {
+                let modules = self.modules.as_mut().expect("module controller");
+                if quantum.refused {
+                    modules.cancel_exchange(packet)
+                } else {
+                    modules.finish_exchange(packet)
+                }
+            }
+            None => Ok(()),
+        };
+        let command_refused = quantum.refused;
+        self.source_quantum = Some(quantum);
+        self.finish_compat_render()?;
+        #[cfg(feature = "hardware-host")]
+        module_completion?;
+        if command_refused {
+            completion?;
+            return Err("source command refused before rendering".into());
+        }
+        #[cfg(feature = "hardware-host")]
+        self.observe_fx_aux()?;
+        let peaks = match result {
+            Ok(peaks) => peaks,
+            Err(source::RenderError::Mixer) => return completion.map(|_| ()),
+            Err(source::RenderError::Closed | source::RenderError::Mapping) => {
+                self.quiesce_source("source_render_refused")?;
+                return Err("source render refused".into());
+            }
+            #[cfg(feature = "hardware-host")]
+            Err(source::RenderError::Module(error)) => {
+                let _ = completion;
+                self.quiesce_source("module_processing_failure")?;
+                return Err(format!("module processing {error:?}"));
+            }
+        };
         let rendered_frame = self.frame();
+        debug_assert_eq!(
+            rendered_frame,
+            source_frame + inputs.len() as u64 / ni as u64
+        );
         self.brain_frame_times[(rendered_frame / 48 % 64) as usize] = Some((rendered_frame, now));
-        for f in 0..48 {
-            self.brain_send[f * 2..f * 2 + 2].copy_from_slice(&output[f * buses..f * buses + 2]);
+        if !self.brain_media_authorized(now) {
+            self.brain.close();
         }
-        self.prepare_brain_talkback(now, source_frame, talkback);
-        // Capture operator taps before talkback: no implicit sidetone/feedback.
-        for f in 0..48 {
-            let pair = match self.brain.source {
-                crate::brain_control::MonitorSource::None => [0.; 2],
-                crate::brain_control::MonitorSource::Main => {
-                    [output[f * buses], output[f * buses + 1]]
-                }
-                crate::brain_control::MonitorSource::Monitor { index } => {
-                    [output[f * buses + 2 + index] * std::f64::consts::FRAC_1_SQRT_2; 2]
-                }
-                _ => {
-                    let i = ((source_frame + f as u64) % 48) as usize * 2;
-                    [
-                        self.engine.operator_tap()[i],
-                        self.engine.operator_tap()[i + 1],
-                    ]
-                }
-            };
-            self.brain_monitor[f * 2..f * 2 + 2].copy_from_slice(&pair);
-        }
-        for f in 0..48 {
-            self.meter_main[f * 2..f * 2 + 2].copy_from_slice(&output[f * buses..f * buses + 2]);
-        }
-        #[allow(unused_mut)]
-        let mut meter_bus_valid = true;
-        #[cfg(feature = "hardware-host")]
-        if let Some(graph) = &mut self.modules {
-            match graph.process_interleaved_brain(
-                self.epoch.0,
-                source_frame,
-                inputs,
-                output,
-                buses,
-                wet,
-                Some(&self.brain_talkback),
-            ) {
-                Ok(()) => self.meter_main.copy_from_slice(graph.meter_main_pre_pa()),
-                Err(crate::module_graph::ProcessError::Fx(_)) => {
-                    self.meter_main.copy_from_slice(graph.meter_main_pre_pa());
-                    meter_bus_valid = false;
-                }
-                Err(error) => {
-                    output.fill(0.);
-                    self.quiesce_source("module_processing_failure")?;
-                    return Err(format!("module processing {error:?}"));
-                }
-            }
-        }
-        #[cfg(feature = "hardware-host")]
-        if matches!(self.brain.source, crate::brain_control::MonitorSource::Main) {
-            if let Some(graph) = &self.modules {
-                self.brain_monitor
-                    .copy_from_slice(graph.program_before_talkback());
-            } else if let Some(wet) = wet {
-                for (out, v) in self.brain_monitor.iter_mut().zip(wet) {
-                    *out += v;
-                }
-            }
-        }
-        #[cfg(not(feature = "hardware-host"))]
-        if matches!(self.brain.source, crate::brain_control::MonitorSource::Main)
-            && let Some(wet) = wet
-        {
-            for (out, v) in self.brain_monitor.iter_mut().zip(wet) {
-                *out += v;
-            }
-        }
-        #[cfg(feature = "hardware-host")]
-        if let Some(aux) = aux_wet
-            .as_ref()
-            .map(|v| v.as_slice())
-            .or(if self.remote_fx_aux { wet } else { None })
-        {
-            for (out, pair) in output.chunks_exact_mut(buses).zip(aux.chunks_exact(2)) {
-                out[0] += pair[0];
-                out[1] += pair[1];
-            }
-            if self.modules.is_none() {
-                for (meter, wet) in self.meter_main.iter_mut().zip(aux) {
-                    *meter += wet;
-                }
-            }
-        }
-        for (out, tb) in output
-            .chunks_exact_mut(buses)
-            .zip(self.brain_talkback.chunks_exact(buses))
-        {
-            for i in 2..buses {
-                out[i] += tb[i];
-            }
-        }
-        if let Some((tap, _)) = &mut self.metering
-            && let Some(meter_mono) = meter_mono
-        {
-            let (processed, valid) = self.engine.mixer().meter_samples();
-            tap.offer(
-                source_frame,
-                meter_mono,
-                inputs,
-                processed,
-                valid,
-                &self.meter_main,
-                output,
-                meter_bus_valid,
-            );
-        }
-        if meter_bus_valid && let Some(mono) = meter_mono {
-            self.spectrum.offer_tap(
-                &self.meter_main,
-                2,
-                source_frame,
-                mono,
-                map_revision,
-                crate::spectrum::MAIN,
-            );
-        }
-        self.brain.monitor_peak = self.brain_monitor.iter().fold(0_f64, |a, v| a.max(v.abs()));
+        self.brain.microphone_peak = peaks.microphone;
+        self.brain.outgoing_peak = peaks.outgoing;
+        self.brain.monitor_peak = peaks.monitor;
+        let completions = completion?;
         for reply in completions {
             if self.pending_owner.is_none() && self.remote_completions.len() < 64 {
                 self.remote_completions
@@ -3007,11 +3927,11 @@ mod synthetic_source_tests {
                 for input in 0..16 {
                     let expected = reference(first + f as u64, input);
                     assert_eq!(
-                        audio.raw_scratch[f * 16 + input].to_bits(),
+                        audio.source.raw_scratch[f * 16 + input].to_bits(),
                         expected.to_bits()
                     );
                     assert_eq!(
-                        audio.capture_scratch[f * 16 + 15 - input].to_bits(),
+                        audio.source.capture_scratch[f * 16 + 15 - input].to_bits(),
                         expected.to_bits()
                     );
                 }
@@ -3099,5 +4019,454 @@ mod held_proof_boundary_tests {
         assert_eq!(restored.destination_hash, expected);
         drop(h);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(all(test, feature = "hardware-host"))]
+mod clocked_control_tests {
+    use super::*;
+    use crate::control_model::{Command, Request, Scope};
+    use crate::remote::HostAuthority;
+    use std::{
+        os::unix::fs::PermissionsExt,
+        time::{Duration, Instant},
+    };
+    const SHOW: &str = "11111111-1111-4111-8111-111111111111";
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn provider(name: &str, outputs: usize) -> (Directory, LocalAudio) {
+        let dir =
+            std::env::temp_dir().join(format!("gp-h1-clock-control-{name}-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let provider = LocalAudio::bind_configured(
+            &dir,
+            "audio.sock",
+            SHOW,
+            Counter(9),
+            crate::topology::EngineTopology::software(8, 2, outputs).unwrap(),
+        )
+        .unwrap();
+        (Directory(dir), provider)
+    }
+    fn grant(provider: &mut LocalAudio, writer: &str, scope: Scope) -> Counter {
+        let revision = provider.engine().revision();
+        provider
+            .engine_mut()
+            .handle(
+                &Request {
+                    contract: "C-AUDIO".into(),
+                    version: 2,
+                    show_id: SHOW.into(),
+                    module: "audio".into(),
+                    epoch: Counter(9),
+                    writer: Some(writer.into()),
+                    lease: None,
+                    request_id: Some(Counter(1)),
+                    expected_revision: Some(revision),
+                    command: Command::Grant { scope },
+                },
+                0,
+            )
+            .unwrap()
+            .outcome
+            .unwrap()
+            .body
+            .granted_lease
+            .unwrap()
+    }
+    fn structure(
+        lease: Counter,
+        id: u64,
+        revision: Counter,
+        command: crate::structural_control::Command,
+    ) -> crate::structural_control::Request {
+        crate::structural_control::Request {
+            contract: "GP14-structure".into(),
+            version: 1,
+            show_id: SHOW.into(),
+            module: "audio".into(),
+            epoch: Counter(9),
+            writer: Some("structure".into()),
+            lease: Some(lease),
+            request_id: Some(Counter(id)),
+            expected_revision: Some(revision),
+            command,
+        }
+    }
+    fn wait_blocks(status: &crate::remote::SourceClockStatus, blocks: u64) {
+        let until = Instant::now() + Duration::from_secs(3);
+        while status.blocks() < blocks {
+            assert!(
+                Instant::now() < until && !status.stopped(),
+                "source stopped before requested frame"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    #[test]
+    fn clocked_structure_refuses_late_expired_and_disconnected_preparation() {
+        for mode in 0..4 {
+            let (_directory, mut provider) = provider(&format!("structure-{mode}"), 0);
+            let lease = grant(&mut provider, "structure", Scope::PaConfiguration);
+            provider.rearm().unwrap();
+            let mut host = HostAuthority::new(provider, 1).unwrap();
+            let now = if mode == 2 {
+                crate::control_model::LEASE_MS - 5
+            } else {
+                1
+            };
+            let status = host
+                .start_source_clock(now, Duration::from_millis(2), 200)
+                .unwrap();
+            wait_blocks(&status, 1);
+            // Startup charges preparation time. Reusing the requested origin
+            // can move authority time backwards before the tested preparation.
+            let now = host.provider().source_control_time();
+            let certificate = b"clocked-structure-fence";
+            use sha2::{Digest, Sha256};
+            let policy = crate::remote::PolicyStore::new(vec![crate::remote::Peer {
+                id: "clock-test".into(),
+                certificate_sha256: format!("{:x}", Sha256::digest(certificate)),
+                permissions: [crate::remote::Permission::PaConfiguration]
+                    .into_iter()
+                    .collect(),
+            }])
+            .unwrap();
+            let context = policy.authenticate(certificate, 1).unwrap();
+            let request = structure(
+                lease,
+                2,
+                Counter(0),
+                crate::structural_control::Command::OutputMute {},
+            );
+            let reply = host
+                .provider_mut()
+                .clocked_control(now, Some(context.audio_fence()), |provider| {
+                    let reply = provider.structural_request(request, now, true, None)?;
+                    if mode == 1 {
+                        std::thread::sleep(Duration::from_millis(40));
+                    }
+                    if mode == 3 {
+                        context.close_audio();
+                    }
+                    serde_json::to_value(reply).map_err(|e| e.to_string())
+                })
+                .unwrap();
+            assert_eq!(reply["state"], "pending", "mode={mode}: {reply}");
+            let replies = host.provider_mut().take_remote_completions();
+            assert_eq!(replies.len(), 1, "mode={mode}: {replies:?}");
+            assert_eq!(
+                host.provider().engine().revision(),
+                Counter(u64::from(mode == 0))
+            );
+            assert_eq!(
+                replies[0]["reason"].is_null(),
+                mode == 0,
+                "mode={mode}: {:?}",
+                replies[0]
+            );
+            // Failed preparation cannot strand the global reservation.
+            assert!(host.provider().engine().external_boundary().is_none());
+            status.close();
+            host.finish_source_clock(&status).unwrap();
+        }
+    }
+    #[test]
+    fn clocked_brain_selection_installs_routing_at_source_boundary() {
+        let (_directory, mut provider) = provider("brain", 0);
+        let lease = grant(&mut provider, "listen", Scope::LocalOperatorMonitor);
+        provider.rearm().unwrap();
+        let mut host = HostAuthority::new(provider, 1).unwrap();
+        let status = host
+            .start_source_clock(1, Duration::from_millis(2), 100)
+            .unwrap();
+        wait_blocks(&status, 1);
+        let request = crate::brain_control::Request {
+            contract: "GP15-brain".into(),
+            version: 1,
+            show_id: SHOW.into(),
+            module: "audio".into(),
+            epoch: Counter(9),
+            writer: Some("listen".into()),
+            lease: Some(lease),
+            request_id: Some(Counter(2)),
+            expected_revision: Some(Counter(0)),
+            command: crate::brain_control::Command::MonitorSet {
+                source: crate::brain_control::MonitorSource::Pfl { input: 3 },
+                gain_cdb: -600,
+                mute: false,
+                dim: false,
+                armed: false,
+            },
+        };
+        host.provider_mut()
+            .clocked_control(2, None, |provider| {
+                serde_json::to_value(provider.brain_request(request, 2, true, None)?)
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        assert_eq!(host.provider().engine().revision(), Counter(1));
+        let source = host
+            .provider_mut()
+            .graph_command(None, |graph, p| {
+                *p = graph.clock_routing.as_ref().map(|routing| routing.monitor);
+            })
+            .unwrap();
+        assert_eq!(
+            source,
+            Some(crate::brain_control::MonitorSource::Pfl { input: 3 })
+        );
+        host.provider_mut().close_brain_audio();
+        let closed = host
+            .provider_mut()
+            .graph_command(false, |graph, p| {
+                *p = graph.clock_routing.as_ref().is_some_and(|r| {
+                    r.monitor == crate::brain_control::MonitorSource::None
+                        && r.deadline_ms.is_none()
+                        && r.deadline_frame.is_none()
+                });
+            })
+            .unwrap();
+        assert!(closed);
+        status.close();
+        host.finish_source_clock(&status).unwrap();
+    }
+    #[test]
+    fn clocked_authority_release_and_writer_revocation_close_copied_hold() {
+        for mode in 0..3 {
+            let release = mode == 1;
+            let (_directory, mut provider) = provider(&format!("hold-{mode}"), 0);
+            let lease = grant(&mut provider, "talk", Scope::TalkbackDestinations);
+            let listen_lease = grant(&mut provider, "listen", Scope::LocalOperatorMonitor);
+            use sha2::{Digest, Sha256};
+            let certificate = b"held-controller-session";
+            let policy = crate::remote::PolicyStore::new(vec![crate::remote::Peer {
+                id: "held-controller".into(),
+                certificate_sha256: format!("{:x}", Sha256::digest(certificate)),
+                permissions: [crate::remote::Permission::TalkbackDestinations]
+                    .into_iter()
+                    .collect(),
+            }])
+            .unwrap();
+            let context = policy.authenticate(certificate, 1).unwrap();
+            provider.rearm().unwrap();
+            let mut host = HostAuthority::new(provider, 1).unwrap();
+            let status = host
+                .start_source_clock(1, Duration::from_millis(2), 200)
+                .unwrap();
+            wait_blocks(&status, 8);
+            for (id, command) in [
+                (
+                    2,
+                    crate::brain_control::Command::TalkbackSet {
+                        monitors: vec![0],
+                        gain_cdb: -1200,
+                        mute: false,
+                    },
+                ),
+                (
+                    3,
+                    crate::brain_control::Command::Hold {
+                        generation: Counter(1),
+                    },
+                ),
+            ] {
+                let request = crate::brain_control::Request {
+                    contract: "GP15-brain".into(),
+                    version: 1,
+                    show_id: SHOW.into(),
+                    module: "audio".into(),
+                    epoch: Counter(9),
+                    writer: Some("talk".into()),
+                    lease: Some(lease),
+                    request_id: Some(Counter(id)),
+                    expected_revision: Some(host.provider().engine().revision()),
+                    command,
+                };
+                host.provider_mut().last_brain_source_receipt = None;
+                let reply = host
+                    .provider_mut()
+                    .clocked_control(id, Some(context.audio_fence()), |provider| {
+                        serde_json::to_value(provider.brain_request(request, id, true, None)?)
+                            .map_err(|e| e.to_string())
+                    })
+                    .unwrap();
+                assert_eq!(
+                    host.provider().engine().revision(),
+                    Counter(id - 1),
+                    "mode={mode}, request={id}, reply={reply}, source_receipt={:?}",
+                    host.provider().last_brain_source_receipt
+                );
+            }
+            let held = host
+                .provider_mut()
+                .graph_command(false, |graph, p| {
+                    *p = graph
+                        .clock_routing
+                        .as_ref()
+                        .is_some_and(|r| r.deadline_ms.is_some());
+                })
+                .unwrap();
+            assert!(held);
+            if mode == 2 {
+                // A separate writer changing monitor intent must preserve the
+                // talkback controller's independent authenticated closure signal.
+                let request = crate::brain_control::Request {
+                    contract: "GP15-brain".into(),
+                    version: 1,
+                    show_id: SHOW.into(),
+                    module: "audio".into(),
+                    epoch: Counter(9),
+                    writer: Some("listen".into()),
+                    lease: Some(listen_lease),
+                    request_id: Some(Counter(2)),
+                    expected_revision: Some(host.provider().engine().revision()),
+                    command: crate::brain_control::Command::MonitorSet {
+                        source: crate::brain_control::MonitorSource::Main,
+                        gain_cdb: -1200,
+                        mute: true,
+                        dim: false,
+                        armed: false,
+                    },
+                };
+                host.provider_mut()
+                    .clocked_control(4, None, |provider| {
+                        serde_json::to_value(provider.brain_request(request, 4, true, None)?)
+                            .map_err(|e| e.to_string())
+                    })
+                    .unwrap();
+                context.close_audio();
+                // No controller service/readback: source sees closure itself.
+                wait_blocks(&status, status.blocks() + 2);
+                let fenced = host
+                    .provider_mut()
+                    .graph_command(false, |graph, p| {
+                        *p = graph
+                            .clock_routing
+                            .as_ref()
+                            .is_some_and(|r| r.hold_fence.as_ref().is_some_and(|f| !f.valid()));
+                    })
+                    .unwrap();
+                assert!(fenced);
+                status.close();
+                host.finish_source_clock(&status).unwrap();
+                continue;
+            }
+            if release {
+                let request = Request {
+                    contract: "C-AUDIO".into(),
+                    version: 2,
+                    show_id: SHOW.into(),
+                    module: "audio".into(),
+                    epoch: Counter(9),
+                    writer: Some("talk".into()),
+                    lease: Some(lease),
+                    request_id: Some(Counter(4)),
+                    expected_revision: Some(host.provider().engine().revision()),
+                    command: Command::Release {},
+                };
+                host.provider_mut()
+                    .clocked_engine_command(4, None, |engine| {
+                        serde_json::to_value(engine.handle(&request, 4)?).map_err(|e| e.to_string())
+                    })
+                    .unwrap();
+            } else {
+                host.provider_mut().revoke_writer("talk");
+            }
+            let closed = host
+                .provider_mut()
+                .graph_command(false, |graph, p| {
+                    *p = graph
+                        .clock_routing
+                        .as_ref()
+                        .is_some_and(|r| r.deadline_ms.is_none() && r.deadline_frame.is_none());
+                })
+                .unwrap();
+            assert!(closed, "release={release}");
+            status.close();
+            host.finish_source_clock(&status).unwrap();
+        }
+    }
+    #[test]
+    #[ignore = "actual PA/FX/REC bindings: GP05_MANIFEST and GP_PA_CONFIG"]
+    fn clocked_pa_replacement_completes_before_next_context_exchange() {
+        let (_directory, mut provider) = provider("pa-context", 8);
+        provider
+            .enable_modules(std::path::Path::new(
+                &std::env::var_os("GP05_MANIFEST").unwrap(),
+            ))
+            .unwrap();
+        let config = std::fs::read_to_string(std::env::var_os("GP_PA_CONFIG").unwrap()).unwrap();
+        provider.configure_pa(config.as_bytes()).unwrap();
+        let lease = grant(&mut provider, "structure", Scope::PaConfiguration);
+        provider.rearm().unwrap();
+        let mut host = HostAuthority::new(provider, 1).unwrap();
+        let started = Instant::now();
+        let current_time = || 1 + started.elapsed().as_millis() as u64;
+        let status = host
+            .start_source_clock(1, Duration::from_millis(2), 200)
+            .unwrap();
+        wait_blocks(&status, 1);
+        let mute = structure(
+            lease,
+            2,
+            Counter(0),
+            crate::structural_control::Command::OutputMute {},
+        );
+        let now = current_time();
+        let reply = host
+            .provider_mut()
+            .clocked_control(now, None, |provider| {
+                serde_json::to_value(provider.structural_request(mute, now, true, None)?)
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap();
+        assert_eq!(reply["state"], "pending", "{reply}");
+        let replies = host.provider_mut().take_remote_completions();
+        assert_eq!(replies.len(), 1);
+        assert!(replies[0]["reason"].is_null(), "{replies:?}");
+        wait_blocks(&status, status.blocks() + 6);
+        for id in 3..5 {
+            let request = structure(
+                lease,
+                id,
+                host.provider().engine().revision(),
+                crate::structural_control::Command::PaSet {
+                    configuration_json: config.clone(),
+                    program_buses: vec![0, 1],
+                },
+            );
+            let now = current_time();
+            let reply = host
+                .provider_mut()
+                .clocked_control(now, None, |provider| {
+                    serde_json::to_value(provider.structural_request(request, now, true, None)?)
+                        .map_err(|e| e.to_string())
+                })
+                .unwrap();
+            assert_eq!(reply["state"], "pending", "{reply}");
+            let replies = host.provider_mut().take_remote_completions();
+            assert_eq!(replies.len(), 1);
+            assert!(replies[0]["reason"].is_null(), "{replies:?}");
+            assert_eq!(host.provider().engine().revision(), Counter(id - 1));
+            let applied: u64 = replies[0]["effective_frame"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(host.provider().frame() >= applied);
+            // This exchange must use the new context installed by finish_pa_change.
+            host.provider_mut()
+                .service_source_clock(current_time())
+                .unwrap();
+            host.provider_mut().master_eq_snapshot().unwrap();
+        }
+        status.close();
+        host.finish_source_clock(&status).unwrap();
     }
 }

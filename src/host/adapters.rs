@@ -15,11 +15,19 @@ pub struct Dsp {
     process: Process,
     destroy: Destroy,
     reset: Option<unsafe extern "C" fn(*mut c_void)>,
+    fx_status: Option<unsafe extern "C" fn(*mut c_void, *mut FxStatus, u32, u32) -> i32>,
+    pa_status: Option<unsafe extern "C" fn(*mut c_void, *mut PaStatus, u32, u32) -> i32>,
     pub delay: u32,
     outputs: usize,
     max_block: usize,
     _library: Library,
 }
+// SAFETY: the accepted PA v1 and FX v1 ABIs create exclusively owned handles
+// on the controller for use by one audio worker. Their retained DSP has no
+// thread-affine state; all process/reset/query/destroy calls remain serialized
+// by ownership. Library stays loaded through handle destruction. This permits
+// transfer, not concurrent access (Dsp deliberately does not implement Sync).
+unsafe impl Send for Dsp {}
 impl Dsp {
     /// Loads an explicitly selected trusted owner library. All ABI signatures must
     /// match the owner's v1 contract; callers cannot supply untrusted plugin code.
@@ -48,6 +56,27 @@ impl Dsp {
                 } else {
                     None
                 };
+            // Resolve status functions before handing the owner to the source.
+            let fx_status = if owner == "fx" {
+                Some(
+                    *library
+                        .get::<unsafe extern "C" fn(*mut c_void, *mut FxStatus, u32, u32) -> i32>(
+                            b"shr_fx_v1_status",
+                        )?,
+                )
+            } else {
+                None
+            };
+            let pa_status = if owner == "pa" {
+                Some(
+                    *library
+                        .get::<unsafe extern "C" fn(*mut c_void, *mut PaStatus, u32, u32) -> i32>(
+                            b"shr_pa_v1_status",
+                        )?,
+                )
+            } else {
+                None
+            };
             let handle = create(48000, block);
             if handle.is_null() {
                 return Err("DSP create refused configuration".into());
@@ -58,6 +87,8 @@ impl Dsp {
                 process,
                 destroy,
                 reset,
+                fx_status,
+                pa_status,
                 delay,
                 outputs: if owner == "pa" { 6 } else { 2 },
                 max_block: block as usize,
@@ -311,19 +342,35 @@ impl Dsp {
         }
         Ok(out)
     }
-    fn status<T: Default>(&self, name: &[u8]) -> Result<T> {
-        let mut out = T::default();
-        // SAFETY: exclusive live handle, matching layout, off render callback.
-        unsafe {
-            let query = self
-                ._library
-                .get::<unsafe extern "C" fn(*mut c_void, *mut T, u32, u32) -> i32>(name)?;
-            let rc = query(self.handle, &mut out, 1, std::mem::size_of::<T>() as u32);
-            if rc != 0 {
-                return Err(format!("owner status refused: {rc}").into());
-            }
-        }
-        Ok(out)
+    /// Fixed-width source observation. Symbol lookup and error formatting stay
+    /// outside the source quantum; exclusive ownership serializes native access.
+    pub(crate) fn fx_status_numeric(&self) -> std::result::Result<FxStatus, i32> {
+        let query = self.fx_status.ok_or(-1)?;
+        let mut out = FxStatus::default();
+        // SAFETY: cached accepted ABI, live exclusive owner and disjoint output.
+        let rc = unsafe {
+            query(
+                self.handle,
+                &mut out,
+                1,
+                std::mem::size_of::<FxStatus>() as u32,
+            )
+        };
+        if rc == 0 { Ok(out) } else { Err(rc) }
+    }
+    pub(crate) fn pa_status_numeric(&self) -> std::result::Result<PaStatus, i32> {
+        let query = self.pa_status.ok_or(-1)?;
+        let mut out = PaStatus::default();
+        // SAFETY: cached accepted ABI, live exclusive owner and disjoint output.
+        let rc = unsafe {
+            query(
+                self.handle,
+                &mut out,
+                1,
+                std::mem::size_of::<PaStatus>() as u32,
+            )
+        };
+        if rc == 0 { Ok(out) } else { Err(rc) }
     }
     pub fn fx_capabilities(&self) -> Result<FxCapabilities> {
         if self.outputs != 2 {
@@ -335,7 +382,8 @@ impl Dsp {
         if self.outputs != 2 {
             return Err("wrong owner query".into());
         }
-        self.status(b"shr_fx_v1_status")
+        self.fx_status_numeric()
+            .map_err(|rc| format!("owner status refused: {rc}").into())
     }
     pub fn pa_descriptor(&self) -> Result<PaDescriptor> {
         if self.outputs != 6 {
@@ -347,7 +395,8 @@ impl Dsp {
         if self.outputs != 6 {
             return Err("wrong owner query".into());
         }
-        self.status(b"shr_pa_v1_status")
+        self.pa_status_numeric()
+            .map_err(|rc| format!("owner status refused: {rc}").into())
     }
 }
 #[repr(C)]

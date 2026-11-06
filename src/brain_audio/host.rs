@@ -31,6 +31,45 @@ pub struct DeviceStatus {
     pub playback_stalls: u64,
     pub faults: u64,
 }
+/// Allocation-free observation copied by the sole service owner. Static device
+/// descriptions are joined to this value by the controller, never by service.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ServiceStatus {
+    pub readback: DeviceReadback,
+    pub armed: bool,
+    pub fault: Option<DeviceError>,
+    pub capture_frame: u64,
+    pub playback_frame: u64,
+    pub captured_peak: f64,
+    pub outgoing_peak: f64,
+    pub playback_peak: f64,
+    pub capture_stalls: u64,
+    pub playback_stalls: u64,
+    pub faults: u64,
+}
+impl ServiceStatus {
+    pub fn with_description(
+        self,
+        capabilities: DeviceCapabilities,
+        physical_mapping_verified: bool,
+    ) -> DeviceStatus {
+        DeviceStatus {
+            readback: self.readback,
+            capabilities,
+            physical_mapping_verified,
+            armed: self.armed,
+            fault: self.fault,
+            capture_frame: self.capture_frame,
+            playback_frame: self.playback_frame,
+            captured_peak: self.captured_peak,
+            outgoing_peak: self.outgoing_peak,
+            playback_peak: self.playback_peak,
+            capture_stalls: self.capture_stalls,
+            playback_stalls: self.playback_stalls,
+            faults: self.faults,
+        }
+    }
+}
 #[derive(Debug, Clone, Copy)]
 pub struct LocalLevels {
     pub microphone_gain_db: f64,
@@ -133,6 +172,27 @@ impl<D: DuplexDevice> BrainHost<D> {
             faults: 0,
         })
     }
+    /// Requested sample allocations only; excludes allocator overhead and any
+    /// library/device state not represented by these owned sample vectors.
+    pub fn prepared_sample_bytes(&self) -> usize {
+        [
+            self.capture.capacity(),
+            self.playback.capacity(),
+            self.mono.capacity(),
+            self.stereo.capacity(),
+        ]
+        .into_iter()
+        .map(|n| n * std::mem::size_of::<f64>())
+        .sum()
+    }
+    /// Startup only: touch prepared storage before the first service quantum.
+    #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+    pub(crate) fn prefault_prepared(&mut self) {
+        super::prefault_samples(&mut self.capture);
+        super::prefault_samples(&mut self.playback);
+        super::prefault_samples(&mut self.mono);
+        super::prefault_samples(&mut self.stereo);
+    }
     pub fn is_armed(&self) -> bool {
         self.armed
     }
@@ -151,13 +211,16 @@ impl<D: DuplexDevice> BrainHost<D> {
             configuration_generation: self.generation,
         }
     }
-    /// Control/readback allocation is outside rendering.
+    /// Controller-only convenience: joins copied status to static descriptions.
     pub fn status(&self) -> DeviceStatus {
-        DeviceStatus {
+        self.service_status().with_description(
+            self.device.capabilities().clone(),
+            self.device.capabilities().physical && self.config.physically_verified(),
+        )
+    }
+    pub fn service_status(&self) -> ServiceStatus {
+        ServiceStatus {
             readback: self.readback(),
-            capabilities: self.device.capabilities().clone(),
-            physical_mapping_verified: self.device.capabilities().physical
-                && self.config.physically_verified(),
             armed: self.armed,
             fault: self.fault,
             capture_frame: self.capture_frame,

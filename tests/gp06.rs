@@ -263,7 +263,17 @@ fn fragmentation_malformed_lengths_incomplete_timeout_and_capacity() {
     s.tick(2000).unwrap();
     assert_eq!(s.client_count(), 4);
     drop(clients);
-    s.tick(2000).unwrap();
+    // A nonblocking EOF observation may need another service iteration. Keep
+    // provider time fixed so this proves disconnect, not an idle timeout.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while s.client_count() != 0 {
+        s.tick(2000).unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "closed clients were not retired"
+        );
+        std::thread::yield_now();
+    }
     assert_eq!(s.client_count(), 0);
 }
 #[test]

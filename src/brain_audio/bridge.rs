@@ -175,6 +175,26 @@ impl Bridge {
     pub fn config(&self) -> BridgeConfig {
         self.config
     }
+    /// Requested sample allocations only; excludes allocator overhead and any
+    /// library/device state not represented by these owned sample vectors.
+    pub fn prepared_sample_bytes(&self) -> usize {
+        [
+            self.ring.capacity(),
+            self.input.capacity(),
+            self.output.capacity(),
+        ]
+        .into_iter()
+        .map(|n| n * std::mem::size_of::<f64>())
+        .sum()
+    }
+    /// Startup only: touch prepared storage before the first service quantum.
+    #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+    pub(crate) fn prefault_prepared(&mut self) {
+        super::prefault_samples(&mut self.ring);
+        super::prefault_samples(&mut self.input);
+        super::prefault_samples(&mut self.output);
+        std::hint::black_box(&mut self.resampler).reset();
+    }
     pub fn status(&self) -> BridgeStatus {
         BridgeStatus {
             epochs: self.epochs,

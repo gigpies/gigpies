@@ -1,7 +1,7 @@
 //! Optional SHR FX source-timeline delay ABI. Library, handle and tokens share one owner.
 use crate::fx_wire::{Channel, Configuration};
 use libloading::Library;
-use std::{ffi::c_void, path::Path};
+use std::{ffi::c_void, path::Path, sync::Arc};
 type Result<T> = std::result::Result<T, String>;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -114,9 +114,66 @@ pub struct Owner {
     query: Query,
     destroy: Retire,
     max_block: usize,
-    _library: Library,
+    _library: Arc<Library>,
+}
+// Exclusive native handle transfer; no concurrent handle operations are allowed.
+unsafe impl Send for Owner {}
+
+/// Instance-free preparation pins the ABI independently of the render handle.
+pub(crate) struct Preparer {
+    prepare: Prepare,
+    retire: Retire,
+    library: Arc<Library>,
+}
+pub(crate) struct PreparedToken {
+    raw: *mut c_void,
+    retire: Retire,
+    _library: Arc<Library>,
+}
+// The immutable token is exclusively transferred and only borrowed at commit.
+unsafe impl Send for PreparedToken {}
+impl Drop for PreparedToken {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { (self.retire)(self.raw) };
+        }
+    }
+}
+impl Preparer {
+    pub(crate) fn prepare(&self, config: &Configuration, expected: u64) -> Result<PreparedToken> {
+        let c = Config {
+            version: 2,
+            size: size_of::<Config>() as u32,
+            expected_generation: expected,
+            generation: expected.checked_add(1).ok_or("FX generation exhausted")?,
+            channel: [(&config.channels[0]).into(), (&config.channels[1]).into()],
+        };
+        let raw = unsafe { (self.prepare)(&c, 48_000, 2, size_of::<Config>() as u32) };
+        if raw.is_null() {
+            return Err("FX preparation refused".into());
+        }
+        Ok(PreparedToken {
+            raw,
+            retire: self.retire,
+            _library: self.library.clone(),
+        })
+    }
 }
 impl Owner {
+    pub(crate) fn preparer(&self) -> Preparer {
+        Preparer {
+            prepare: self.prepare,
+            retire: self.retire,
+            library: self._library.clone(),
+        }
+    }
+    pub(crate) fn commit_token(&mut self, token: &PreparedToken, frame: u64) -> i32 {
+        if !Arc::ptr_eq(&self._library, &token._library) {
+            return -1;
+        }
+        unsafe { (self.commit)(self.handle, token.raw, frame) }
+    }
+
     pub fn load(path: &Path, max_block: usize) -> Result<Option<Self>> {
         if max_block == 0 || max_block > 8192 {
             return Err("FX block capacity".into());
@@ -188,7 +245,7 @@ impl Owner {
             query,
             destroy,
             max_block,
-            _library: library,
+            _library: Arc::new(library),
         };
         if owner.status().is_err() {
             return Ok(None);
@@ -196,6 +253,9 @@ impl Owner {
         Ok(Some(owner))
     }
     pub fn status(&mut self) -> Result<Status> {
+        self.status_bounded().map_err(str::to_owned)
+    }
+    pub(crate) fn status_bounded(&mut self) -> std::result::Result<Status, &'static str> {
         let mut s = Status::default();
         if unsafe { (self.query)(self.handle, &mut s, 2, size_of::<Status>() as u32) } != 0
             || s.version != 2
@@ -203,7 +263,7 @@ impl Owner {
             || s.sample_rate != 48_000
             || s.max_block_frames as usize != self.max_block
         {
-            return Err("FX owner status".into());
+            return Err("FX owner status");
         }
         Ok(s)
     }

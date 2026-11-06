@@ -1,5 +1,9 @@
-//! Explicit Brain duplex process. Network/control work surrounds the same bounded
-//! device callbacks for fake and physical adapters; FX has a separate source owner.
+//! Brain controller. The sole duplex service owner runs independently of control
+//! awaits, network encoding and diagnostic serialization.
+#[cfg(test)]
+pub(crate) mod lifecycle_test;
+mod media;
+mod service;
 use crate::{
     brain_audio::{
         bridge::{Bridge, BridgeConfig, BridgeEpochs},
@@ -45,42 +49,36 @@ pub struct Config {
 enum Device {
     Fake(FakeDuplex),
     Physical(AlsaDuplex),
-    Closed(crate::brain_audio::device::DeviceCapabilities),
 }
 impl DuplexDevice for Device {
     fn capabilities(&self) -> &crate::brain_audio::device::DeviceCapabilities {
         match self {
             Self::Fake(d) => d.capabilities(),
             Self::Physical(d) => d.capabilities(),
-            Self::Closed(c) => c,
         }
     }
     fn start(&mut self) -> std::result::Result<(), DeviceError> {
         match self {
             Self::Fake(d) => d.start(),
             Self::Physical(d) => d.start(),
-            Self::Closed(_) => Err(DeviceError::NotArmed),
         }
     }
     fn read_capture(&mut self, out: &mut [f64]) -> std::result::Result<usize, DeviceError> {
         match self {
             Self::Fake(d) => d.read_capture(out),
             Self::Physical(d) => d.read_capture(out),
-            Self::Closed(_) => Err(DeviceError::NotArmed),
         }
     }
     fn write_playback(&mut self, input: &[f64]) -> std::result::Result<usize, DeviceError> {
         match self {
             Self::Fake(d) => d.write_playback(input),
             Self::Physical(d) => d.write_playback(input),
-            Self::Closed(_) => Err(DeviceError::NotArmed),
         }
     }
     fn stop(&mut self) {
         match self {
             Self::Fake(d) => d.stop(),
             Self::Physical(d) => d.stop(),
-            Self::Closed(_) => (),
         }
     }
 }
@@ -109,16 +107,6 @@ struct Renderer {
     fault: Option<DeviceError>,
     dropped: u64,
     hold_generation: u64,
-}
-impl Renderer {
-    /// Only a held-action change retires queued microphone samples. Monitor
-    /// negotiation must not introduce a hole in the independent talkback stream.
-    fn observe_hold(&mut self, hold: u64, captured: &mut rtrb::Consumer<Captured>) {
-        if self.hold_generation != hold {
-            self.hold_generation = 0;
-            while captured.pop().is_ok() {}
-        }
-    }
 }
 fn monitor_selection_current(selection: Option<u64>, descriptor: &BrainMediaDescriptor) -> bool {
     selection == Some(descriptor.selection_generation)
@@ -180,24 +168,93 @@ fn query(show: &str, epoch: Counter) -> Result<Value> {
     .map_err(|e| e.to_string())
 }
 fn observation(
-    host: &BrainHost<Device>,
-    renderer: &Renderer,
+    service: &service::Service,
+    config: &DeviceConfig,
     ticket: Option<u64>,
     success: Option<bool>,
     error: Option<String>,
 ) -> BrainDeviceObservation {
-    let status = host.status();
-    let telemetry = brain_device_telemetry(&status, &renderer.monitor.status(), renderer.dropped);
+    let status = service.latest.host.with_description(
+        service.capabilities.clone(),
+        service.capabilities.physical && config.physically_verified(),
+    );
+    let mut telemetry = brain_device_telemetry(
+        &status,
+        &service.latest.bridge,
+        service.latest.capture_dropped,
+    );
+    telemetry["prepared_storage"] = json!(service.prepared_storage);
+    telemetry["prepared_storage_excludes"] = json!([
+        "ASRC coefficients/internal library storage",
+        "ALSA/QUIC/TLS",
+        "ring and shared metadata",
+        "device descriptions",
+        "thread stacks",
+        "allocator overhead"
+    ]);
+    telemetry["service_fault"] = json!(service.latest.service_fault);
+    telemetry["observation_age_us"] = json!(
+        service
+            .latest
+            .observed_at
+            .elapsed()
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64
+    );
+    telemetry["service_ticks"] = json!(service.latest.ticks);
+    telemetry["applied_revision"] = json!(service.latest.applied_revision);
+    telemetry["closure_generation"] =
+        json!({"capture":service.latest.closure as u32,"monitor":service.latest.closure >> 32});
+    telemetry["state_queue_dropped"] = json!(service.state_dropped);
+    telemetry["state_refused"] = json!(service.latest.state_refused);
+    telemetry["monitor_queue_dropped"] = json!(
+        service
+            .monitor_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+    telemetry["monitor_rejected"] = json!(service.latest.monitor_rejected);
+    telemetry["playback_evidence_dropped"] = json!(service.latest.playback_dropped);
+    telemetry["status_queue_dropped"] = json!(service.latest.status_dropped);
     BrainDeviceObservation {
         brain_epoch: status.readback.epoch,
         brain_map: status.readback.configuration_generation,
         frame: status.capture_frame,
-        config: host.config().clone(),
+        config: config.clone(),
         status: telemetry,
         ticket,
         success,
         error,
     }
+}
+fn publish_state(
+    service: &mut service::Service,
+    snapshot: &Snapshot,
+    descriptor: Option<&BrainMediaDescriptor>,
+) {
+    let Some(d) = descriptor else { return };
+    let hold = accepted_capture_hold(Some(snapshot.held_generation.map_or(0, |g| g.0)), d);
+    let monitor = snapshot.monitor_armed
+        && monitor_selection_current(Some(snapshot.selection_generation.0), d);
+    service.publish(service::State {
+        closure: 0,
+        revision: snapshot.revision.0,
+        epochs: BridgeEpochs {
+            source: d.stagebox_epoch,
+            destination: d.brain_epoch,
+            route: d.selection_generation,
+        },
+        hold,
+        monitor,
+        levels: LocalLevels {
+            microphone_gain_db: 0.,
+            microphone_muted: hold == 0 || snapshot.talkback_mute,
+            monitor_gain_db: f64::from(snapshot.monitor_gain_cdb) / 100.,
+            monitor_muted: snapshot.monitor_mute || !monitor,
+            monitor_dim: snapshot.monitor_dim,
+        },
+        expires: Instant::now()
+            + Duration::from_millis(snapshot.deadman_ms.min(crate::brain_control::DEADMAN_MS)),
+    });
 }
 /// A device epoch must first be acknowledged by the authority, then observed
 /// closed, before a later explicit control revision may make it audible.
@@ -249,6 +306,60 @@ fn validate_run_bounds(
     Ok(())
 }
 
+/// Controller-side measurement of this process, distinct from prepared layouts.
+pub(crate) fn process_resources() -> Result<Value> {
+    let status = std::fs::read_to_string("/proc/self/status").map_err(|e| e.to_string())?;
+    let field = |name: &str| -> Option<u64> {
+        status.lines().find_map(|line| {
+            line.strip_prefix(name)
+                .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
+        })
+    };
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let mut threads = Vec::new();
+    let mut unavailable_threads = 0;
+    for entry in std::fs::read_dir("/proc/self/task").map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let result = (|| -> Option<Value> {
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            let end = stat.rfind(')')?;
+            let start = stat.find('(')?;
+            let fields: Vec<_> = stat[end + 1..].split_whitespace().collect();
+            let number = |index: usize| fields.get(index)?.parse::<u64>().ok();
+            let scheduling = std::fs::read_to_string(entry.path().join("schedstat"))
+                .ok()
+                .and_then(|s| {
+                    s.split_whitespace()
+                        .take(3)
+                        .map(str::parse::<u64>)
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .ok()
+                });
+            Some(
+                json!({"tid":entry.file_name().to_str()?.parse::<u64>().ok()?,
+                "name":&stat[start+1..end],"start_ticks":number(19)?,
+                "minor_faults":number(7)?,"major_faults":number(9)?,
+                "user_cpu_ticks":number(11)?,"system_cpu_ticks":number(12)?,
+                "schedstat_run_ns_wait_ns_slices":scheduling}),
+            )
+        })();
+        if let Some(thread) = result {
+            threads.push(thread);
+        } else {
+            unavailable_threads += 1;
+        }
+    }
+    threads.sort_by_key(|thread| thread["tid"].as_u64());
+    // These controller snapshots include existing worker threads without adding
+    // syscalls to a render quantum. A thread can retire during the sample.
+    Ok(
+        json!({"thread_samples":threads,"unavailable_threads":unavailable_threads,"cpu_ticks_per_second":unsafe { libc::sysconf(libc::_SC_CLK_TCK) },"resident_bytes":field("VmRSS:").and_then(|v|v.checked_mul(1024)),"peak_resident_bytes":field("VmHWM:").and_then(|v|v.checked_mul(1024)),"threads":field("Threads:"),"user_cpu_us":usage.ru_utime.tv_sec as u64*1_000_000+usage.ru_utime.tv_usec as u64,"system_cpu_us":usage.ru_stime.tv_sec as u64*1_000_000+usage.ru_stime.tv_usec as u64,"minor_faults":usage.ru_minflt,"major_faults":usage.ru_majflt}),
+    )
+}
+
 /// `physical_authorized` comes only from the explicit command-line activation
 /// switch. The default fake mode cannot turn into physical mode through Desk.
 pub async fn run(mut config: Config, physical_authorized: bool) -> Result<Value> {
@@ -278,13 +389,6 @@ pub async fn run(mut config: Config, physical_authorized: bool) -> Result<Value>
     }
     config.device.validate().map_err(|e| e.to_string())?;
     let mut epoch = Epoch::open(&config.epoch_file)?;
-    let mut host = BrainHost::prepare(
-        device(&config.device, config.physical)?,
-        config.device.clone(),
-        epoch.value,
-        epoch.value,
-    )
-    .map_err(|e| e.to_string())?;
     let credentials = Credentials::load_der(&config.certificate, &config.key, &config.ca)?;
     let mut client = RemoteClient::connect(
         client_endpoint(config.bind, &credentials)?,
@@ -293,45 +397,35 @@ pub async fn run(mut config: Config, physical_authorized: bool) -> Result<Value>
         PolicyStore::new(config.peers)?,
     )
     .await?;
-    let mut channel = client.take_brain_media()?;
-    let (tx, mut rx) = rtrb::RingBuffer::new(64);
-    let epochs = BridgeEpochs {
-        source: client.identity().source_epoch.0,
-        destination: epoch.value,
-        route: u64::MAX,
-    };
-    let mut renderer = Renderer {
-        captured: tx,
-        monitor: Bridge::prepare(BridgeConfig::voice(2), epochs).map_err(|e| e.to_string())?,
-        epochs,
-        fault: None,
-        dropped: 0,
-        hold_generation: 0,
-    };
+    let channel = client.take_brain_media()?;
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(config.duration_ms);
+    let mut service = service::Service::start(
+        config.device.clone(),
+        config.physical,
+        epoch.value,
+        client.identity().source_epoch.0,
+        config.fake_skew_ppm,
+        deadline,
+    )?;
+    let mut media = media::MediaWorker::start(channel, service.take_media())?;
+    let resources_ready = process_resources()?;
     let mut descriptor: Option<BrainMediaDescriptor> = None;
     let mut proposed: Option<BrainMediaDescriptor> = None;
     let mut snapshot: Option<Snapshot> = None;
     let mut arm_fence = ArmFence::default();
     let mut generation = 1u64;
 
-    let mut monitor_arm_revision = None;
     let mut evidence = Evidence::default();
     let mut playback_hash = Sha256::new();
-    let mut capture_hash = Sha256::new();
-    let mut monitor_hash = Sha256::new();
     let mut last_window: Option<(u64, u64, u64)> = None;
     let mut fault = None;
-    let started = Instant::now();
     let mut timer = tokio::time::interval(Duration::from_micros(250));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
     let mut controls = tokio::time::interval(Duration::from_millis(25));
     controls.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut fake_frame = 0u64;
-    let mut fake_origin = None;
-    let mut fake_capture = vec![0.; config.device.period_frames * config.device.capture_channels];
-    let mut fake_output = vec![0.; config.device.period_frames * host.config().playback_channels];
     client
-        .report_brain_device(observation(&host, &renderer, None, None, None))
+        .report_brain_device(observation(&service, &config.device, None, None, None))
         .await?;
     client
         .send_command(query(&config.show_id, client.identity().source_epoch)?)
@@ -343,57 +437,30 @@ pub async fn run(mut config: Config, physical_authorized: bool) -> Result<Value>
         }
         tokio::select! {
             _=timer.tick()=>{
-                let now=monotonic_ms();
-                if host.is_armed() {
-                    let period=host.config().period_frames;
-                    let capture_width=host.config().capture_channels;
-                    let microphone_slot=host.config().microphone.slot;
-                    if let Device::Fake(fake)=host.device_mut(){
-                        let origin=*fake_origin.get_or_insert_with(Instant::now);
-                        let expected=(origin.elapsed().as_secs_f64()*48_000.*(1.+f64::from(config.fake_skew_ppm)*1e-6)) as u64;
-                        if expected.saturating_sub(fake_frame)>4800 {fault=Some("fake duplex scheduling debt exceeded100ms".into());break;}
-                        if fake_frame+period as u64<=expected{
-                            for (n,row) in fake_capture.chunks_exact_mut(capture_width).enumerate(){row.fill(0.);row[microphone_slot]=if ((fake_frame+n as u64)/24).is_multiple_of(2){0.0625}else{-0.0625};}
-                            if let Err(e)=fake.advance(&fake_capture,period){fault=Some(e.to_string());break;}
-                            fake_frame+=period as u64;
-                        }
-                        let frames=fake.drain_playback(&mut fake_output);
-                        let first=evidence.playback_frames;evidence.playback_frames+=frames as u64;
-                        for sample in &fake_output[..frames*host.config().playback_channels]{playback_hash.update(sample.to_le_bytes());}
-                        if frames>0{
-                            let state=snapshot.as_ref().map(|s|(s.selection_generation.0,s.revision.0,first/4800)).unwrap_or((0,0,first/4800));
-                            if last_window!=Some(state){
-                                if evidence.playback_windows.len()<2048{evidence.playback_windows.push(json!({"elapsed_ms":started.elapsed().as_millis() as u64,"epoch":host.readback().epoch,"first_frame":first,"snapshot":snapshot,"bridge":renderer.monitor.status(),"samples":&fake_output[..frames*host.config().playback_channels]}));}else{evidence.playback_windows_overflow+=1;}last_window=Some(state);
-                            }
-                        }
-                        for sample in &fake_output[..frames*host.config().playback_channels]{evidence.playback_energy+=sample*sample;evidence.playback_peak=evidence.playback_peak.max(sample.abs());}
-                        if evidence.first_playback.is_empty()&&fake_output.iter().any(|v|*v!=0.){evidence.first_playback=fake_output.clone();}
+                service.poll();
+                if let Some(error) = service.latest.service_fault.or(service.latest.host.fault) { fault=Some(error.to_string()); break; }
+                for _ in 0..4 {
+                    let Ok(block) = service.playback.pop() else { break };
+                    let mut reconstructed = vec![0.; block.frames * block.width];
+                    for (frame, row) in reconstructed.chunks_exact_mut(block.width).enumerate() {
+                        row[block.slots[0]]=block.samples[frame*2];
+                        row[block.slots[1]]=block.samples[frame*2+1];
                     }
-                    if let Err(e)=host.service(now,&mut renderer){fault=Some(e.to_string());break;}
-                }
-                for _ in 0..32 {
-                    let Ok(block)=rx.pop() else{break;};
-                    if let Some(d)=&descriptor && d.talkback && d.hold_generation!=0 && block.epoch==d.brain_epoch && block.hold_generation==d.hold_generation {
-                        channel.send(&BrainPacket{descriptor:d.clone(),role:BrainMediaRole::Talkback,frame:block.frame,samples:block.samples.to_vec()})?;
-                        for sample in block.samples{capture_hash.update(sample.to_le_bytes());}evidence.captured_packets+=1;
+                    let samples = reconstructed.as_slice();
+                    evidence.playback_frames += block.frames as u64;
+                    for sample in samples { playback_hash.update(sample.to_le_bytes()); evidence.playback_energy += sample*sample; evidence.playback_peak=evidence.playback_peak.max(sample.abs()); }
+                    let state=(service.latest.bridge.epochs.route, block.revision, block.frame/4800);
+                    if last_window!=Some(state) {
+                        if evidence.playback_windows.len()<2048 { evidence.playback_windows.push(json!({"elapsed_ms":started.elapsed().as_millis() as u64,"epoch":service.latest.host.readback.epoch,"first_frame":block.frame,"service_revision_at_drain":block.revision,"controller_snapshot":snapshot,"bridge":service.latest.bridge,"samples":samples})); } else { evidence.playback_windows_overflow+=1; }
+                        last_window=Some(state);
                     }
+                    if evidence.first_playback.is_empty() && samples.iter().any(|v| *v!=0.) { evidence.first_playback=samples.to_vec(); }
                 }
+
             }
             _=controls.tick()=>{
                 client.send_command(query(&config.show_id,client.identity().source_epoch)?).await?;
-                client.report_brain_device(observation(&host,&renderer,None,None,None)).await?;
-            }
-            packet=async { if let Some(d)=&descriptor { channel.receive(d).await } else { std::future::pending().await } }=>{
-                match packet{
-                    Ok(packet)=>{
-                        for sample in &packet.samples{monitor_hash.update(sample.to_le_bytes());}
-                        if snapshot.as_ref().is_some_and(|s|s.monitor_armed&&monitor_selection_current(Some(s.selection_generation.0),&packet.descriptor)) {if renderer.monitor.push(renderer.epochs,packet.frame,&packet.samples).is_ok(){evidence.monitor_packets+=1;}else{evidence.rejected_monitor_packets+=1;}}
-                    }
-                    _=>evidence.rejected_monitor_packets+=1,
-                }
-                if let Some(s)=&snapshot && s.monitor_armed && !renderer.monitor.status().armed && monitor_arm_revision!=Some(s.revision.0) && renderer.monitor.status().ready {
-                    renderer.monitor.arm(renderer.epochs).map_err(|e|e.to_string())?;monitor_arm_revision=Some(s.revision.0);
-                }
+                client.report_brain_device(observation(&service,&config.device,None,None,None)).await?;
             }
             reply=client.receive()=>{
                 let payload=match reply{Ok(Response::Reply{payload,..})=>payload,Ok(Response::Refused{reason,..})=>{fault=Some(reason);break;},Ok(_)=>continue,Err(e)=>{fault=Some(e);break;}};
@@ -403,18 +470,19 @@ pub async fn run(mut config: Config, physical_authorized: bool) -> Result<Value>
                         if let Some(s)=reply.snapshot{
                             if !arm_fence.observe(s.revision.0,s.monitor_armed||s.held_generation.is_some()){continue;}
                             let hold=s.held_generation.map_or(0,|v|v.0);
-                            let changed=descriptor.as_ref().is_none_or(|d|d.selection_generation!=s.selection_generation.0||d.hold_generation!=hold||d.brain_epoch!=host.readback().epoch);
-                            renderer.observe_hold(hold,&mut rx);
-                            if renderer.epochs.source!=client.identity().source_epoch.0||renderer.epochs.destination!=host.readback().epoch||renderer.epochs.route!=s.selection_generation.0 {
-                                host.invalidate_monitor_output();renderer.monitor.invalidate();
+                            let changed=descriptor.as_ref().is_none_or(|d|d.selection_generation!=s.selection_generation.0||d.hold_generation!=hold||d.brain_epoch!=service.latest.host.readback.epoch);
+                            if let Some(old)=&snapshot {
+                                let capture=old.held_generation!=s.held_generation || (!old.talkback_mute && s.talkback_mute);
+                                let monitor=old.selection_generation!=s.selection_generation || (old.monitor_armed && !s.monitor_armed) || (!old.monitor_mute && s.monitor_mute);
+                                if capture || monitor { service.close_roles(capture,monitor)?; }
                             }
+                            media.route(descriptor.as_ref(), Some(&s))?;
                             if changed&&proposed.is_none(){
                                 generation=generation.checked_add(1).ok_or("media generation exhausted")?;
-                                let next=BrainMediaDescriptor{contract:"GP15-media".into(),version:1,session:client.session(),stagebox_epoch:client.identity().source_epoch.0,brain_epoch:host.readback().epoch,stagebox_map:client.identity().map_generation.0,brain_map:host.readback().configuration_generation,generation,selection_generation:s.selection_generation.0,hold_generation:hold,sample_rate:48_000,frames:48,talkback:true,monitor:true};
-                                client.negotiate_brain_media(next.clone()).await?;proposed=Some(next);monitor_arm_revision=None;
+                                let next=BrainMediaDescriptor{contract:"GP15-media".into(),version:1,session:client.session(),stagebox_epoch:client.identity().source_epoch.0,brain_epoch:service.latest.host.readback.epoch,stagebox_map:client.identity().map_generation.0,brain_map:service.latest.host.readback.configuration_generation,generation,selection_generation:s.selection_generation.0,hold_generation:hold,sample_rate:48_000,frames:48,talkback:true,monitor:true};
+                                client.negotiate_brain_media(next.clone()).await?;proposed=Some(next);
                             }
-                            host.set_levels(LocalLevels{microphone_gain_db:0.,microphone_muted:hold==0||s.talkback_mute,monitor_gain_db:f64::from(s.monitor_gain_cdb)/100.,monitor_muted:s.monitor_mute||!s.monitor_armed,monitor_dim:s.monitor_dim}).map_err(|e|e.to_string())?;
-                            if !host.is_armed() && host.fault_reason().is_none() && (hold!=0||s.monitor_armed){host.arm(host.readback(),monotonic_ms()).map_err(|e|e.to_string())?;}
+                            publish_state(&mut service, &s, descriptor.as_ref());
                             snapshot=Some(s);
                         }
                     }
@@ -422,30 +490,30 @@ pub async fn run(mut config: Config, physical_authorized: bool) -> Result<Value>
                         let d:BrainMediaDescriptor=serde_json::from_value(payload["descriptor"].clone()).map_err(|e|e.to_string())?;
                         if proposed.as_ref()!=Some(&d){fault=Some("uncorrelated media acceptance".into());break;}
                         proposed=None;
-                        if d.brain_epoch!=host.readback().epoch {descriptor=None;continue;}
-                        if !monitor_selection_current(snapshot.as_ref().map(|s|s.selection_generation.0),&d){
-                            renderer.hold_generation=accepted_capture_hold(snapshot.as_ref().map(|s|s.held_generation.map_or(0,|g|g.0)),&d);
-                            descriptor=Some(d);continue;
-                        }
-                        let next_epochs=BridgeEpochs{source:d.stagebox_epoch,destination:d.brain_epoch,route:d.selection_generation};
-                        if renderer.epochs!=next_epochs {renderer.monitor.reset(next_epochs).map_err(|e|e.to_string())?;renderer.epochs=next_epochs;}renderer.hold_generation=accepted_capture_hold(snapshot.as_ref().map(|s|s.held_generation.map_or(0,|g|g.0)),&d);descriptor=Some(d);evidence.negotiations+=1;
+                        if d.brain_epoch!=service.latest.host.readback.epoch {descriptor=None;continue;}
+                        descriptor=Some(d);evidence.negotiations+=1;
+                        media.route(descriptor.as_ref(), snapshot.as_ref())?;
+                        if let Some(s) = &snapshot { publish_state(&mut service, s, descriptor.as_ref()); }
                     }
                     Some("GP15-device") if payload["state"]=="observed"=>{
-                        if payload["brain_epoch"].as_u64()==Some(host.readback().epoch)&&payload["brain_map"].as_u64()==Some(host.readback().configuration_generation){arm_fence.acknowledged=true;}
+                        if payload["brain_epoch"].as_u64()==Some(service.latest.host.readback.epoch)&&payload["brain_map"].as_u64()==Some(service.latest.host.readback.configuration_generation){arm_fence.acknowledged=true;}
                     }
                     Some("GP15-device") if payload["kind"]=="apply_configuration"=>{
                         let ticket=payload["ticket"].as_u64().ok_or("device ticket")?;
                         let next:DeviceConfig=serde_json::from_value(payload["config"].clone()).map_err(|e|e.to_string())?;
-                        host.stop();renderer.monitor.invalidate();renderer.hold_generation=0;
-                        arm_fence=ArmFence::default();snapshot=None;
-                                descriptor=None;proposed=None;
-                        let old_capabilities=host.status().capabilities;let retired=std::mem::replace(host.device_mut(),Device::Closed(old_capabilities));drop(retired);
+                        service.close()?;
+                        service.finish()?;
+                        arm_fence=ArmFence::default();snapshot=None;descriptor=None;proposed=None;
                         let fresh=epoch.advance()?;
-                        let replacement=device(&next,config.physical).and_then(|d|BrainHost::prepare(d,next.clone(),fresh,fresh).map_err(|e|e.to_string()));
-                        match replacement{
-                            Ok(next_host)=>{host=next_host;
-                                crate::show::persist(config.epoch_file.parent().ok_or("intent parent")?,"brain-device-intent.json",host.config())?;fake_capture.resize(host.config().period_frames*host.config().capture_channels,0.);fake_output.resize(host.config().period_frames*host.config().playback_channels,0.);fake_frame=0;fake_origin=None;evidence.configuration_changes+=1;client.report_brain_device(observation(&host,&renderer,Some(ticket),Some(true),None)).await?;}
-                            Err(e)=>{client.report_brain_device(observation(&host,&renderer,Some(ticket),Some(false),Some(e))).await?;}
+                        match service::Service::start(next.clone(), config.physical, fresh, client.identity().source_epoch.0, config.fake_skew_ppm, deadline) {
+                            Ok(next_service)=>{
+                                service=next_service; config.device=next;
+                                media.attach(service.take_media())?;
+                                crate::show::persist(config.epoch_file.parent().ok_or("intent parent")?,"brain-device-intent.json",&config.device)?;
+                                evidence.configuration_changes+=1;
+                                client.report_brain_device(observation(&service,&config.device,Some(ticket),Some(true),None)).await?;
+                            }
+                            Err(e)=>{client.report_brain_device(observation(&service,&config.device,Some(ticket),Some(false),Some(e.clone()))).await?;fault=Some(e);break;}
                         }
                     }
                     _=>(),
@@ -458,12 +526,17 @@ pub async fn run(mut config: Config, physical_authorized: bool) -> Result<Value>
     if let Err(error) = execution {
         fault.get_or_insert(error);
     }
-    host.stop();
-    renderer.monitor.invalidate();
-    let final_observation = observation(&host, &renderer, None, None, fault.clone());
+    let resources_before_stop = process_resources()?;
+    service.finish()?;
+    let media_report = media.finish()?;
+    evidence.captured_packets = media_report.captured_packets;
+    evidence.monitor_packets = media_report.monitor_packets;
+    evidence.rejected_monitor_packets = media_report.rejected_monitor_packets;
+    let final_observation = observation(&service, &config.device, None, None, fault.clone());
     let _ = client.report_brain_device(final_observation.clone()).await;
     client.close();
-    let report = json!({"mode":"brain_duplex","software_only":!config.physical,"physical_qualified":false,"fault":fault,"evidence":evidence,"captured_pre_wire_sha256":format!("{:x}",capture_hash.finalize()),"received_monitor_sha256":format!("{:x}",monitor_hash.finalize()),"submitted_playback_sha256":format!("{:x}",playback_hash.finalize()),"final_observation":final_observation,"elapsed_ms":started.elapsed().as_millis(),"fake_skew_ppm":config.fake_skew_ppm});
+    let resources_stopped = process_resources()?;
+    let report = json!({"resources_ready":resources_ready,"resources_before_stop":resources_before_stop,"resources_stopped":resources_stopped,"mode":"brain_duplex","software_only":!config.physical,"physical_qualified":false,"fault":fault,"evidence":evidence,"captured_pre_wire_sha256":media_report.captured_pre_wire_sha256,"received_monitor_sha256":media_report.received_monitor_sha256,"media_worker":media_report,"submitted_playback_sha256":format!("{:x}",playback_hash.finalize()),"final_observation":final_observation,"elapsed_ms":started.elapsed().as_millis(),"fake_skew_ppm":config.fake_skew_ppm});
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)
@@ -591,7 +664,7 @@ mod tests {
         assert!(monitor_selection_current(Some(4), &current));
     }
     #[test]
-    fn monitor_selection_change_preserves_held_capture_queue_and_packet_frames() {
+    fn captured_hold_packets_remain_valid_across_monitor_selection_generations() {
         let epochs = BridgeEpochs {
             source: 1,
             destination: 2,
@@ -607,8 +680,7 @@ mod tests {
             hold_generation: 11,
         };
         renderer.capture(2, 0, &[0.25; 48]);
-        // Same production hold barrier is used even while media negotiation is pending.
-        renderer.observe_hold(11, &mut rx);
+        // Monitor route identity does not alter the held-role wire identity.
         renderer.monitor.invalidate();
         renderer.capture(2, 48, &[0.5; 48]);
         let old = route_descriptor(3, 11);
@@ -628,9 +700,6 @@ mod tests {
             let decoded = BrainPacket::decode(&bytes, &next, BrainMediaRole::Talkback).unwrap();
             assert_eq!(decoded.samples, vec![sample; 48]);
         }
-        renderer.capture(2, 96, &[0.75; 48]);
-        renderer.observe_hold(0, &mut rx);
-        assert_eq!(renderer.hold_generation, 0);
         assert!(rx.pop().is_err());
     }
 }

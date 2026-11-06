@@ -59,6 +59,10 @@ pub struct Duplex {
     frames: usize,
     started_playback: bool,
     faulted: bool,
+    source_capture_offset: usize,
+    source_playback_offset: usize,
+    source_capture_deadline: Option<Instant>,
+    source_playback_deadline: Option<Instant>,
 }
 fn open_direction(
     device: &str,
@@ -188,6 +192,28 @@ fn playback_deadline(captured: Instant, frames: usize) -> Result<Instant> {
         .ok_or_else(|| "playback deadline overflow".into())
 }
 
+/// Exactly one nonblocking transfer attempt. Partial cursors survive between
+/// worker turns; expiry forbids another driver call, including a partial retry.
+fn source_transfer_step(
+    frames: usize,
+    offset: &mut usize,
+    deadline: Instant,
+    now: Instant,
+    mut transfer: impl FnMut(usize) -> std::result::Result<Option<usize>, &'static str>,
+) -> std::result::Result<bool, &'static str> {
+    if now >= deadline {
+        return Err("PCM transfer deadline");
+    }
+    let Some(progress) = transfer(*offset)? else {
+        return Ok(false);
+    };
+    if progress > frames.saturating_sub(*offset) || *offset > frames {
+        return Err("PCM invalid transfer progress");
+    }
+    *offset += progress;
+    Ok(*offset == frames)
+}
+
 impl Duplex {
     /// Caller supplies an explicitly verified native S32LE upper-24-bit profile.
     /// A reference factory is not such verification. This method never discovers,
@@ -252,6 +278,10 @@ impl Duplex {
             frames: period_frames,
             started_playback: false,
             faulted: false,
+            source_capture_offset: 0,
+            source_playback_offset: 0,
+            source_capture_deadline: None,
+            source_playback_deadline: None,
         })
     }
     /// Deliberate start after configuration review. No signal generator is added.
@@ -269,6 +299,128 @@ impl Duplex {
     /// Most recently processed playback period; silenced after a pump failure.
     pub fn last_playback(&self) -> &[f64] {
         &self.output
+    }
+    /// Admission for the autonomous 48-frame source owner. Larger legacy periods
+    /// retain the synchronous adapter until their slice scheduling is integrated.
+    pub(crate) fn validate_source_clock(&self, topology: &EngineTopology) -> Result<()> {
+        validate_provider_map(topology, &self.topology)?;
+        if self.frames != 48 || self.faulted {
+            return Err("source clock requires healthy 48-frame duplex".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn source_map_valid(&self, topology: &EngineTopology) -> bool {
+        same_device_map(topology, &self.topology)
+            && topology.pa_outputs == self.topology.pa_outputs
+            && !(topology.pa_outputs > 0
+                && topology
+                    .outputs
+                    .iter()
+                    .any(|p| matches!(p.source, Some(crate::topology::OutputSource::Main { .. }))))
+    }
+    /// Start only after buffers and the source driver are installed; controller
+    /// preparation cannot consume the active capture device's finite headroom.
+    pub(crate) fn start_source_clock(&mut self) -> std::result::Result<(), &'static str> {
+        if self.faulted {
+            return Err("device adapter faulted");
+        }
+        self.capture.start().map_err(|_| "PCM capture start")
+    }
+    pub(crate) fn stop_source_clock(&mut self) {
+        self.faulted = true;
+        self.output.fill(0.);
+        self.dac.fill(0);
+        let _ = self.capture.drop();
+        let _ = self.playback.drop();
+    }
+    /// One nonblocking driver call, preserving partial progress across service
+    /// turns. No wait, retry loop, formatting, or allocation is performed here.
+    pub(crate) fn poll_source_capture(
+        &mut self,
+        now: Instant,
+    ) -> std::result::Result<bool, &'static str> {
+        if self.faulted {
+            return Err("device adapter faulted");
+        }
+        let deadline = *self
+            .source_capture_deadline
+            .get_or_insert(now + Duration::from_secs(2));
+        let capture = &self.capture;
+        let raw = &mut self.raw;
+        let channels = self.topology.capture_channels;
+        let complete = source_transfer_step(
+            self.frames,
+            &mut self.source_capture_offset,
+            deadline,
+            now,
+            |offset| {
+                let io = capture.io_i32().map_err(|_| "PCM capture format")?;
+                match io.readi(&mut raw[offset * channels..]) {
+                    Ok(n) => Ok(Some(n)),
+                    Err(e) if matches!(e.errno(), libc::EINTR | libc::EAGAIN) => Ok(None),
+                    Err(_) => Err("PCM capture discontinuity"),
+                }
+            },
+        )?;
+        if !complete {
+            return Ok(false);
+        }
+        let captured = Instant::now();
+        for (input, raw) in self.input.iter_mut().zip(&self.raw) {
+            *input = capture_msb24(*raw);
+        }
+        self.source_capture_offset = 0;
+        self.source_capture_deadline = None;
+        self.source_playback_deadline = Some(captured + Duration::from_millis(1));
+        Ok(true)
+    }
+    pub(crate) fn queue_source_playback(
+        &mut self,
+        samples: &[f64],
+    ) -> std::result::Result<(), &'static str> {
+        if samples.len() != self.output.len() || samples.iter().any(|s| !s.is_finite()) {
+            return Err("PCM playback shape or sample");
+        }
+        self.output.copy_from_slice(samples);
+        for (dac, sample) in self.dac.iter_mut().zip(samples) {
+            *dac = (sample * 8388608.).round().clamp(-8388608., 8388607.) as i32 * 256;
+        }
+        self.source_playback_offset = 0;
+        Ok(())
+    }
+    pub(crate) fn poll_source_playback(
+        &mut self,
+        now: Instant,
+    ) -> std::result::Result<bool, &'static str> {
+        let Some(deadline) = self.source_playback_deadline else {
+            return Ok(true);
+        };
+        let playback = &self.playback;
+        let dac = &self.dac;
+        let channels = self.topology.playback_channels;
+        let complete = source_transfer_step(
+            self.frames,
+            &mut self.source_playback_offset,
+            deadline,
+            now,
+            |offset| {
+                let io = playback.io_i32().map_err(|_| "PCM playback format")?;
+                match io.writei(&dac[offset * channels..]) {
+                    Ok(n) => Ok(Some(n)),
+                    Err(e) if matches!(e.errno(), libc::EINTR | libc::EAGAIN) => Ok(None),
+                    Err(_) => Err("PCM playback discontinuity"),
+                }
+            },
+        )?;
+        if !complete {
+            return Ok(false);
+        }
+        if !self.started_playback {
+            self.playback.start().map_err(|_| "PCM playback start")?;
+            self.started_playback = true;
+        }
+        self.source_playback_deadline = None;
+        Ok(true)
     }
     /// Capture drives frame progression; provider performs the same graph used by
     /// synthetic input. Network arrival cannot call or advance this pump.
@@ -294,7 +446,7 @@ impl Duplex {
     ) -> Result<()> {
         self.pump_source(authority, now_ms, before_render)
     }
-    fn pump_source<S: SourceBoundary>(
+    pub(crate) fn pump_source<S: SourceBoundary>(
         &mut self,
         source: &mut S,
         now_ms: u64,
@@ -305,7 +457,7 @@ impl Duplex {
         }
         let control_started = Instant::now();
         let result = (|| -> Result<()> {
-            validate_provider_map(source.provider().topology(), &self.topology)?;
+            validate_provider_map(source.topology(), &self.topology)?;
             transfer(
                 &self.capture,
                 &mut self.raw,
@@ -376,9 +528,7 @@ fn fault_source<S: SourceBoundary>(
     *faulted = true;
     output.fill(0.);
     dac.fill(0);
-    let _ = source
-        .provider_mut()
-        .quiesce_source("device_transfer_discontinuity");
+    let _ = source.quiesce_source("device_transfer_discontinuity");
     stop();
 }
 
@@ -390,12 +540,15 @@ fn source_now(now_ms: u64, control_started: Instant) -> Result<u64> {
         .ok_or_else(|| "lease clock overflow".into())
 }
 
-// The only difference between legacy and authenticated hosting is the existing
-// source entry point. Conversion, maps, frame accounting and fault handling stay
-// shared. This controller-side boundary is outside the allocation-free DSP core.
-trait SourceBoundary {
-    fn provider(&self) -> &LocalAudio;
-    fn provider_mut(&mut self) -> &mut LocalAudio;
+// Conversion, accepted maps, frame accounting and fault handling are shared by
+// local, authenticated and detached source owners. The adapter only needs source
+// identity and bounded processing; it does not require access to a controller.
+pub(crate) trait SourceBoundary {
+    fn topology(&self) -> &EngineTopology;
+    fn source_epoch(&self) -> u64;
+    fn frame(&self) -> u64;
+    fn mark_verified_mapping(&mut self) -> Result<()>;
+    fn quiesce_source(&mut self, reason: &str) -> Result<()>;
     fn process(
         &mut self,
         now: u64,
@@ -406,11 +559,22 @@ trait SourceBoundary {
     ) -> Result<()>;
 }
 impl SourceBoundary for LocalAudio {
-    fn provider(&self) -> &LocalAudio {
-        self
+    fn topology(&self) -> &EngineTopology {
+        LocalAudio::topology(self)
     }
-    fn provider_mut(&mut self) -> &mut LocalAudio {
-        self
+    fn source_epoch(&self) -> u64 {
+        LocalAudio::source_epoch(self)
+    }
+    fn frame(&self) -> u64 {
+        LocalAudio::frame(self)
+    }
+    fn mark_verified_mapping(&mut self) -> Result<()> {
+        self.engine_mut()
+            .mark_verified_mapping()
+            .map_err(|e| e.to_string().into())
+    }
+    fn quiesce_source(&mut self, reason: &str) -> Result<()> {
+        LocalAudio::quiesce_source(self, reason).map_err(Into::into)
     }
     fn process(
         &mut self,
@@ -425,11 +589,25 @@ impl SourceBoundary for LocalAudio {
     }
 }
 impl SourceBoundary for crate::remote::HostAuthority {
-    fn provider(&self) -> &LocalAudio {
-        self.provider()
+    fn topology(&self) -> &EngineTopology {
+        self.provider().topology()
     }
-    fn provider_mut(&mut self) -> &mut LocalAudio {
+    fn source_epoch(&self) -> u64 {
+        self.provider().source_epoch()
+    }
+    fn frame(&self) -> u64 {
+        self.provider().frame()
+    }
+    fn mark_verified_mapping(&mut self) -> Result<()> {
         self.provider_mut()
+            .engine_mut()
+            .mark_verified_mapping()
+            .map_err(|e| e.to_string().into())
+    }
+    fn quiesce_source(&mut self, reason: &str) -> Result<()> {
+        self.provider_mut()
+            .quiesce_source(reason)
+            .map_err(Into::into)
     }
     fn process(
         &mut self,
@@ -445,7 +623,7 @@ impl SourceBoundary for crate::remote::HostAuthority {
 }
 /// Shared device-independent source boundary: tests supply captured samples to the
 /// same implementation used after a successful raw PCM read, never another mixer.
-fn process_captured<S: SourceBoundary>(
+pub(crate) fn process_captured<S: SourceBoundary>(
     source: &mut S,
     accepted: &EngineTopology,
     capture: &[f64],
@@ -464,14 +642,10 @@ fn process_captured<S: SourceBoundary>(
         {
             return Err("captured source period shape".into());
         }
-        validate_provider_map(source.provider().topology(), accepted)?;
-        source
-            .provider_mut()
-            .engine_mut()
-            .mark_verified_mapping()
-            .map_err(|e| e.to_string())?;
-        let epoch = source.provider().source_epoch();
-        let first = source.provider().frame();
+        validate_provider_map(source.topology(), accepted)?;
+        source.mark_verified_mapping()?;
+        let epoch = source.source_epoch();
+        let first = source.frame();
         let expected_end = first
             .checked_add(frames as u64)
             .ok_or("source cursor overflow")?;
@@ -479,21 +653,20 @@ fn process_captured<S: SourceBoundary>(
             .chunks_exact(48 * accepted.capture_channels)
             .zip(playback.chunks_exact_mut(48 * accepted.playback_channels))
         {
-            validate_provider_map(source.provider().topology(), accepted)?;
-            let frame = source.provider().frame();
+            validate_provider_map(source.topology(), accepted)?;
+            let frame = source.frame();
             let now = clock()?;
             before_render(source, now)?;
-            validate_provider_map(source.provider().topology(), accepted)?;
-            if source.provider().frame() != frame || source.provider().source_epoch() != epoch {
+            validate_provider_map(source.topology(), accepted)?;
+            if source.frame() != frame || source.source_epoch() != epoch {
                 return Err("controller advanced captured source timeline".into());
             }
             source.process(clock()?, epoch, frame, input, output)?;
             // A source-boundary control commit must not change the physical map
             // between admission and submission to the configured device.
-            validate_provider_map(source.provider().topology(), accepted)?;
-            if source.provider().source_epoch() != epoch
-                || source.provider().frame()
-                    != frame.checked_add(48).ok_or("source cursor overflow")?
+            validate_provider_map(source.topology(), accepted)?;
+            if source.source_epoch() != epoch
+                || source.frame() != frame.checked_add(48).ok_or("source cursor overflow")?
             {
                 return Err("shared graph source progression mismatch".into());
             }
@@ -501,16 +674,14 @@ fn process_captured<S: SourceBoundary>(
                 return Err("nonfinite shared graph playback".into());
             }
         }
-        if source.provider().frame() != expected_end {
+        if source.frame() != expected_end {
             return Err("shared graph source progression mismatch".into());
         }
         Ok(())
     })();
     if result.is_err() {
         playback.fill(0.);
-        let _ = source
-            .provider_mut()
-            .quiesce_source("device_source_discontinuity");
+        let _ = source.quiesce_source("device_source_discontinuity");
     }
     result
 }
@@ -831,6 +1002,9 @@ mod source_boundary_tests {
                 .unwrap();
                 f.host.brain_media(&context, &packet, 5).unwrap();
             }
+            // Prefill becomes ready when the numeric source consumes its lane,
+            // independently of a control-plane enqueue acknowledgment.
+            f.host.test_drain_media_ingress(5);
             assert!(f.host.brain_bridge_status().unwrap().ready);
             let baseline = Cell::new(if delay_in_mailbox {
                 Instant::now()
@@ -919,5 +1093,58 @@ mod source_boundary_tests {
                 .duration_since(captured),
             Duration::from_millis(2)
         );
+    }
+}
+
+#[cfg(test)]
+mod autonomous_transfer_tests {
+    use super::*;
+    #[test]
+    fn nonblocking_partial_transfer_retains_cursor_and_refuses_expired_retry() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(1);
+        let mut offset = 0;
+        assert!(
+            !source_transfer_step(48, &mut offset, deadline, now, |at| {
+                assert_eq!(at, 0);
+                Ok(Some(17))
+            })
+            .unwrap()
+        );
+        assert!(
+            !source_transfer_step(48, &mut offset, deadline, now, |at| {
+                assert_eq!(at, 17);
+                Ok(None)
+            })
+            .unwrap()
+        );
+        assert_eq!(offset, 17);
+        assert_eq!(
+            source_transfer_step(48, &mut offset, deadline, deadline, |_| {
+                panic!("expired data reached driver")
+            }),
+            Err("PCM transfer deadline")
+        );
+        assert_eq!(offset, 17);
+        assert!(
+            source_transfer_step(48, &mut offset, deadline, now, |at| {
+                assert_eq!(at, 17);
+                Ok(Some(31))
+            })
+            .unwrap()
+        );
+        assert_eq!(offset, 48);
+    }
+    #[test]
+    fn nonblocking_transfer_refuses_overrun_and_preserves_cursor() {
+        let now = Instant::now();
+        let mut offset = 24;
+        assert_eq!(
+            source_transfer_step(48, &mut offset, now + Duration::from_secs(1), now, |_| Ok(
+                Some(25)
+            )),
+            Err("PCM invalid transfer progress")
+        );
+        assert_eq!(offset, 24);
     }
 }

@@ -126,6 +126,12 @@ fn grouping_authentication_replay_epoch_deadline_and_exact_pcm() {
         assert!(
             registry
                 .receive(&wet, MediaSide::ProcessingNode, Some(480))
+                .is_err()
+        );
+        // Deadline rejection must not consume the replay slot.
+        assert!(
+            registry
+                .receive(&wet, MediaSide::ProcessingNode, Some(479))
                 .is_ok()
         );
         let mut wrong = d.clone();
@@ -247,7 +253,7 @@ fn real_authority_permission_ceiling_and_proxy_disconnect_cancels_pending() {
         10_f64.powf(-6. / 20.)
     );
 }
-fn credentials() -> (Credentials, Credentials) {
+pub(crate) fn credentials() -> (Credentials, Credentials) {
     use rcgen::{
         BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa,
         KeyPair, KeyUsagePurpose,
@@ -468,6 +474,8 @@ async fn mutual_tls_actual_high_channel_authority_media_and_revocation() {
             Response::MediaAccepted { .. }
         ));
         let mut media = client.media_channel().unwrap();
+        #[cfg(feature = "hardware-host")]
+        let audio_fence = media.audio_fence();
         let source_frame = loop {
             let bytes = media.receive().await.unwrap();
             let packet = crate::transport::Packet::parse(&bytes).unwrap();
@@ -494,6 +502,8 @@ async fn mutual_tls_actual_high_channel_authority_media_and_revocation() {
         assert!(wet_received.load(Ordering::Acquire) > 0);
         server_policy.replace(vec![]).unwrap();
         assert!(client.receive().await.is_err());
+        #[cfg(feature = "hardware-host")]
+        assert!(!audio_fence.valid());
         server_task.await.unwrap();
         assert!(retired.load(Ordering::Acquire));
     })
@@ -662,6 +672,7 @@ fn composed_host_noncontiguous_analysis_deadlines_loss_and_epoch() {
         .unwrap();
     host.media(&ctx, crate::transport::Packet::parse(&wet).unwrap(), 0)
         .unwrap();
+    host.test_drain_media_ingress(0);
     assert_eq!(host.media_stats().accepted_wet_packets, 1);
     assert_eq!(host.media_stats().rejected_wet_packets, 1);
     let mut capture = vec![0.; 48 * topology.capture_channels];
@@ -678,6 +689,7 @@ fn composed_host_noncontiguous_analysis_deadlines_loss_and_epoch() {
     }
     assert!(host.media_stats().nonzero_rendered_wet_samples > 0);
     assert!(playback.iter().any(|sample| *sample > 0.));
+    host.wait_source_encoded();
     let mut seen = std::collections::BTreeSet::new();
     while let Some(bytes) = host.poll_media(&ctx).unwrap() {
         let packet = crate::transport::Packet::parse(&bytes).unwrap();
@@ -695,6 +707,7 @@ fn composed_host_noncontiguous_analysis_deadlines_loss_and_epoch() {
     // witnesses retain source-clock identity without changing admission or audio.
     host.media(&ctx, crate::transport::Packet::parse(&wet).unwrap(), 9)
         .unwrap();
+    host.test_drain_media_ingress(9);
     let first = LateWetWitness {
         source_epoch: 9,
         packet_source_frame: 0,
@@ -707,6 +720,7 @@ fn composed_host_noncontiguous_analysis_deadlines_loss_and_epoch() {
         .remove(0);
     host.media(&ctx, crate::transport::Packet::parse(&second).unwrap(), 9)
         .unwrap();
+    host.test_drain_media_ingress(9);
     assert_eq!(host.media_stats().late_wet_packets, 2);
     assert_eq!(host.media_stats().accepted_wet_packets, 1);
     assert_eq!(host.media_stats().first_late_wet, Some(first));
@@ -740,6 +754,7 @@ fn composed_host_noncontiguous_analysis_deadlines_loss_and_epoch() {
     host.provider_mut().rearm().unwrap();
     host.process_source(18, 10, 0, &capture, &mut playback)
         .unwrap();
+    host.wait_source_encoded();
     assert!(host.poll_media(&ctx).unwrap().is_some());
     assert_eq!(
         host.provider_mut().engine_mut().clock_status().state,
@@ -792,6 +807,7 @@ fn actual_host_recording_survives_brain_loss_and_finalizes_clock_fault() {
     let mut host = HostAuthority::new(provider, 1).unwrap();
     let ctx = context(&[Permission::Analysis, Permission::Fx]);
     host.negotiate(&ctx, &descriptor(&ctx, 48)).unwrap();
+    host.pause_source_encoder(true);
     let capture = vec![1. / 8388608.; 48 * topology.capture_channels];
     let mut output = vec![0.; 48 * topology.playback_channels];
     for block in 0..100u64 {
@@ -802,6 +818,12 @@ fn actual_host_recording_survives_brain_loss_and_finalizes_clock_fault() {
             .unwrap();
         std::thread::sleep(Duration::from_millis(1));
     }
+    host.finish_source_egress();
+    assert_eq!(host.media_stats().source_egress_dropped_blocks, 16);
+    let egress = host.source_egress_report();
+    assert_eq!(egress["all_sessions"]["offered_blocks"], 4);
+    assert_eq!(egress["all_sessions"]["encoded_blocks"], 0);
+    assert_eq!(egress["all_sessions"]["discarded_blocks"], 4);
     let before = host.provider_mut().module_status(100).unwrap();
     assert_eq!(before["recording"]["state"], "recording", "{before}");
     assert_eq!(host.provider().frame(), 4800);
@@ -1137,6 +1159,10 @@ async fn sends_actual_mutual_tls_provider_boundary_and_policy_revocation() {
 mod gp21_tests;
 
 #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+#[path = "gp21_recovery_tests.rs"]
+mod gp21_recovery_tests;
+
+#[cfg(all(target_os = "linux", feature = "hardware-host"))]
 #[tokio::test(flavor = "current_thread")]
 async fn mutual_tls_meter_reads_actual_host_and_revocation_without_control_admission() {
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -1394,11 +1420,11 @@ fn four_aux_media_admission_requires_exact_map_and_control_permission() {
     assert!(host.descriptor().is_none());
     assert!(host.negotiate(&c, &d).unwrap());
     assert_eq!(host.descriptor().unwrap().channels(MediaRole::WetReturn), 8);
-    assert_eq!(host.provider().engine().mixer().monitor_count(), 2);
-    assert_eq!(
-        host.provider().engine().mixer().fx_sends(3),
-        Some(vec![0.; 4])
-    );
+    assert_eq!(host.provider().topology().monitors, 2);
+    // Publish the prepared send configuration only after source application.
+    host.process_source(0, 9, 0, &[0.; 48 * 4], &mut [0.; 48 * 4])
+        .unwrap();
+    assert_eq!(host.provider().engine().fx_sends(3), Some(vec![0.; 4]));
     assert!(host.negotiate(&c, &d).is_err());
 }
 

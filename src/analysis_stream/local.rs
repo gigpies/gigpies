@@ -247,6 +247,26 @@ pub fn monotonic_ms() -> Result<u64, String> {
 }
 
 /// Owns only the bounded IPC pump, never the engine. Drop joins outside processing.
+/// Source-side liveness/loss signaling, without worker teardown ownership.
+#[derive(Clone)]
+pub struct SourceSignal {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    losses: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+impl SourceSignal {
+    pub fn stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+    }
+    pub fn alive(&self) -> bool {
+        !self.stop.load(std::sync::atomic::Ordering::Acquire)
+            && self.alive.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub fn update_losses(&self, losses: u64) {
+        self.losses
+            .store(losses, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 pub struct Worker {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -295,6 +315,13 @@ impl Worker {
             losses,
             thread: Some(thread),
         })
+    }
+    pub fn source_signal(&self) -> SourceSignal {
+        SourceSignal {
+            stop: self.stop.clone(),
+            alive: self.alive.clone(),
+            losses: self.losses.clone(),
+        }
     }
     pub fn update_losses(&self, losses: u64) {
         self.losses

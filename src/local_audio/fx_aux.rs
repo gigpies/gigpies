@@ -22,22 +22,50 @@ pub struct Tempo {
     pub modifier: u32,
 }
 #[cfg(feature = "hardware-host")]
-pub(super) struct Bus {
+struct Bus {
     owner: Owner,
-    generation: u64,
-    applied: u64,
-    settle_frame: u64,
-    owner_request: Option<u64>,
-    config: Configuration,
     output: [f64; 96],
 }
 #[cfg(feature = "hardware-host")]
 pub(super) struct Rack {
     buses: [Bus; 4],
-    hash: String,
     wet: [f64; 96],
     next_frame: u64,
+}
+#[cfg(feature = "hardware-host")]
+struct BusControl {
+    preparer: crate::host::fx_palette::Preparer,
+    status: crate::host::fx_palette::Status,
+    generation: u64,
+    applied: u64,
+    settle_frame: u64,
+    owner_request: Option<u64>,
+    config: Configuration,
+}
+/// Instance-free controller state. The active native owners leave this facade
+/// once, and observations/retired tokens return through bounded owned packets.
+#[cfg(feature = "hardware-host")]
+pub(super) struct Controller {
+    source: Option<Rack>,
+    buses: [BusControl; 4],
+    hash: String,
     _library_file: std::fs::File,
+}
+#[cfg(feature = "hardware-host")]
+pub(super) struct Observation {
+    status: [crate::host::fx_palette::Status; 4],
+    valid: [bool; 4],
+    retired: [crate::host::fx_palette::PreparedToken; 4],
+}
+#[cfg(feature = "hardware-host")]
+struct PreparedCommand {
+    bus: usize,
+    panic: bool,
+    token: Option<crate::host::fx_palette::PreparedToken>,
+    sends: crate::mixer::PreparedFxSends,
+    owner_request: Option<u64>,
+    revision: u64,
+    observation: Observation,
 }
 #[cfg(feature = "hardware-host")]
 pub(super) struct Pending {
@@ -45,16 +73,67 @@ pub(super) struct Pending {
     fingerprint: String,
     mutation: wire::Mutation,
     config: Option<Configuration>,
-    prepared: bool,
+    token: Option<crate::host::fx_palette::PreparedToken>,
     frame: u64,
     client: Option<u64>,
+}
+#[cfg(feature = "hardware-host")]
+impl Controller {
+    pub(super) fn take_source(&mut self) -> Result<Rack> {
+        self.source
+            .take()
+            .ok_or("FX source already detached".into())
+    }
+    pub(super) fn restore_source(&mut self, source: Rack) -> Result<()> {
+        if self.source.is_some() {
+            return Err("FX source already attached".into());
+        }
+        self.source = Some(source);
+        Ok(())
+    }
+    pub(super) fn prepare_observation(&self) -> Observation {
+        Observation {
+            status: [crate::host::fx_palette::Status::default(); 4],
+            valid: [false; 4],
+            retired: std::array::from_fn(|i| self.buses[i].preparer.empty_token()),
+        }
+    }
+    pub(super) fn finish_observation(
+        &mut self,
+        observation: Observation,
+        frame: u64,
+    ) -> Result<()> {
+        if observation.valid.iter().any(|valid| !valid) {
+            return Err("FX palette status ABI".into());
+        }
+        for (i, b) in self.buses.iter_mut().enumerate() {
+            b.status = observation.status[i];
+            if frame >= b.settle_frame
+                && b.status.transition == 0
+                && b.owner_request
+                    .is_none_or(|r| r == b.status.applied_request)
+                && b.status.current == b.config.settings
+            {
+                b.applied = b.generation;
+            }
+        }
+        // `observation` owns at most one retired token per bus. Drop happens here
+        // on the controller, after the source relinquished every native pointer.
+        Ok(())
+    }
 }
 impl LocalAudio {
     #[cfg(feature = "hardware-host")]
     pub fn enable_fx_aux(&mut self, path: &Path, expected_hash: &str) -> Result<()> {
         use sha2::{Digest, Sha256};
         use std::os::fd::AsRawFd;
-        if self.frame() != 0 || self.fx_aux.is_some() || self.remote_fx_aux || !path.is_absolute() {
+        if self.frame() != 0
+            || self.render_graph.is_some()
+            || self.source_executor.is_some()
+            || self.fx_aux.is_some()
+            || self.remote_fx_aux
+            || !path.is_absolute()
+        {
             return Err("FX aux startup only, absolute library".into());
         }
         let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -80,29 +159,37 @@ impl LocalAudio {
         }
         let pinned = std::path::PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
         let mut buses = Vec::with_capacity(4);
+        let mut controls = Vec::with_capacity(4);
         for _ in 0..4 {
-            let owner = Owner::load(&pinned)?;
+            let mut owner = Owner::load(&pinned)?;
             let config = Configuration {
                 settings: owner.defaults(1)?,
                 sends: vec![0.; self.topology().inputs.len()],
                 tempo: None,
             };
-            buses.push(Bus {
-                owner,
+            controls.push(BusControl {
+                preparer: owner.preparer(),
+                status: owner.status()?,
                 config,
                 generation: 0,
                 applied: 0,
                 settle_frame: 0,
                 owner_request: None,
+            });
+            buses.push(Bus {
+                owner,
                 output: [0.; 96],
             });
         }
         self.engine.enable_fx_aux()?;
-        self.fx_aux = Some(Rack {
-            buses: buses.try_into().map_err(|_| "FX buses")?,
+        self.fx_aux = Some(Controller {
+            source: Some(Rack {
+                buses: buses.try_into().map_err(|_| "FX buses")?,
+                wet: [0.; 96],
+                next_frame: 0,
+            }),
+            buses: controls.try_into().map_err(|_| "FX controls")?,
             hash,
-            wet: [0.; 96],
-            next_frame: 0,
             _library_file: file,
         });
         Ok(())
@@ -150,8 +237,7 @@ impl LocalAudio {
                 }
                 let rack = self.fx_aux.as_mut().ok_or("FX aux unavailable")?;
                 let bus = &mut rack.buses[m.bus];
-                bus.owner.reclaim();
-                let status = bus.owner.status()?;
+                let status = bus.status;
                 if m.owner_binding.is_some()
                     || m.library_sha256 != rack.hash
                     || m.map_revision.0 != self.engine.topology().map_revision
@@ -166,6 +252,7 @@ impl LocalAudio {
                     .as_ref()
                     .map(|s| serde_json::from_str(s).map_err(|e| e.to_string()))
                     .transpose()?;
+                let mut token = None;
                 if let Some(c) = &config {
                     if c.sends.len() != bus.config.sends.len()
                         || c.sends
@@ -176,7 +263,7 @@ impl LocalAudio {
                     }
                     if let Some(t) = &c.tempo
                         && (!matches!(c.settings.algorithm, 1 | 8)
-                            || (bus.owner.delay_time(t.bpm, t.denominator, t.modifier)?
+                            || (bus.preparer.delay_time(t.bpm, t.denominator, t.modifier)?
                                 - c.settings.time_ms)
                                 .abs()
                                 > 1e-9)
@@ -184,7 +271,12 @@ impl LocalAudio {
                         return Err("FX tempo/time mismatch".into());
                     }
                     // Validation/preparation precedes any reservation or sounding change.
-                    bus.owner.prepare(&c.settings)?;
+                    // Always validate, even when only sends changed. The token
+                    // is caller-owned and can be discarded here off the source.
+                    let prepared = bus.preparer.prepare(&c.settings)?;
+                    if c.settings != bus.config.settings {
+                        token = Some(prepared);
+                    }
                 }
                 use sha2::{Digest, Sha256};
                 let fingerprint = format!(
@@ -200,34 +292,25 @@ impl LocalAudio {
                 let frame = match reservation {
                     Ok((frame, None)) => frame,
                     Ok((_, Some(reply))) => {
-                        bus.owner.cancel();
                         return Err(reply
                             .body
                             .reason
                             .unwrap_or("request already completed; refresh".into()));
                     }
                     Err(e) => {
-                        bus.owner.cancel();
                         return Err(e);
                     }
                 };
                 if frame.checked_add(240).is_none() {
-                    bus.owner.cancel();
                     self.engine.cancel_fx_external(&r, &fingerprint);
                     return Err("FX source frame exhausted".into());
-                }
-                let prepared = config
-                    .as_ref()
-                    .is_some_and(|c| c.settings != bus.config.settings);
-                if !prepared {
-                    bus.owner.cancel();
                 }
                 self.fx_aux_pending = Some(Pending {
                     request: r.clone(),
                     fingerprint,
                     mutation: m,
+                    token,
                     config,
-                    prepared,
                     frame,
                     client,
                 });
@@ -258,13 +341,13 @@ impl LocalAudio {
         if let Some(rack) = &mut self.fx_aux {
             let mut buses = Vec::new();
             for (i, bus) in rack.buses.iter_mut().enumerate() {
-                let status = bus.owner.status()?;
+                let status = bus.status;
                 buses.push(json!({"id":format!("fx-{}",i+1),"generation":bus.generation.to_string(),
                     "applied_generation":bus.applied.to_string(),"configuration_json":serde_json::to_string(&bus.config).map_err(|e|e.to_string())?,
                     "owner_json":serde_json::to_string(&status).map_err(|e|e.to_string())?}));
             }
             let mut palette = Vec::new();
-            let owner = &rack.buses[0].owner;
+            let owner = &rack.buses[0].preparer;
             for algorithm in 1..32 {
                 if owner.capabilities.algorithm_mask & (1 << algorithm) != 0 {
                     palette.push(json!({"algorithm":algorithm,"defaults":owner.defaults(algorithm)?,"parameters":owner.parameters(algorithm)?}));
@@ -285,73 +368,126 @@ impl LocalAudio {
         }
         Ok(value)
     }
+    /// Return numeric observations and native retirement without borrowing the
+    /// source from snapshots or preparation. Called after a render quantum.
+    #[cfg(feature = "hardware-host")]
+    pub(super) fn observe_fx_aux(&mut self) -> Result<()> {
+        let Some(control) = &self.fx_aux else {
+            return Ok(());
+        };
+        let observation = control.prepare_observation();
+        let (observation, present) =
+            self.graph_command((observation, false), |graph, packet| {
+                let Some(rack) = graph.aux.as_mut() else {
+                    return;
+                };
+                #[cfg(test)]
+                crate::remote::assert_no_allocations(|| rack.observe(&mut packet.0));
+                #[cfg(not(test))]
+                rack.observe(&mut packet.0);
+                packet.1 = true;
+            })?;
+        if !present {
+            return Err("FX source missing".into());
+        }
+        let frame = self.engine.frame();
+        self.fx_aux
+            .as_mut()
+            .unwrap()
+            .finish_observation(observation, frame)
+    }
     #[cfg(feature = "hardware-host")]
     pub(super) fn poll_fx_aux(&mut self, now: u64) -> Result<()> {
-        if let Some(rack) = &mut self.fx_aux {
-            for b in &mut rack.buses {
-                b.owner.reclaim();
-                let status = b.owner.status()?;
-                if self.engine.frame() >= b.settle_frame
-                    && status.transition == 0
-                    && b.owner_request.is_none_or(|r| r == status.applied_request)
-                    && status.current == b.config.settings
-                {
-                    b.applied = b.generation;
-                }
-            }
-        }
-        if self
-            .fx_aux_pending
-            .as_ref()
-            .is_none_or(|p| self.engine.frame() < p.frame)
-        {
+        if self.fx_aux_pending.as_ref().is_none_or(|p| {
+            self.engine
+                .admission_frame()
+                .unwrap_or_else(|| self.engine.frame())
+                < p.frame
+        }) {
             return Ok(());
         }
-        let p = self.fx_aux_pending.take().unwrap();
-        let rack = self.fx_aux.as_mut().ok_or("FX aux owner lost")?;
-        let b = &mut rack.buses[p.mutation.bus];
-        let mut applied = false;
+        let mut p = self.fx_aux_pending.take().unwrap();
+        let control = self.fx_aux.as_ref().ok_or("FX aux owner lost")?;
+        let b = &control.buses[p.mutation.bus];
+        let mut sends = crate::mixer::PreparedFxSends::default();
+        if let Some(config) = &p.config {
+            sends.set(
+                self.engine.topology().inputs.len(),
+                p.mutation.bus,
+                &config.sends,
+            )?;
+        }
+        let mut command = PreparedCommand {
+            bus: p.mutation.bus,
+            panic: p.mutation.panic,
+            owner_request: if p.token.is_some() {
+                b.status.accepted_request.checked_add(1)
+            } else {
+                None
+            },
+            revision: b.status.revision,
+            token: p.token.take(),
+            sends,
+            observation: control.prepare_observation(),
+        };
         let result = if !self.engine.external_matches(&p.request, &p.fingerprint)
-            || self.engine.frame() != p.frame
+            || self
+                .engine
+                .admission_frame()
+                .unwrap_or_else(|| self.engine.frame())
+                != p.frame
         {
             self.engine.cancel_fx_external(&p.request, &p.fingerprint);
             Err("FX aux reservation lost".into())
         } else {
-            let outcome = self.engine.commit_external_with_engine(now, |engine| {
-                let status = b.owner.status()?;
-                if p.mutation.panic {
-                    b.owner.reset()?;
-                    b.owner_request = None;
-                    let current = b.owner.status()?.current;
-                    if b.config.settings != current {
-                        b.config.settings = current;
-                        b.config.tempo = None;
+            let permit = self.prepare_source_external(now)?;
+            let (_, returned, receipt) =
+                self.graph_boundary_command(p.frame, (permit, command, None), |graph, packet| {
+                    let Some(rack) = graph.aux.as_mut() else {
+                        return;
+                    };
+                    #[cfg(test)]
+                    crate::remote::assert_no_allocations(|| {
+                        packet.2 = Some(rack.apply(&packet.0, &mut packet.1, &mut graph.mixer));
+                    });
+                    #[cfg(not(test))]
+                    {
+                        packet.2 = Some(rack.apply(&packet.0, &mut packet.1, &mut graph.mixer));
                     }
-                } else {
-                    if p.prepared {
-                        let request = status
-                            .accepted_request
-                            .checked_add(1)
-                            .ok_or("FX request exhausted")?;
-                        b.owner.publish(request, status.revision)?;
-                        b.owner_request = Some(request);
-                    }
-                    let c = p.config.as_ref().ok_or("FX config missing")?;
-                    engine.set_fx_sends(p.mutation.bus, &c.sends)?;
-                }
-                applied = true;
-                Ok(())
-            })?;
-            if applied {
+                })?;
+            command = returned;
+            let receipt = receipt.ok_or("FX source missing")?;
+            let code = receipt.code;
+            let outcome = self.engine.finish_external(receipt)?;
+            if outcome.kind == "applied" && code == 0 {
                 Ok(())
             } else {
-                Err(outcome.body.reason.unwrap_or("FX authority refused".into()))
+                Err(outcome
+                    .body
+                    .reason
+                    .unwrap_or_else(|| format!("FX source refused {code}")))
             }
         };
-        b.owner.cancel();
+        let applied = result.is_ok();
+        let control = self.fx_aux.as_mut().unwrap();
+        // A refused command may not have entered Rack::apply. Observe validity
+        // is explicit, so stale control state is retained instead of invented.
+        if command.observation.valid.iter().all(|valid| *valid) {
+            control.finish_observation(command.observation, self.engine.frame())?;
+        }
+        let b = &mut control.buses[p.mutation.bus];
         if applied {
             if let Some(c) = p.config {
                 b.config = c;
+            }
+            if p.mutation.panic {
+                b.owner_request = None;
+                if b.config.settings != b.status.current {
+                    b.config.settings = b.status.current;
+                    b.config.tempo = None;
+                }
+            } else {
+                b.owner_request = command.owner_request;
             }
             b.generation += 1;
             b.settle_frame = p.frame.saturating_add(240);
@@ -380,9 +516,7 @@ impl LocalAudio {
         {
             let p = self.fx_aux_pending.take().unwrap();
             self.engine.cancel_fx_external(&p.request, &p.fingerprint);
-            if let Some(rack) = &mut self.fx_aux {
-                rack.buses[p.mutation.bus].owner.cancel();
-            }
+            // Prepared token destruction stays on the controller.
         }
     }
     #[cfg(feature = "hardware-host")]
@@ -390,50 +524,126 @@ impl LocalAudio {
         if let Some(p) = self.fx_aux_pending.take() {
             self.engine.cancel_fx_external(&p.request, &p.fingerprint);
         }
-        if let Some(r) = &mut self.fx_aux {
-            r.wet.fill(0.);
-            r.next_frame = self.engine.frame();
-            for b in &mut r.buses {
-                b.owner.cancel();
-                let _ = b.owner.reset();
-                b.owner_request = None;
-                if let Ok(status) = b.owner.status()
-                    && b.config.settings != status.current
-                {
-                    b.config.settings = status.current;
-                    b.config.tempo = None;
+        let Some(control) = &self.fx_aux else {
+            return;
+        };
+        let mut observation = control.prepare_observation();
+        let frame = self.engine.frame();
+        // Startup/recovery may have explicitly reattached the whole graph. Do
+        // not detach it in the middle of rebuilding its module/source epochs.
+        if let Some(rack) = self.fx_aux.as_mut().and_then(|c| c.source.as_mut()) {
+            rack.reset(frame);
+            rack.observe(&mut observation);
+        } else {
+            let returned = self.graph_command((observation, frame, false), |graph, packet| {
+                if let Some(rack) = graph.aux.as_mut() {
+                    rack.reset(packet.1);
+                    rack.observe(&mut packet.0);
+                    packet.2 = true;
                 }
-                b.owner.reclaim();
-                b.generation = b.generation.saturating_add(1);
-                b.applied = b.generation;
-                b.output.fill(0.);
+            });
+            let Ok((returned, _, true)) = returned else {
+                return;
+            };
+            observation = returned;
+        }
+        let control = self.fx_aux.as_mut().unwrap();
+        if control.finish_observation(observation, frame).is_err() {
+            return;
+        }
+        for b in &mut control.buses {
+            b.owner_request = None;
+            if b.config.settings != b.status.current {
+                b.config.settings = b.status.current;
+                b.config.tempo = None;
             }
+            b.generation = b.generation.saturating_add(1);
+            b.applied = b.generation;
         }
     }
-    #[cfg(feature = "hardware-host")]
-    pub(super) fn process_fx_aux(&mut self, frame: u64) -> Option<[f64; 96]> {
-        let r = self.fx_aux.as_mut()?;
+}
+#[cfg(feature = "hardware-host")]
+impl Rack {
+    pub(super) fn observe(&mut self, observation: &mut Observation) {
+        for (i, b) in self.buses.iter_mut().enumerate() {
+            if let Ok(status) = b.owner.status_bounded() {
+                observation.status[i] = status;
+                observation.valid[i] = true;
+            }
+            b.owner.take_retired(&mut observation.retired[i]);
+        }
+    }
+    fn reset(&mut self, frame: u64) {
+        self.wet.fill(0.);
+        self.next_frame = frame;
+        for b in &mut self.buses {
+            let _ = b.owner.reset_bounded();
+            b.output.fill(0.);
+        }
+    }
+    fn apply(
+        &mut self,
+        permit: &crate::mixer_control::source::ExternalPermit,
+        command: &mut PreparedCommand,
+        source: &mut crate::mixer_control::source::SourceState,
+    ) -> crate::mixer_control::source::ExternalReceipt {
+        let b = &mut self.buses[command.bus];
+        let receipt = source.commit_external(permit, |mixer| {
+            if command.panic {
+                return if b.owner.reset_bounded().is_ok() {
+                    0
+                } else {
+                    -20
+                };
+            }
+            let Ok(status) = b.owner.status_bounded() else {
+                return -21;
+            };
+            if status.revision != command.revision || status.transition != 0 {
+                return -22;
+            }
+            if !mixer.accepts_fx_sends(&command.sends) {
+                return -24;
+            }
+            if let Some(token) = &mut command.token {
+                let Some(request) = command.owner_request else {
+                    return -23;
+                };
+                if let Err(code) = b.owner.publish_token(token, request, command.revision) {
+                    return code;
+                }
+            }
+            let applied = mixer.apply_fx_sends(&mut command.sends);
+            debug_assert!(applied);
+            0
+        });
+        self.observe(&mut command.observation);
+        receipt
+    }
+
+    pub(super) fn process(&mut self, frame: u64, mixer: &crate::mixer::Mixer) -> [f64; 96] {
+        let r = self;
         r.wet.fill(0.);
         if r.next_frame != frame {
             for b in &mut r.buses {
-                let _ = b.owner.reset();
+                let _ = b.owner.reset_bounded();
                 b.output.fill(0.);
             }
             r.next_frame = frame.saturating_add(48);
-            return Some(r.wet);
+            return r.wet;
         }
-        for (b, input) in r.buses.iter_mut().zip(self.engine.mixer().fx_aux_samples()) {
+        for (b, input) in r.buses.iter_mut().zip(mixer.fx_aux_samples()) {
             b.owner.process(input, &mut b.output);
             for (sum, wet) in r.wet.iter_mut().zip(&b.output) {
                 *sum += wet;
             }
         }
         for (i, sample) in r.wet.iter_mut().enumerate() {
-            let gain = self.engine.output_safety_gain(frame + (i / 2) as u64);
+            let gain = mixer.output_safety_gain(frame + (i / 2) as u64);
             *sample = if gain == 0. { 0. } else { *sample * gain };
         }
         r.next_frame = frame.saturating_add(48);
-        Some(r.wet)
+        r.wet
     }
 }
 #[cfg(all(test, feature = "hardware-host"))]
@@ -467,6 +677,8 @@ mod actual_tests {
         .unwrap();
         p.enable_fx_aux(&path, &hash).unwrap();
         p.rearm().unwrap();
+        p.enable_persistent_source();
+        let _media = p.source_executor_for(()).unwrap();
         let grant = crate::control_model::Request {
             contract: "C-AUDIO".into(),
             version: 2,
@@ -519,6 +731,9 @@ mod actual_tests {
             p.tick_with_capture(tick, 9, frame, &input, &mut playback)
                 .unwrap();
             if tick == 1 {
+                assert!(p.render_graph.is_none());
+                assert!(p.source_executor.is_some());
+                assert!(p.fx_aux.as_ref().unwrap().source.is_none());
                 let observed = p.fx_aux_request(read.clone(), tick, true, None).unwrap();
                 assert_eq!(observed["buses"][0]["generation"], "1");
                 assert_eq!(observed["buses"][0]["applied_generation"], "0");
@@ -587,7 +802,7 @@ mod actual_tests {
         let s = p.fx_aux_request(read.clone(), 42, true, None).unwrap();
         let mut replacement = c.clone();
         replacement.settings = p.fx_aux.as_ref().unwrap().buses[0]
-            .owner
+            .preparer
             .defaults(6)
             .unwrap();
         assert_eq!(
@@ -629,15 +844,25 @@ mod actual_tests {
             serde_json::from_str(s["buses"][0]["owner_json"].as_str().unwrap()).unwrap();
         assert_eq!(status["fault"], 0);
         p.quiesce_source("test source loss").unwrap();
-        assert!(p.fx_aux.as_ref().unwrap().wet.iter().all(|v| *v == 0.));
+        p.graph_command((), |g, _| {
+            assert!(g.aux.as_ref().unwrap().wet.iter().all(|v| *v == 0.));
+        })
+        .unwrap();
         p.recover_source(Counter(10), 0).unwrap();
         assert!(p.engine.outputs_quiesced());
-        assert_eq!(
-            p.engine.mixer().fx_sends(0).unwrap(),
-            p.fx_aux.as_ref().unwrap().buses[0].config.sends
-        );
-        assert_eq!(p.fx_aux.as_ref().unwrap().next_frame, 0);
+        let recovered_sends = p.fx_aux.as_ref().unwrap().buses[0].config.sends.clone();
+        p.graph_command((), |graph, _| {
+            assert_eq!(graph.aux.as_ref().unwrap().next_frame, 0)
+        })
+        .unwrap();
         p.rearm().unwrap();
+        p.graph_command(recovered_sends, |graph, recovered_sends| {
+            graph.mixer.mixer.observe_into(&mut graph.mixer.observation);
+            for (row, expected) in graph.mixer.observation.fx_sends.iter().zip(recovered_sends) {
+                assert_eq!(row[0], *expected);
+            }
+        })
+        .unwrap();
         for tick in 54..86 {
             let frame = p.frame();
             p.tick_with_capture(tick, 10, frame, &input, &mut playback)

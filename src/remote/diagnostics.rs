@@ -112,7 +112,7 @@ pub(crate) enum Stage {
     MediaRefused = 35,
     MediaQueueFull = 36,
     #[cfg(feature = "hardware-host")]
-    SourceResources = 37,
+    SourceDispatchResources = 38,
 }
 struct Slot {
     words: [AtomicU64; 8],
@@ -317,7 +317,7 @@ impl Trace {
                 "a",
                 "b",
             ],
-            stages: "1:first_byte 2:framed(bytes) 3:decoded 4:request_dequeued 5:proxy_enqueued 6:dispatch_begin 7:dispatch_end 8:event_enqueued 9:event_dequeued 10:reply_enqueued 11:reply_dequeued 12:serialize_begin 13:serialize_end(bytes) 14:pages_end(pages,bytes) 15:write_first_poll 16:write_first_pending 17:write_end(outcome,pending_polls) 18:quinn_path(rtt_us,lost_packets) 19:quinn_traffic(sent_packets,cwnd) 20:source_tick(report_us in session,frame in ordinal,debt_us in request,dispatch_us in kind,render_us,total_tick_us) 21:max_data(rx,tx) 22:max_stream_data(rx,tx) 23:data_blocked(rx,tx) 24:stream_data_blocked(rx,tx) 25:udp_datagrams(rx,tx) 26:quinn_boundary(0:before/1:after,0); connection-wide aggregates cannot identify a stream stall cause; 27:response_identity(revision_or_u64MAX,frame_or_u64MAX); media stages use session,source_frame,output_frame,stream,a=reserved_zero,b=observed_source_or_zero: 28:quinn_send_call 29:quinn_dequeue 30:provider_admission 31:brain_dequeue 32:brain_process_begin 33:brain_process_end 34:brain_send_call 35:media_refused 36:media_queue_full; 37:source_render_resources(frame in ordinal,CPU_us in request,minor_faults in session,voluntary_switches in kind,involuntary_switches in a,major_faults in b); first channel group only except refusals; send call is not wire departure and dequeue is not socket arrival",
+            stages: "1:first_byte 2:framed(bytes) 3:decoded 4:request_dequeued 5:proxy_enqueued 6:dispatch_begin 7:dispatch_end 8:event_enqueued 9:event_dequeued 10:reply_enqueued 11:reply_dequeued 12:serialize_begin 13:serialize_end(bytes) 14:pages_end(pages,bytes) 15:write_first_poll 16:write_first_pending 17:write_end(outcome,pending_polls) 18:quinn_path(rtt_us,lost_packets) 19:quinn_traffic(sent_packets,cwnd) 20:source_tick(report_us in session,frame in ordinal,debt_us in request,dispatch_us in kind,render_us,total_tick_us) 21:max_data(rx,tx) 22:max_stream_data(rx,tx) 23:data_blocked(rx,tx) 24:stream_data_blocked(rx,tx) 25:udp_datagrams(rx,tx) 26:quinn_boundary(0:before/1:after,0); connection-wide aggregates cannot identify a stream stall cause; 27:response_identity(revision_or_u64MAX,frame_or_u64MAX); media stages use session,source_frame,output_frame,stream,a=reserved_zero,b=observed_source_or_zero: 28:quinn_send_call 29:quinn_dequeue 30:provider_admission 31:brain_dequeue 32:brain_process_begin 33:brain_process_end 34:brain_send_call 35:media_refused 36:media_queue_full; 37:source_render_resources(frame in ordinal,CPU_us in request,minor_faults in session,voluntary_switches in kind,involuntary_switches in a,major_faults in b), historical inline owner; 38:source_dispatch_resources(same fields, controller thread only; excludes gp-source worker); first channel group only except refusals; send call is not wire departure and dequeue is not socket arrival",
             records,
         }
     }
@@ -493,6 +493,11 @@ fn media_trace_is_opt_in_bounded_and_preserves_source_identity() {
 }
 
 #[cfg(test)]
+pub(crate) fn assert_no_allocations(action: impl FnOnce()) {
+    tests::assert_no_allocations(action);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::alloc::{GlobalAlloc, Layout, System};
@@ -528,24 +533,56 @@ mod tests {
     }
     #[global_allocator]
     static ALLOCATOR: TestAllocator = TestAllocator;
+    pub(super) fn assert_no_allocations(action: impl FnOnce()) {
+        struct Reset(bool);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                WATCH.with(|w| w.set(self.0));
+            }
+        }
+        // Source packets can contain smaller guarded kernels. An inner guard
+        // must neither erase the outer count nor disable its remaining scope.
+        let before = CHANGES.with(Cell::get);
+        let reset = Reset(WATCH.with(|w| w.replace(true)));
+        action();
+        drop(reset);
+        assert_eq!(
+            CHANGES.with(Cell::get).saturating_sub(before),
+            0,
+            "processing allocated or destroyed storage"
+        );
+    }
+    #[test]
+    fn nested_render_guards_keep_outer_allocation_detection_enabled() {
+        assert!(
+            std::panic::catch_unwind(|| {
+                assert_no_allocations(|| {
+                    assert_no_allocations(|| {});
+                    let storage = Box::new(std::hint::black_box(42u64));
+                    std::hint::black_box(&storage);
+                    drop(storage);
+                });
+            })
+            .is_err()
+        );
+        assert_no_allocations(|| assert_no_allocations(|| {}));
+    }
     #[test]
     fn diagnostic_append_and_overflow_allocate_and_free_nothing() {
         let trace = Trace::test_trace();
-        CHANGES.with(|n| n.set(0));
-        WATCH.with(|w| w.set(true));
-        for ordinal in 1..4096 {
-            trace.record(
-                Token {
-                    ordinal,
-                    ..Token::default()
-                },
-                Stage::Decoded,
-                0,
-                0,
-            );
-        }
-        WATCH.with(|w| w.set(false));
-        assert_eq!(CHANGES.with(Cell::get), 0);
+        super::assert_no_allocations(|| {
+            for ordinal in 1..4096 {
+                trace.record(
+                    Token {
+                        ordinal,
+                        ..Token::default()
+                    },
+                    Stage::Decoded,
+                    0,
+                    0,
+                );
+            }
+        });
     }
 
     #[test]

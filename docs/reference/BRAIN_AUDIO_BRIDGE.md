@@ -58,6 +58,26 @@ service clock, driver xrun, nonfinite PCM or disconnect invalidates the whole lo
 duplex epoch. Stop/reopen cannot rearm the same host. This is controller-side driver
 service, not a claim that ALSA I/O belongs in a realtime DSP callback.
 
+The `gigpies-brain` executable runs this service on its sole dedicated duplex
+thread. A separate media worker owns GBA1 decoding/encoding and the authenticated
+channel; controller awaits, device-intent persistence, hashes and JSON never run
+in the service quantum. Independent four-block capture and monitor lanes drop new
+blocks on overflow and count them. Four-entry copied control/status lanes bound
+ordinary work; service applies at most one ordinary state update per quantum.
+An atomic closure generation bypasses queued updates. Local deadman expiry closes
+audio and requires observed closed state followed by a later explicit active
+revision; changing an unrelated revision cannot restore an expired path. The
+service also enforces the configured finite duration without controller progress.
+
+Replacement stops and joins the old owner before preparing a fresh device epoch.
+Service observations copy numeric state and its applied revision; the controller
+joins static device descriptions and serializes telemetry. Reports distinguish
+known prepared layouts (with exclusions) from measured process RSS/peak RSS, CPU
+and faults. Playback evidence labels the service revision at device-drain time and
+the contemporaneous controller snapshot; neither label claims a sample-exact
+control transition within an already submitted driver period. Full observation
+lanes skip publication while retaining cumulative counters for later readback.
+
 Native signed16, signed32 and float32 little-endian formats are explicit. Conversion
 normalizes the signed container width; it does not claim converter significant bits.
 The adapter rejects a negotiated profile differing from the requested one. Reported

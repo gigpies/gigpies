@@ -29,7 +29,8 @@ pub enum Role {
 }
 
 /// Negotiated out of band before accepting audio. One spec per channel group.
-/// A session is a fresh nonzero PA epoch, never reused after a restart.
+/// A session is a fresh nonzero authenticated media identity, not a device epoch.
+/// Reconnect or source/map replacement must negotiate a fresh session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamSpec {
     pub session: u64,

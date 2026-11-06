@@ -1137,6 +1137,7 @@ mod monitor_renegotiation_tests {
                 .is_err()
         );
         host.brain_media(&ctx, &packet(&d, 480_000), 5).unwrap();
+        host.test_drain_media_ingress(5);
         assert_eq!(host.media_stats().accepted_talkback_packets, 1);
         let old_held = d.clone();
         expected.push(render(&mut host, &d, 6));

@@ -1,5 +1,10 @@
 # Authenticated remote commands and media
 
+For the proposed execution-isolated v1 and conditional direct-UDP comparison, see
+[the audio transport blueprint](../architecture/AUDIO_TRANSPORT_V1.md) and
+[GP-H1](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-h1--physical-audio-qualification).
+Those plans do not change the implemented contract described here.
+
 The `remote` module carries actual GigPies authority requests and GPA1 audio over
 mutually authenticated QUIC connections. Quinn and rustls require TLS 1.3,
 explicit CA trust and a separately provisioned SHA256 leaf-certificate permission
@@ -18,8 +23,8 @@ engine and structural work without stopping local source processing or recording
 
 The server admits at most 16 concurrent authenticated or handshaking sessions.
 This finite deployment budget accommodates six independently scoped control clients,
-one Brain duplex worker, one source-clock FX/analysis worker, and eight observer or
-reconnect-overlap slots. The previous four-slot budget could not admit even the
+one Brain duplex worker, one source-clock FX worker, one independent analysis
+observer, and seven control/reconnect-overlap slots. The previous four-slot budget could not admit even the
 three separate operator-monitor, talkback-destination and talkback-FOH controllers
 alongside both workers. This is a reviewed resource limit, not an input-channel,
 monitor-bus or universal product capacity. A seventeenth connection is refused
@@ -48,11 +53,62 @@ when raising this limit; permissions, leases, freshness and media ownership rema
 independent of connection admission.
 
 `authority_channel` connects a network session to the source/control owner through
-bounded SPSC queues. `AuthorityMailbox::service` runs outside render before the next
-source block. `HostAuthority` wraps the same `LocalAudio` used by local providers;
+bounded SPSC queues. `AuthorityMailbox::service` runs on the controller independently of source
+capture progression in the remote runner. `HostAuthority` wraps the same `LocalAudio` used by local providers;
 there is no second mixer or authority. Network workers never own the audio clock.
 Generation changes drain completed replies, retire queued intent and require a new
 connection and explicit grants. No command is automatically replayed.
+
+After authenticated HostAuthority media negotiation, the proxy receives the sole
+encoded-source packet consumer through its bounded event lane. Network polling
+then drains the existing 256-packet lane without controller mailbox service.
+Controller shutdown closes the lane, joins encoding and counts/destroys unconsumed
+packets; a mutex coordinates that shutdown with network draining only. Source
+rendering, encoding and atomic closure do not acquire it. Compatibility endpoints
+keep their existing controller drain. Authenticated wet negotiation also transfers
+an immutable stream/generation endpoint to the network proxy. It submits directly
+to the existing source ingress lane; a producer mutex coordinates compatibility
+submission, overflow accounting and shutdown only, never source rendering.
+The source publishes its actual frame atomically for network late/future filtering,
+including under receipt pressure. Source generation/policy/deadline validation
+remains authoritative. Brain media
+still requires mailbox service; this does not qualify combined timing or separate
+analysis.
+
+HostAuthority transfers its numeric RenderGraph and source media to one dedicated
+`gp-source` worker across source quanta. Controller
+readback uses copied safety, topology and sample observations; local aux preparation
+and returned native retirement stay controller-side. Owned commands return through bounded global completion/retirement lanes; the
+remote runner now starts autonomous source capture/render progression. Controller
+service exchanges copied observations and recorder lifecycle without pacing audio.
+Ordinary mixer, structural, local aux and Brain requests prepare for a future
+source boundary; expired preparation refuses before application. Remote FX
+permission uses that boundary; four-aux sends retain a separately fenced source
+packet until their negotiated frame, then return an actual completion receipt.
+Physical capture is
+implemented with nonblocking partial transfers but remains unqualified.
+Runner `source_clock_v2` reports retain exact output windows correlated with
+source-applied revision and Brain routing/hold identity, plus cumulative wet/drop
+accounting. Old controller-sampled window fields remain null. Synthetic epoch
+reconstruction closes and drains the old owner, retires media identity and starts
+a disarmed replacement on the same worker within the original run deadline.
+Physical reopen and complete cross-owner/whole-source acceptance remain open.
+Wet/talkback admission crosses additional prefaulted fixed ingress/receipt lanes
+(256 wet datagrams and 64 mono blocks in each direction; 671,296 payload bytes,
+excluding ring and endpoint metadata). Source insertion rechecks generation, policy and deadline;
+full receipt lanes defer insertion while rendering continues. Accepted counters and
+wet hashes advance when controller receipts are consumed, rather than on enqueue.
+Final source shutdown closes network submission before draining receipts and
+counts remaining queued admissions as rejected. Producer overflow counts are
+collected exactly once with controller receipts; attempts after terminal shutdown
+return an error without changing final admission totals. Receipt saturation still
+bounds how long wet admission can progress without controller accounting.
+
+Provider reports include `media_queue_drops` for GPA1 ingress/egress and GBA1
+capture/monitor handoffs. Counters accumulate across retired sessions in one fixed
+runner ledger and are sampled after networking stops. They are independent of
+optional timing traces; clean timing acceptance requires all four to be zero.
+They do not count socket loss or replace host deadline/refusal accounting.
 
 Control frames use a four-byte big-endian length followed by strict JSON, at most
 65536 bytes. Large replies use the existing GP14 snapshot-page protocol with a
@@ -76,6 +132,16 @@ through `host::BrainFx`; wet return enters the existing graph before PA. Its 960
 intentional FX delay is separate from negotiated network return delay. Missing wet
 fades through `WetGate` while local dry processing and REC continue. Source recovery
 clears previous media and fade history and requires explicit output rearm.
+
+The production Brain runner attaches analysis on a separate authenticated connection
+and receive runtime. Provider admission allows one analysis-only observer, with its
+own encoder and four-block sample pool; it rejects control commands on that
+connection. Pausing or closing analysis does not close FX or duplex. Source/map or
+policy replacement fences its source tap immediately. Analysis and audio endpoints
+still share the provider's existing QUIC runtime; no per-session worker thread or
+extra session budget is introduced. Runtime reports include prepared media layouts
+and pre-shutdown process/per-thread CPU, RSS, fault and scheduling observations;
+opaque owner/TLS/allocator costs remain part of measured RSS, not guessed layouts.
 
 Provider media reports retain the first and last rejected-late wet packet's
 source epoch, packet source/output frames and source frame at admission. These
@@ -138,11 +204,13 @@ contract. Instrumentation perturbs timing, and the partial append-cost measureme
 is not its total overhead. These diagnostics do not relax authority or timing
 requirements.
 
-The `gigpies-remote` executable runs its source/FX future on the calling thread
-and uses two Tokio worker threads for spawned QUIC and control tasks. This keeps
+The `gigpies-remote` executable services controller work on the calling thread
+and uses two Tokio worker threads for spawned QUIC and control tasks. Autonomous
+source processing and the stereo delay/four-aux FX owners have dedicated threads. This keeps
 network progress independent of synchronous source render/control work and burst
-catch-up. The bounded SPSC authority queues remain the only source-owner handoff;
-network workers neither render nor advance the source clock. This isolation is
+catch-up. Bounded SPSC authority queues connect network workers to controller
+service; fixed host ingress/receipt lanes then feed source media. Network workers
+neither render nor advance the source clock. This isolation is
 not a realtime scheduling or physical latency guarantee.
 An orderly map retirement preserves queued structural completions while stopping
 Brain-media polling. A bounded FX run reserves its final return-budget interval
@@ -187,7 +255,9 @@ QUIC dequeue is later than socket arrival; a send call precedes actual wire
 transmission. Only timestamps from the same process may be subtracted. Provider
 send-to-return-dequeue includes both directions, Brain processing and scheduling;
 it is neither QUIC RTT nor physical latency. Host late counters cover host
-admission only: transport/mailbox prefilters can refuse older packets earlier.
+admission only: transport/mailbox prefilters refuse packets whose output frame
+is at or before their observed source cursor. Deadline equality is rejected at
+all three boundaries; prefilter acceptance does not reserve final admission.
 Clean diagnostic acceptance must also check those refusal events and correlated
 source-frame completeness, not just the CLI exit status or host counters.
 
@@ -201,8 +271,8 @@ Run the complete normal default and hardware-host suites for integration changes
 [Brain audio](BRAIN_AUDIO.md) adds GP15-brain control, GP15-device configuration
 relay and GP15-media negotiation over the same authority and mutual-TLS protocol.
 The separate duplex owner carries GBA1 talkback and operator-monitor packets in
-independent bounded queues; the existing source-clock FX/analysis owner remains
-admitted. FX permission does not authorize talkback. Each crossing uses the
+independent bounded queues; the source-clock FX owner and independent read-only
+analysis observer remain admitted. FX permission does not authorize talkback. Each crossing uses the
 [bounded ASRC bridge](BRAIN_AUDIO_BRIDGE.md), with both device epochs and map
 identities. The Stagebox source clock remains the processing reference; Brain's
 local duplex card has its own clock. This extension is undergoing integrated
@@ -213,12 +283,16 @@ held-action generation. An unrelated PTT change therefore preserves monitor
 continuity, including already queued monitor packets. Queue preservation requires
 an unchanged authenticated owner/session, both device epochs/maps, monitor
 selection, format and enabled monitor role; talkback bridge replacement is independent.
+Preserving the same live authenticated talkback bridge also preserves its ingress
+generation and replay cursor; replacing its identity refuses old queued blocks.
 A newly negotiated monitor identity or disabling the role discards those queued samples.
 At a source selection/disarm change before renegotiation, a still-live authenticated
 duplex owner instead receives a bounded silent retirement of its old monitor identity.
-The authority rewrites only queued monitor sample payloads to exact zero, preserving
-headers, source indices and order, then emits zero samples for each actual 48-frame
-source block. It never sends the new selected tap under the old identity. Retirement
+The source publishes copied monitor blocks to a prefaulted 64-entry SPSC lane;
+media polling encodes GBA1 packets. Full publication refuses the newest block and
+increments the monitor-drop counter. During retirement, media polling encodes
+queued samples as exact zero while preserving identity, source indices and order;
+new source blocks also contain zero samples for each actual 48-frame source block. It never sends the new selected tap under the old identity. Retirement
 ends at the first of 250 monotonic milliseconds or 12,000 source frames from the
 first changed-selection block; repeated changes or old negotiation retries cannot
 extend it. Missing/revoked owner permission, stale (over 250 ms) or faulted/disarmed
@@ -310,3 +384,23 @@ These tests are normal production regressions. Full integration suites and netwo
 acceptance remain the coordinator's subsequent combined-source gates. See
 [Brain control](BRAIN_AUDIO_CONTROL.md#atomic-lease-maintenance-and-paired-readback)
 for consumer deadline and held-proof separation requirements.
+
+### Bounded ingress preparation
+
+Proxy GPA1/GBA1 ingress now copies into inline `MediaDatagram` ring entries;
+dequeue/overflow cannot free packet payload storage. Existing 256/64 capacities
+remain unchanged. `media_queue_drops()` on proxy/mailbox returns separate ingress
+and egress drop counts regardless of diagnostic tracing. These are per-channel
+observations; the runner also aggregates them across retired sessions in its fixed
+lifetime ledger. Neither form replaces end-to-end trial accounting.
+
+Brain grouped FX assembly uses 32 prepared sample slots, an exact group bitmap
+and `push_into` with a reusable completion buffer. Incomplete eviction, duplicate,
+stale and shape refusal paths are bounded. Compatibility `push` remains allocating
+for non-audio consumers. For stereo 48-frame delay and four-aux operation, assembly, encoding and hashes
+run on the media worker; native execution is separate from controller preparation
+and retirement. Other legacy shapes retain the compatibility worker. These
+ownership boundaries do not establish complete acceptance of the
+[dedicated execution design](../architecture/AUDIO_TRANSPORT_V1.md) or T1/T2
+acceptance. The normal `audio_transport_v1` test target owns literal wire vectors,
+checked payload budgets and assembly allocation/destruction guards.

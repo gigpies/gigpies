@@ -226,6 +226,24 @@ mod actual {
         assert_eq!(fixture.recording.unwrap().written_frames, Counter(1440));
     }
     #[test]
+    #[ignore = "explicit accepted owner libraries; device-free recorder handoff"]
+    fn source_fault_during_recorder_preparation_cannot_activate_late_handle() {
+        let dir = Directory::new();
+        let mut g = ModuleGraph::load(manifest(), 9, 0).unwrap();
+        g.start(&dir.0, "prepare-fault", Counter(72)).unwrap();
+        // No lifecycle poll: preparation may finish, but has not transferred.
+        assert!(g.process(9, 48, &[[0.; 8]; 48], &[[0.; 4]; 48]).is_err());
+        // Stop before observation must preserve the original source-fault cause.
+        g.stop("prepare-fault", Counter(72)).unwrap();
+        finished(&mut g);
+        let record = g.status(SHOW, 100).unwrap().recording.unwrap();
+        assert_eq!(record.host_fault, 6);
+        assert_eq!(record.accepted_frames, Counter(0));
+        assert!(record.first_source_frame.is_none());
+        assert_ne!(record.outcome, "complete");
+    }
+
+    #[test]
     #[ignore = "explicit accepted owner libraries; finite synthetic REC storage/finalizer checks"]
     fn recording_storage_refusal_and_finalizer_progress_remain_truthful() {
         let dir = Directory::new();

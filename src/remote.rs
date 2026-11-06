@@ -3,9 +3,15 @@
 //! never a replacement for the processing authority's leases and revisions.
 mod authority;
 #[cfg(feature = "hardware-host")]
+mod aux_execution;
+#[cfg(feature = "hardware-host")]
 mod brain;
 mod brain_audio;
 mod diagnostics;
+#[cfg(feature = "hardware-host")]
+mod fx_execution;
+#[cfg(test)]
+pub(crate) use diagnostics::assert_no_allocations;
 #[cfg(feature = "hardware-host")]
 pub mod fx_aux_owner;
 #[cfg(all(target_os = "linux", feature = "hardware-host"))]
@@ -16,6 +22,10 @@ mod proxy;
 #[cfg(all(target_os = "linux", feature = "hardware-host"))]
 mod runner;
 mod session;
+#[cfg(all(target_os = "linux", feature = "hardware-host"))]
+mod source_egress;
+#[cfg(all(target_os = "linux", feature = "hardware-host"))]
+pub use source_egress::SourceEgressOutput;
 mod tls;
 mod wire;
 
@@ -45,6 +55,8 @@ pub const IO_TIMEOUT_MS: u64 = 2_000;
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, target_os = "linux", feature = "hardware-host"))]
+pub(crate) use tests::credentials as test_credentials;
 
 /// Shared process-local lease clock. It is independent of source audio frames;
 /// every controller endpoint on this host uses the same monotonic origin.

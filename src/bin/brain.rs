@@ -1,6 +1,6 @@
 //! Explicit local-duplex Brain host. Physical opening requires an extra switch.
 #[cfg(all(target_os = "linux", feature = "hardware-host"))]
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
     if let Err(error) = run().await {
         eprintln!("gigpies-brain: {error}");

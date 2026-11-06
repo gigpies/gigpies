@@ -794,7 +794,7 @@ fn atomic_maintenance_under_heartbeat_churn_preserves_legacy_revision_conflicts(
             serde_json::from_value(granted["outcome"]["body"]["granted_lease"].clone()).unwrap();
         passive.push((ctx, scope, passive_lease));
     }
-    host.provider_mut().engine_mut().rearm_outputs().unwrap();
+    host.provider_mut().rearm().unwrap();
     brain_change(
         &mut host,
         context.writer(),

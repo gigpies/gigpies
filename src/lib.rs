@@ -25,6 +25,10 @@ pub mod mixer;
 /// Control-side deterministic offline authority/render pump.
 pub mod mixer_control;
 
+#[cfg(target_os = "linux")]
+#[cfg_attr(not(feature = "hardware-host"), allow(dead_code))]
+mod source_executor;
+
 /// Explicit opt-in same-UID private Unix binding for the offline engine.
 #[cfg(target_os = "linux")]
 pub mod local_audio;

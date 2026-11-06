@@ -78,9 +78,14 @@ The startup-created serial worker verifies the executable before spawning each
 bounded job. Pipes are nonblocking, request<=8MiB, owner response<=256KiB, each child
 has a5s deadline and is killed/reaped on failure/cancellation. Only the owned child
 is affected. Capture has a5s control-time deadline, source copies are preallocated,
-and work/completion queues are bounded. The offer path only copies at most48 pairs
-and records faults; analysis, hashing, subprocess I/O and buffer retirement occur
-outside it. These statements do not claim allocation-free whole-host control ticks.
+and work/completion queues are bounded. Production capture storage moves to the
+source through a single-slot admission lane and returns through a single-slot
+completion lane. Completed or cancelled storage remains retained until the control
+pump receives it; another capture cannot reuse that capacity prematurely. A separate
+generation signal cancels queued/active captures without queue space, including
+controller teardown. Numeric progress is observable without borrowing capture
+buffers. The offer path only copies at most48 pairs and records faults; analysis,
+hashing, subprocess I/O and buffer retirement occur outside it. These statements do not claim allocation-free whole-host control ticks.
 
 PA `analyze` and `propose` operations are followed, for proposed/no-change outcomes,
 by PA's owner-validated `candidate` operation. Returned exact capture metadata,

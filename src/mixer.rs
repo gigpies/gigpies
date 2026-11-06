@@ -198,13 +198,111 @@ pub enum ProcessError {
     ClockExhausted,
     Faulted,
 }
+/// Returned ownership is destroyed by the controller after observing the receipt.
+#[derive(Debug)]
+pub(crate) struct SourceRetirement {
+    pub completion: Option<Completion>,
+    _storage: Option<Pending>,
+}
 /// Owns the candidate until commit, then the retired topology until controller
 /// destruction. Applying never allocates, validates strings, or destroys ownership.
 #[derive(Debug)]
 pub struct PreparedOutputPatch {
     topology: crate::topology::EngineTopology,
     base: crate::topology::EngineTopology,
+    publication: crate::topology::EngineTopology,
     applied: bool,
+}
+impl PreparedOutputPatch {
+    /// Controller preparation needs only the last acknowledged topology.
+    pub(crate) fn for_topology(
+        base: &crate::topology::EngineTopology,
+        outputs: Vec<crate::topology::OutputPort>,
+    ) -> Result<Self> {
+        let mut topology = base.clone();
+        topology.outputs = outputs;
+        topology.map_revision = topology
+            .map_revision
+            .checked_add(1)
+            .ok_or("map exhausted")?;
+        topology.validate(crate::topology::ResourceBudget::default())?;
+        Ok(Self {
+            publication: topology.clone(),
+            topology,
+            base: base.clone(),
+            applied: false,
+        })
+    }
+    /// Available only after source application. This copy was prepared off-source.
+    pub(crate) fn applied_topology(&self) -> Option<&crate::topology::EngineTopology> {
+        self.applied.then_some(&self.publication)
+    }
+}
+/// Controller-prepared aux storage and at most one latest update per bus.
+/// Applied packets retain all allocations until controller retirement.
+#[derive(Debug, Default)]
+pub(crate) struct PreparedFxSends {
+    storage: Option<Vec<[Ramp; 4]>>,
+    levels: [Option<Vec<f64>>; 4],
+}
+impl PreparedFxSends {
+    pub(crate) fn enable(&mut self, topology: &crate::topology::EngineTopology) -> Result<()> {
+        if self.storage.is_some() {
+            return Ok(());
+        }
+        let budget = crate::topology::ResourceBudget::default();
+        let core = topology.validate(budget)?;
+        let bytes = topology
+            .inputs
+            .len()
+            .checked_mul(4 * size_of::<Ramp>())
+            .and_then(|n| n.checked_add(size_of::<[[f64; 96]; 4]>()))
+            .and_then(|n| n.checked_add(core.estimated_bytes))
+            .ok_or("FX aux memory overflow")?;
+        let work = topology
+            .inputs
+            .len()
+            .checked_mul(8)
+            .and_then(|n| n.checked_mul(topology.max_block_frames))
+            .and_then(|n| n.checked_add(core.sample_operations))
+            .ok_or("FX aux work overflow")?;
+        if bytes > budget.bytes || work > budget.sample_operations {
+            return Err("FX aux resource admission".into());
+        }
+        self.storage = Some(vec![[Ramp::fixed(0.); 4]; topology.inputs.len()]);
+        Ok(())
+    }
+    pub(crate) fn set(&mut self, inputs: usize, bus: usize, levels: &[f64]) -> Result<()> {
+        if bus >= 4
+            || levels.len() != inputs
+            || levels
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        {
+            return Err("FX aux send shape/range".into());
+        }
+        self.levels[bus] = Some(levels.to_vec());
+        Ok(())
+    }
+}
+/// Copied output envelope; evaluating it never reads the active mixer.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OutputObservation {
+    faulted: bool,
+    armed: bool,
+    gain: Ramp,
+}
+impl OutputObservation {
+    pub(crate) fn gain_at(self, frame: u64) -> f64 {
+        if self.faulted || !self.armed {
+            0.
+        } else {
+            self.gain.at(frame)
+        }
+    }
+    pub(crate) fn quiesced_at(self, frame: u64) -> bool {
+        !self.armed || (self.gain.target == 0. && frame >= self.gain.end)
+    }
 }
 #[derive(Debug)]
 pub struct Mixer {
@@ -225,6 +323,44 @@ pub struct Mixer {
     armed: bool,
     output_gain: Ramp,
     topology: crate::topology::EngineTopology,
+}
+/// Preallocated, coherent observation of one completed source quantum. Storage
+/// dimensions are fixed at startup; publishing never allocates or drops DSP.
+#[derive(Debug, Clone)]
+pub(crate) struct SourceObservation {
+    pub frame: u64,
+    pub faulted: bool,
+    pub output: OutputObservation,
+    pub fx_aux_enabled: bool,
+    pub fx_sends: Vec<[f64; 4]>,
+    pub current: Vec<Vec<f64>>,
+    pub targets: Vec<Vec<f64>>,
+    pub processing: Vec<(
+        crate::channel_processing::Config,
+        crate::channel_processing::Config,
+        u32,
+        Option<i32>,
+    )>,
+    pub gates: Vec<Option<crate::gate::SourceObservation>>,
+    pub sends: Vec<Vec<(crate::sends_wire::Tap, crate::sends_wire::Tap, u32)>>,
+}
+impl SourceObservation {
+    pub fn new(mixer: &Mixer) -> Self {
+        let mut value = Self {
+            frame: mixer.frame(),
+            faulted: mixer.faulted(),
+            output: mixer.output_observation(),
+            fx_aux_enabled: !mixer.fx_sends.is_empty(),
+            fx_sends: vec![[0.; 4]; mixer.input_count()],
+            current: mixer.coefficients(),
+            targets: mixer.targets(),
+            processing: mixer.processing_observations(),
+            gates: vec![None; mixer.input_count()],
+            sends: mixer.send_observations(),
+        };
+        mixer.observe_into(&mut value);
+        value
+    }
 }
 impl Default for Mixer {
     fn default() -> Self {
@@ -281,26 +417,46 @@ impl Mixer {
         if !self.fx_sends.is_empty() {
             return Ok(());
         }
-        let budget = crate::topology::ResourceBudget::default();
-        let core = self.topology.validate(budget)?;
-        let bytes = self
-            .input_count()
-            .checked_mul(4 * size_of::<Ramp>())
-            .and_then(|n| n.checked_add(size_of::<[[f64; 96]; 4]>()))
-            .and_then(|n| n.checked_add(core.estimated_bytes))
-            .ok_or("FX aux memory overflow")?;
-        let work = self
-            .input_count()
-            .checked_mul(8)
-            .and_then(|n| n.checked_mul(self.topology.max_block_frames))
-            .and_then(|n| n.checked_add(core.sample_operations))
-            .ok_or("FX aux work overflow")?;
-        if bytes > budget.bytes || work > budget.sample_operations {
-            return Err("FX aux resource admission".into());
-        }
-        self.fx_sends = vec![[Ramp::fixed(0.); 4]; self.input_count()];
+        let mut prepared = PreparedFxSends::default();
+        prepared.enable(&self.topology)?;
+        self.fx_sends = prepared.storage.take().unwrap();
         Ok(())
     }
+    pub(crate) fn accepts_fx_sends(&self, prepared: &PreparedFxSends) -> bool {
+        if prepared.storage.is_none() && prepared.levels.iter().all(Option::is_none) {
+            return true;
+        }
+        let inputs = self.input_count();
+        self.clock.checked_add(RAMP_FRAMES).is_some()
+            && prepared.storage.as_ref().is_none_or(|v| v.len() == inputs)
+            && prepared.levels.iter().flatten().all(|v| v.len() == inputs)
+            && (!self.fx_sends.is_empty() || prepared.storage.is_some())
+    }
+    /// Validation precedes every mutation; replaced storage stays in the packet.
+    pub(crate) fn apply_fx_sends(&mut self, prepared: &mut PreparedFxSends) -> bool {
+        if !self.accepts_fx_sends(prepared) {
+            return false;
+        }
+        if self.fx_sends.is_empty()
+            && let Some(storage) = &mut prepared.storage
+        {
+            std::mem::swap(&mut self.fx_sends, storage);
+        }
+        for (bus, levels) in prepared.levels.iter().enumerate() {
+            if let Some(levels) = levels {
+                for (row, &target) in self.fx_sends.iter_mut().zip(levels) {
+                    row[bus] = Ramp {
+                        start: row[bus].at(self.clock),
+                        target,
+                        begin: self.clock,
+                        end: self.clock + RAMP_FRAMES,
+                    };
+                }
+            }
+        }
+        true
+    }
+
     pub(crate) fn inherit_fx_send_intent(&mut self, previous: &Self) -> Result<()> {
         if previous.fx_sends.is_empty() {
             return Ok(());
@@ -351,6 +507,13 @@ impl Mixer {
     }
     pub fn operator_tap(&self) -> &[f64; 96] {
         &self.operator_samples
+    }
+    pub(crate) fn output_observation(&self) -> OutputObservation {
+        OutputObservation {
+            faulted: self.fault,
+            armed: self.armed,
+            gain: self.output_gain,
+        }
     }
     pub fn output_safety_gain(&self, frame: u64) -> f64 {
         if self.fault || !self.armed {
@@ -451,18 +614,7 @@ impl Mixer {
         &self,
         outputs: Vec<crate::topology::OutputPort>,
     ) -> Result<PreparedOutputPatch> {
-        let mut topology = self.topology.clone();
-        topology.outputs = outputs;
-        topology.map_revision = topology
-            .map_revision
-            .checked_add(1)
-            .ok_or("map exhausted")?;
-        topology.validate(crate::topology::ResourceBudget::default())?;
-        Ok(PreparedOutputPatch {
-            topology,
-            base: self.topology.clone(),
-            applied: false,
-        })
+        PreparedOutputPatch::for_topology(&self.topology, outputs)
     }
     pub fn apply_output_patch(
         &mut self,
@@ -575,13 +727,24 @@ impl Mixer {
             .ok_or("clock exhausted".into())
     }
     pub fn schedule(&mut self, prepared: Prepared, ticket: u64) -> Result<u64> {
+        self.schedule_retained(prepared, ticket)
+            .map_err(|(reason, _)| reason.into())
+    }
+    /// Numeric source admission retains rejected storage for controller retirement.
+    /// Keep the bounded value inline: boxing a refusal would allocate on source.
+    #[allow(clippy::result_large_err)]
+    pub(crate) fn schedule_retained(
+        &mut self,
+        prepared: Prepared,
+        ticket: u64,
+    ) -> std::result::Result<u64, (&'static str, Prepared)> {
         if prepared.changes.len() != self.input_count()
             || prepared
                 .changes
                 .iter()
                 .any(|r| r.len() != 4 + self.monitor_count())
         {
-            return Err("prepared shape".into());
+            return Err(("prepared shape", prepared));
         }
         if self.pending.is_some()
             || self.retired.is_some()
@@ -589,12 +752,21 @@ impl Mixer {
             || (prepared.processing.is_some() && !self.processing_ready())
             || (prepared.send.is_some() && !self.sends_ready())
         {
-            return Err("capacity".into());
+            return Err(("capacity", prepared));
         }
-        let frame = self.next_boundary()?;
-        frame.checked_add(RAMP_FRAMES).ok_or("clock exhausted")?;
+        let Some(frame) = self
+            .clock
+            .checked_div(48)
+            .and_then(|n| n.checked_add(1))
+            .and_then(|n| n.checked_mul(48))
+        else {
+            return Err(("clock exhausted", prepared));
+        };
+        if frame.checked_add(RAMP_FRAMES).is_none() {
+            return Err(("clock exhausted", prepared));
+        }
         if ticket == 0 {
-            return Err("ticket".into());
+            return Err(("ticket", prepared));
         }
         self.pending = Some(Pending {
             prepared,
@@ -611,9 +783,60 @@ impl Mixer {
             false
         }
     }
+    /// Reject a prepared commit on the source owner without destroying its
+    /// storage. The occupied retirement slot prevents another admission until
+    /// the controller observes and retires this outcome.
+    pub(crate) fn cancel_for_render(&mut self, ticket: u64) -> bool {
+        if self.retired.is_none() && self.pending.as_ref().is_some_and(|p| p.ticket == ticket) {
+            self.retired = self.pending.take();
+            true
+        } else {
+            false
+        }
+    }
+    pub(crate) fn take_source_retirement(&mut self) -> SourceRetirement {
+        SourceRetirement {
+            completion: self.completion.take(),
+            _storage: self.retired.take(),
+        }
+    }
     pub fn take_completion(&mut self) -> Option<Completion> {
         self.retired.take(); // control-side destruction, never inside render
         self.completion.take()
+    }
+    pub(crate) fn observe_into(&self, observation: &mut SourceObservation) {
+        observation.frame = self.clock;
+        observation.faulted = self.fault;
+        observation.output = self.output_observation();
+        observation.fx_aux_enabled = !self.fx_sends.is_empty();
+        for (i, row) in self.ramps.iter().enumerate() {
+            observation.fx_sends[i] = self
+                .fx_sends
+                .get(i)
+                .map_or([0.; 4], |sends| sends.map(|send| send.target));
+            for (j, ramp) in row.iter().enumerate() {
+                observation.current[i][j] = ramp.at(self.clock);
+                observation.targets[i][j] = ramp.target;
+            }
+            observation.processing[i] = self.processing[i].observation(self.clock, self.fault);
+            observation.gates[i] = if self.fault {
+                None
+            } else {
+                self.processing[i].gate_source_observation(self.clock)
+            };
+            for (j, send) in self.sends[i].iter().enumerate() {
+                let remaining = send.end.saturating_sub(self.clock) as u32;
+                observation.sends[i][j] = (
+                    if remaining == 0 {
+                        send.target
+                    } else {
+                        send.current
+                    },
+                    send.target,
+                    remaining,
+                );
+            }
+        }
     }
     pub fn coefficients(&self) -> Vec<Vec<f64>> {
         self.ramps

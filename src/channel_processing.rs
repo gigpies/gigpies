@@ -227,6 +227,13 @@ impl Default for Strip {
     }
 }
 impl Strip {
+    pub(crate) fn gate_source_observation(
+        &self,
+        frame: u64,
+    ) -> Option<crate::gate::SourceObservation> {
+        (frame >= self.end && !self.target.prepared.config.gate.is_default())
+            .then(|| self.gate.source_observation())
+    }
     pub(crate) fn gate_observation(&self, frame: u64) -> Option<crate::gate::Observation> {
         (frame >= self.end && !self.target.prepared.config.gate.is_default())
             .then(|| self.gate.observation())

@@ -16,13 +16,20 @@ impl LocalAudio {
         &mut self,
         config: crate::measurement_owner::Config,
     ) -> Result<()> {
-        if self.frame() != 0 || self.measurement.is_some() || self.topology().is_legacy() {
+        if self.frame() != 0
+            || self.render_graph.is_some()
+            || self.source_executor.is_some()
+            || self.measurement.is_some()
+            || self.topology().is_legacy()
+        {
             return Err("measurement startup requires configured software source".into());
         }
         if self.topology().measurement_slots.is_empty() {
             return Err("measurement requires explicit reserved capture slot".into());
         }
-        self.measurement = Some(State::new(config)?);
+        let mut state = State::new(config)?;
+        self.source.measurement = Some(state.detach_capture()?);
+        self.measurement = Some(state);
         Ok(())
     }
     pub fn measurement_current_basis(&self) -> Result<Basis> {
@@ -297,7 +304,7 @@ impl LocalAudio {
             );
         }
     }
-    pub(super) fn poll_measurement(&mut self, now: u64) {
+    pub(super) fn validate_measurement(&mut self, now: u64) {
         let invalid: Vec<_> = self.measurement.as_ref().map_or_else(Vec::new, |s| {
             s.guards()
                 .filter_map(|(id, auth, b)| {
@@ -317,18 +324,12 @@ impl LocalAudio {
             for (id, reason) in invalid {
                 s.invalidate(&id, reason)
             }
-            s.poll(now);
         }
     }
-    pub(super) fn offer_measurement(&mut self, epoch: u64, frame: u64, capture: &[f64]) {
-        let valid = self
-            .measurement
-            .as_ref()
-            .and_then(|s| s.active_basis())
-            .is_none_or(|b| self.measurement_basis_valid(b));
-        let map = self.topology().map_revision;
+    pub(super) fn poll_measurement(&mut self, now: u64) {
+        self.validate_measurement(now);
         if let Some(s) = &mut self.measurement {
-            s.offer(epoch, map, frame, capture, valid);
+            s.poll(now);
         }
     }
 }

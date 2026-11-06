@@ -29,6 +29,8 @@ struct Pending {
     permitted: bool,
     source_applied: bool,
     brain_applied: bool,
+    writer_fence: PolicyFence,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl HostAuthority {
     pub(super) fn aux_mode(&self) -> bool {
@@ -54,6 +56,8 @@ impl HostAuthority {
         ));
     }
     fn aux_finish(&mut self, p: Pending, state: &str, reason: Option<String>) {
+        p.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
         let v = Self::aux_reply(
             &p.request,
             state,
@@ -95,7 +99,6 @@ impl HostAuthority {
                 config["sends"] = json!(
                     self.provider
                         .engine()
-                        .mixer()
                         .fx_sends(bus)
                         .ok_or("FX aux source sends unavailable")?
                 );
@@ -164,6 +167,9 @@ impl HostAuthority {
         value: Value,
         now: u64,
     ) -> Result<Value> {
+        if self.source_clock_status.is_some() {
+            self.provider.service_source_clock(now)?;
+        }
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Envelope {
@@ -236,6 +242,9 @@ impl HostAuthority {
                 apply_frame,
                 observation,
             } => {
+                if self.source_clock_status.is_some() {
+                    self.tick_aux(now)?;
+                }
                 self.validate_aux_observation(&observation)?;
                 let p = self
                     .aux
@@ -261,12 +270,7 @@ impl HostAuthority {
                     }
                 }
                 if !p.mutation.panic
-                    && self
-                        .provider
-                        .engine_mut()
-                        .mixer()
-                        .fx_sends(p.mutation.bus)
-                        .as_ref()
+                    && self.provider.engine_mut().fx_sends(p.mutation.bus).as_ref()
                         != Some(&actual.sends)
                 {
                     return Err("FX aux source send readback mismatch".into());
@@ -346,11 +350,14 @@ impl HostAuthority {
                 }
             }
             let descriptor = o.descriptor.clone();
-            let frame = self
-                .provider
-                .frame()
-                .checked_add(4800)
-                .ok_or("FX aux frame exhausted")?;
+            let frame = if self.source_clock_status.is_some() {
+                self.provider.remote_target_frame(4800)?
+            } else {
+                self.provider
+                    .frame()
+                    .checked_add(4800)
+                    .ok_or("FX aux frame exhausted")?
+            };
             let ticket = self
                 .aux
                 .ticket
@@ -391,6 +398,8 @@ impl HostAuthority {
                 permitted: false,
                 source_applied: false,
                 brain_applied: false,
+                writer_fence: context.audio_fence(),
+                cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             Ok(())
         })();
@@ -400,9 +409,29 @@ impl HostAuthority {
         })
     }
     pub(super) fn tick_aux(&mut self, now: u64) -> Result<()> {
+        let completion = if self.source_clock_status.is_some() {
+            self.provider.take_remote_fx_completion()?
+        } else {
+            None
+        };
         let Some(mut p) = self.aux.pending.take() else {
             return Ok(());
         };
+        if let Some((ticket, applied)) = completion.filter(|(ticket, _)| *ticket >= p.ticket) {
+            if ticket > p.ticket {
+                self.aux.pending = Some(p);
+                return Err("FX aux source receipt identity".into());
+            }
+            if !applied {
+                self.aux_finish(
+                    p,
+                    "unknown",
+                    Some("FX aux source application refused".into()),
+                );
+                return Ok(());
+            }
+            p.source_applied = true;
+        }
         let frame = self.provider.frame();
         let valid = self
             .aux
@@ -422,7 +451,7 @@ impl HostAuthority {
                     .external_matches(&p.request, &p.fingerprint))
             || now >= p.deadline
             || (!p.permitted && frame >= p.frame)
-            || (!p.source_applied && frame > p.frame)
+            || (self.source_clock_status.is_none() && !p.source_applied && frame > p.frame)
         {
             self.provider
                 .engine_mut()
@@ -446,10 +475,69 @@ impl HostAuthority {
             return Ok(());
         }
         if p.prepared && !p.permitted {
-            self.provider
-                .engine_mut()
-                .schedule_fx_external(&p.request, &p.fingerprint, frame)?;
-            let reply = self.provider.engine_mut().commit_external(now, || Ok(()))?;
+            let reply = if self.source_clock_status.is_some() {
+                let fences = [
+                    p.writer_fence.clone(),
+                    self.aux
+                        .owner
+                        .as_ref()
+                        .ok_or("FX aux owner lost")?
+                        .audio_fence(),
+                ];
+                let mut sends = crate::mixer::PreparedFxSends::default();
+                if let Some(c) = &p.mutation.configuration_json {
+                    let c: owner::Configuration =
+                        serde_json::from_str(c).map_err(|e| e.to_string())?;
+                    sends.set(
+                        self.provider.topology().inputs.len(),
+                        p.mutation.bus,
+                        &c.sends,
+                    )?;
+                }
+                let action = crate::mixer_control::source::RemoteFxSends {
+                    ticket: p.ticket,
+                    frame: p.frame,
+                    sends,
+                    fences: fences.clone(),
+                    expires: std::time::Instant::now()
+                        + std::time::Duration::from_millis(p.deadline.saturating_sub(now)),
+                    cancelled: p.cancelled.clone(),
+                    result: None,
+                };
+                self.provider.clocked_remote_permission(
+                    now,
+                    &p.request,
+                    &p.fingerprint,
+                    p.frame,
+                    fences,
+                    Some(action),
+                )
+            } else {
+                self.provider.engine_mut().schedule_fx_external(
+                    &p.request,
+                    &p.fingerprint,
+                    frame,
+                )?;
+                self.provider.engine_mut().commit_external(now, || Ok(()))
+            };
+            let reply = match reply {
+                Ok(reply) => reply,
+                Err(error) => {
+                    self.provider
+                        .engine_mut()
+                        .cancel_fx_external(&p.request, &p.fingerprint);
+                    if let Some(d) = self.descriptor.as_ref() {
+                        self.aux_message(
+                            d.session.0,
+                            owner::Command::Cancel {
+                                ticket: Counter(p.ticket),
+                            },
+                        );
+                    }
+                    self.aux_finish(p, "rejected", Some(error));
+                    return Ok(());
+                }
+            };
             if reply.kind != "applied" {
                 if let Some(d) = self.descriptor.as_ref() {
                     self.aux_message(
@@ -473,7 +561,11 @@ impl HostAuthority {
                 },
             );
         }
-        if p.permitted && !p.source_applied && frame == p.frame {
+        if self.source_clock_status.is_none()
+            && p.permitted
+            && !p.source_applied
+            && frame == p.frame
+        {
             if let Some(c) = &p.mutation.configuration_json {
                 let c: owner::Configuration = serde_json::from_str(c).map_err(|e| e.to_string())?;
                 self.provider
@@ -578,7 +670,11 @@ mod tests {
     }
     impl Harness {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!("fx-aux-remote-{}", std::process::id()));
+            Self::new_mode(false)
+        }
+        fn new_mode(clocked: bool) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("fx-aux-remote-{}-{clocked}", std::process::id()));
             std::fs::create_dir(&path).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
             let mut provider = LocalAudio::bind_configured(
@@ -601,6 +697,10 @@ mod tests {
             let owner = policy.authenticate(b"aux-owner", 12).unwrap();
             let writer = policy.authenticate(b"aux-owner", 13).unwrap();
             let mut host = HostAuthority::new(provider, 1).unwrap();
+            if clocked {
+                host.start_source_clock(0, std::time::Duration::from_millis(2), 400)
+                    .unwrap();
+            }
             let ids = owner::channel_ids();
             let mut streams = grouped_streams(MediaRole::FxSend, &ids, 48, 0, 1, 1100).unwrap();
             streams.extend(
@@ -683,7 +783,8 @@ mod tests {
                 .process_source(self.now, 9, frame, &capture, &mut self.last)
                 .unwrap();
             self.now += 1;
-            while let Some(bytes) = self.host.outgoing.pop_front() {
+            self.host.wait_source_encoded();
+            while let Some(bytes) = self.host.poll_media(&self.owner).unwrap() {
                 let packet = Packet::parse(&bytes).unwrap();
                 if let Some((frame, input)) = self.receiver.push(packet).unwrap() {
                     let mut wet = [0.; 384];
@@ -722,6 +823,79 @@ mod tests {
             c.sends[bus] = 1.;
             json!({"contract":wire::CONTRACT,"version":1,"show_id":SHOW,"module":"audio","epoch":"9","writer":self.writer.writer(),"lease":self.lease,"request_id":id.to_string(),"expected_revision":s["revision"],"kind":"fx_aux_configure","body":{"bus":bus,"map_revision":s["map_revision"],"library_sha256":s["library_sha256"],"owner_binding":s["owner_binding"],"expected_generation":s["buses"][bus]["generation"],"configuration_json":serde_json::to_string(&c).unwrap(),"panic":false}})
         }
+    }
+    #[test]
+    #[ignore = "GP_FX_LIBRARY actual palette and autonomous source/remote preparation"]
+    fn actual_clocked_remote_aux_applies_during_controller_stall() {
+        let mut h = Harness::new_mode(true);
+        h.host.service_source_clock(0).unwrap();
+        // The owner must have observed a source block before it can prepare a
+        // future source-frame mutation (its initial timeline is unavailable).
+        h.brain.process(0, &[0.; 384], &mut [0.; 384]).unwrap();
+        let observation = h.brain.observation().unwrap();
+        h.message(owner::Message::Observe { observation });
+        let request = h.edit(0, 2);
+        assert_eq!(
+            h.host.dispatch_aux(&h.writer, request, 0).unwrap()["state"],
+            "preparing"
+        );
+        let command = h.host.poll_aux(&h.owner).unwrap();
+        let command: owner::Command = serde_json::from_value(command["command"].clone()).unwrap();
+        let prepared = h.brain.command(command).unwrap().unwrap();
+        h.message(prepared);
+        h.host.service_source_clock(1).unwrap();
+        let pending = h
+            .host
+            .aux
+            .pending
+            .as_ref()
+            .unwrap_or_else(|| panic!("missing pending: {:?}", h.host.aux.deliveries));
+        assert!(pending.permitted);
+        let frame = pending.frame;
+        let command = h.host.poll_aux(&h.owner).unwrap();
+        let command: owner::Command = serde_json::from_value(command["command"].clone()).unwrap();
+        assert!(matches!(command, owner::Command::Permit { .. }));
+        h.brain.command(command).unwrap();
+        // The real source clock crosses the negotiated frame without any host
+        // service. The actual remote owner consumes the same source-frame identity
+        // below; no controller-time equality authorizes either mutation.
+        let status = h.host.source_clock_status.clone().unwrap();
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while status.blocks() * 48 <= frame + 2400 {
+            assert!(std::time::Instant::now() < limit);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        h.host.service_source_clock(300).unwrap();
+        assert!(h.host.aux.pending.as_ref().unwrap().source_applied);
+        assert_eq!(
+            h.host.provider.engine().fx_sends(0).unwrap(),
+            vec![1., 0., 0., 0.]
+        );
+        // Exercise actual native preparation/permit/application with contiguous
+        // source identities. This is control/source integration, not network timing.
+        let mut wet = [0.; 384];
+        for source in (48..=frame + 2400).step_by(48) {
+            h.brain.process(source, &[0.; 384], &mut wet).unwrap();
+        }
+        if let Some(message) = h.brain.poll().unwrap() {
+            h.message(message);
+        }
+        h.host.service_source_clock(301).unwrap();
+        assert!(h.host.aux.pending.is_none());
+        assert!(
+            h.host
+                .aux
+                .deliveries
+                .iter()
+                .any(|(_, v)| v["state"] == "accepted")
+        );
+        let report = h.host.finish_source_clock(&status).unwrap();
+        assert!(
+            report
+                .output_windows
+                .iter()
+                .any(|window| window.identity.remote_fx_applied == Some((1, frame)))
+        );
     }
     #[test]
     #[ignore = "GP_FX_LIBRARY actual palette, source/Brain grouped transport and wet sample acceptance"]

@@ -117,6 +117,74 @@ pub struct Capture {
     failed: Option<&'static str>,
     deadline: u64,
 }
+/// Source-only capture owner. Completed and cancelled buffers remain owned until
+/// the controller receives them; saturation never destroys storage in `offer`.
+pub struct CaptureSource {
+    incoming: rtrb::Consumer<(u64, Box<Capture>)>,
+    returned: rtrb::Producer<(u64, Box<Capture>)>,
+    active: Option<(u64, Box<Capture>)>,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    received: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+struct CaptureControl {
+    incoming: rtrb::Producer<(u64, Box<Capture>)>,
+    returned: rtrb::Consumer<(u64, Box<Capture>)>,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    received: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    active: Option<(u64, Meta, usize, u64)>,
+    outstanding: bool,
+}
+impl CaptureSource {
+    pub fn offer(&mut self, epoch: u64, map: u64, first: u64, raw: &[f64], valid: bool) {
+        use std::sync::atomic::Ordering;
+        if self.active.is_none() {
+            self.active = self.incoming.pop().ok();
+        }
+        if let Some((generation, c)) = &mut self.active {
+            if *generation != self.generation.load(Ordering::Acquire) {
+                c.failed = Some("capture cancelled");
+            } else {
+                c.offer(epoch, map, first, raw, valid);
+                self.received.store(c.reference.len(), Ordering::Release);
+            }
+            if c.failed.is_some() || c.reference.len() == c.samples {
+                let completed = self.active.take().unwrap();
+                if let Err(rtrb::PushError::Full(completed)) = self.returned.push(completed) {
+                    self.active = Some(completed);
+                }
+            }
+        }
+    }
+}
+impl Capture {
+    fn offer(&mut self, epoch: u64, map: u64, first: u64, raw: &[f64], basis_valid: bool) {
+        let c = self;
+        if c.failed.is_some() || c.reference.len() == c.samples {
+            return;
+        }
+        if !basis_valid
+            || epoch != c.meta.source_epoch.0
+            || map != c.meta.map_revision.0
+            || first != c.next
+            || raw.len() != 48 * c.channels
+        {
+            c.failed = Some("capture source discontinuity");
+            return;
+        }
+        let count = (c.samples - c.reference.len()).min(48);
+        for frame in 0..count {
+            let a = raw[frame * c.channels + c.reference_slot];
+            let b = raw[frame * c.channels + c.mic_slot];
+            if !a.is_finite() || !b.is_finite() || a.abs() >= 1. || b.abs() >= 1. {
+                c.failed = Some("capture clipped or nonfinite");
+                return;
+            }
+            c.reference.push(a);
+            c.mic.push(b);
+        }
+        c.next = c.next.saturating_add(48);
+    }
+}
 pub enum Action {
     Start(Box<Capture>),
     Cancel(String),
@@ -156,7 +224,17 @@ pub struct State {
     pub records: VecDeque<Record>,
     guards: VecDeque<(String, Guard)>,
     capture: Option<Box<Capture>>,
+    capture_control: Option<CaptureControl>,
     waiting: Option<Waiting>,
+}
+impl Drop for State {
+    fn drop(&mut self) {
+        if let Some(control) = &self.capture_control {
+            control
+                .generation
+                .store(u64::MAX, std::sync::atomic::Ordering::Release);
+        }
+    }
 }
 impl State {
     pub fn new(config: measurement_owner::Config) -> Result<Self> {
@@ -172,13 +250,55 @@ impl State {
             records: VecDeque::with_capacity(16),
             guards: VecDeque::with_capacity(16),
             capture: None,
+            capture_control: None,
             waiting: None,
         })
     }
+    /// Startup-only transfer; the source side has no worker, protocol or join handle.
+    pub fn detach_capture(&mut self) -> Result<CaptureSource> {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, AtomicUsize},
+        };
+        if self.busy() || self.capture_control.is_some() {
+            return Err("capture already active or detached".into());
+        }
+        let (send, incoming) = rtrb::RingBuffer::new(1);
+        let (returned, receive) = rtrb::RingBuffer::new(1);
+        let generation = Arc::new(AtomicU64::new(1));
+        let received = Arc::new(AtomicUsize::new(0));
+        self.capture_control = Some(CaptureControl {
+            incoming: send,
+            returned: receive,
+            generation: generation.clone(),
+            received: received.clone(),
+            active: None,
+            outstanding: false,
+        });
+        Ok(CaptureSource {
+            incoming,
+            returned,
+            active: None,
+            generation,
+            received,
+        })
+    }
     pub fn busy(&self) -> bool {
-        self.capture.is_some() || self.waiting.is_some()
+        self.capture.is_some()
+            || self.waiting.is_some()
+            || self.capture_control.as_ref().is_some_and(|c| c.outstanding)
     }
     pub fn progress(&self) -> Option<crate::measurement_wire::Progress> {
+        if let Some(control) = &self.capture_control {
+            return control.active.as_ref().map(|(_, meta, samples, _)| {
+                crate::measurement_wire::Progress {
+                    id: meta.id.clone(),
+                    received_samples: control.received.load(std::sync::atomic::Ordering::Acquire),
+                    requested_samples: *samples,
+                    output_index: meta.output_index,
+                }
+            });
+        }
         self.capture
             .as_ref()
             .map(|c| crate::measurement_wire::Progress {
@@ -199,6 +319,12 @@ impl State {
         self.capture
             .as_ref()
             .map(|c| c.meta.id.as_str())
+            .or_else(|| {
+                self.capture_control
+                    .as_ref()
+                    .and_then(|c| c.active.as_ref())
+                    .map(|(_, m, _, _)| m.id.as_str())
+            })
             .or_else(|| self.waiting.as_ref().map(|w| w.id.as_str()))
     }
     pub fn guards(&self) -> impl Iterator<Item = (&str, &crate::control_model::Request, &Basis)> {
@@ -519,8 +645,27 @@ impl State {
                 if self.busy() {
                     return Err("measurement busy".into());
                 }
-                self.insert(c.meta.id.clone(), "capture", auth, basis);
-                self.capture = Some(c);
+                let id = c.meta.id.clone();
+                if let Some(control) = &mut self.capture_control {
+                    use std::sync::atomic::Ordering;
+                    let generation = control.generation.load(Ordering::Acquire);
+                    if generation == u64::MAX {
+                        return Err("capture generation exhausted".into());
+                    }
+                    let active = (generation, c.meta.clone(), c.samples, c.deadline);
+                    // Publish progress initialization before ownership transfer:
+                    // the source may consume the capture immediately after push.
+                    control.received.store(0, Ordering::Release);
+                    control
+                        .incoming
+                        .push((generation, c))
+                        .map_err(|_| "capture admission full")?;
+                    control.active = Some(active);
+                    control.outstanding = true;
+                } else {
+                    self.capture = Some(c);
+                }
+                self.insert(id, "capture", auth, basis);
                 Ok(())
             }
             Action::Cancel(id) => {
@@ -614,6 +759,15 @@ impl State {
     pub fn invalidate(&mut self, id: &str, reason: &str) {
         if self.active_id() == Some(id) {
             self.worker.cancel();
+            if let Some(control) = &mut self.capture_control {
+                // Independent closure: no queue capacity is needed to invalidate.
+                let _ = control.generation.fetch_update(
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                    |v| Some(v.saturating_add(1)),
+                );
+                control.active = None;
+            }
             self.capture = None;
             self.waiting = None;
         }
@@ -652,36 +806,38 @@ impl State {
     }
     /// Only bounded copies/flags. No allocation, lock, spawn, I/O or buffer retirement.
     pub fn offer(&mut self, epoch: u64, map: u64, first: u64, raw: &[f64], basis_valid: bool) {
-        let Some(c) = self.capture.as_mut() else {
-            return;
-        };
-        if c.failed.is_some() || c.reference.len() == c.samples {
-            return;
+        if let Some(c) = self.capture.as_mut() {
+            c.offer(epoch, map, first, raw, basis_valid);
         }
-        if !basis_valid
-            || epoch != c.meta.source_epoch.0
-            || map != c.meta.map_revision.0
-            || first != c.next
-            || raw.len() != 48 * c.channels
-        {
-            c.failed = Some("capture source discontinuity");
-            return;
-        }
-        let count = (c.samples - c.reference.len()).min(48);
-        for frame in 0..count {
-            let a = raw[frame * c.channels + c.reference_slot];
-            let b = raw[frame * c.channels + c.mic_slot];
-            if !a.is_finite() || !b.is_finite() || a.abs() >= 1. || b.abs() >= 1. {
-                c.failed = Some("capture clipped or nonfinite");
-                return;
-            }
-            c.reference.push(a);
-            c.mic.push(b);
-        }
-        c.next = c.next.saturating_add(48);
     }
     /// Called only in the control pump; retires buffers and observes worker completions.
     pub fn poll(&mut self, now: u64) {
+        let expired = self
+            .capture_control
+            .as_ref()
+            .and_then(|c| c.active.as_ref())
+            .filter(|(_, _, _, deadline)| now > *deadline)
+            .map(|(_, m, _, _)| m.id.clone());
+        if let Some(id) = expired {
+            self.invalidate(&id, "capture deadline");
+        }
+        if let Some(control) = &mut self.capture_control
+            && let Ok((generation, c)) = control.returned.pop()
+        {
+            control.outstanding = false;
+            if control
+                .active
+                .as_ref()
+                .is_some_and(|(g, _, _, _)| *g == generation)
+                && generation
+                    == control
+                        .generation
+                        .load(std::sync::atomic::Ordering::Acquire)
+            {
+                self.capture = Some(c);
+            }
+            control.active = None;
+        }
         if self
             .waiting
             .as_ref()
@@ -1167,6 +1323,70 @@ mod tests {
             samples: 32768,
             options: Options::default(),
         }
+    }
+    #[test]
+    fn detached_capture_retains_exact_completion_without_controller_pump() {
+        let mut s = state();
+        let mut source = s.detach_capture().unwrap();
+        let a = s.prepare(&start(), &basis(), &topology(), 0, 0).unwrap();
+        s.apply(a, auth(), basis()).unwrap();
+        let mut block = vec![0.; 48 * 17];
+        for f in 0..48 {
+            block[f * 17 + 2] = f as f64 / 100.;
+            block[f * 17 + 16] = -(f as f64) / 100.;
+        }
+        // No State method runs during source delivery, including completion.
+        for b in 0..1024 {
+            source.offer(1, 1, b * 48, &block, true);
+        }
+        assert!(s.busy());
+        assert_eq!(s.progress().unwrap().received_samples, 32768);
+        assert!(
+            s.prepare(&start(), &basis(), &topology(), 49152, 0)
+                .is_err()
+        );
+        let (_, c) = s.capture_control.as_mut().unwrap().returned.pop().unwrap();
+        assert_eq!(c.reference.len(), 32768);
+        assert_eq!(c.mic.len(), 32768);
+        assert!(c.failed.is_none());
+        for i in 0..32768 {
+            assert_eq!(c.reference[i], (i % 48) as f64 / 100.);
+            assert_eq!(c.mic[i], -((i % 48) as f64) / 100.);
+        }
+    }
+    #[test]
+    fn detached_cancel_fences_queued_start_and_requires_retirement_before_reuse() {
+        let mut s = state();
+        let mut source = s.detach_capture().unwrap();
+        let a = s.prepare(&start(), &basis(), &topology(), 0, 0).unwrap();
+        s.apply(a, auth(), basis()).unwrap();
+        s.invalidate("take-a", "cancelled");
+        assert!(s.busy(), "queued storage is still outstanding");
+        source.offer(1, 1, 0, &[0.1; 48 * 17], true);
+        assert_eq!(
+            s.capture_control
+                .as_ref()
+                .unwrap()
+                .received
+                .load(std::sync::atomic::Ordering::Acquire),
+            0
+        );
+        s.poll(0);
+        assert!(!s.busy());
+        assert_eq!(s.records[0].summary.state, "cancelled");
+        let mut command = start();
+        if let Command::CaptureStart { id, .. } = &mut command {
+            *id = "fresh".into();
+        }
+        let a = s.prepare(&command, &basis(), &topology(), 48, 0).unwrap();
+        s.apply(a, auth(), basis()).unwrap();
+        source.offer(1, 1, 48, &[0.1; 48 * 17], true);
+        assert_eq!(s.progress().unwrap().received_samples, 48);
+        s.invalidate("fresh", "source fault");
+        source.offer(1, 1, 96, &[0.1; 48 * 17], true);
+        s.poll(0);
+        assert!(!s.busy());
+        assert_eq!(s.records[1].summary.state, "invalidated");
     }
     #[test]
     fn capture_exact_reference_and_reserved_mic_no_buffer_growth() {

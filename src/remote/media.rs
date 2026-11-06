@@ -328,7 +328,7 @@ impl MediaRegistry {
             return Err("media peer/session/direction mismatch".into());
         }
         if let Some(cursor) = source_cursor {
-            if packet.spec().role == Role::WetReturn && packet.output_frame() < cursor {
+            if packet.spec().role == Role::WetReturn && packet.output_frame() <= cursor {
                 return Err("late wet media".into());
             }
             if packet.source_frame() > cursor.saturating_add(1536) {

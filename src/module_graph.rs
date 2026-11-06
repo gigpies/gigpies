@@ -215,7 +215,6 @@ impl ModuleStatus {
     }
 }
 struct Take {
-    recorder: Option<Recorder>,
     observer: Option<RecorderObserver>,
     status: RecordingStatus,
 }
@@ -236,7 +235,12 @@ pub enum ProcessError {
     Fx(i32),
     Pa(i32),
 }
-struct PaStorage {
+#[derive(Clone)]
+struct PaMetadata {
+    configuration_json: String,
+    program_buses: Vec<usize>,
+}
+pub(crate) struct PaStorage {
     input: Vec<f64>,
     output: Vec<f64>,
     configuration_json: String,
@@ -252,6 +256,9 @@ pub struct GraphPaPrepared {
     expected_generation: u64,
     expected_epoch: u64,
     expected_library_sha256: String,
+    preparation: Option<crate::host::pa_v2::PaPreparation>,
+    observation: Option<PaEqObservation>,
+    metadata: Option<PaMetadata>,
 }
 impl GraphPaPrepared {
     pub fn output_channels(&self) -> usize {
@@ -263,30 +270,222 @@ pub struct GraphEqPrepared {
     owner: crate::host::pa_v2::PreparedEq,
     metadata: String,
     expected_map: Vec<usize>,
+    accepted_metadata: String,
 }
+/// Exclusively owned PA readback/retirement packet. Allocate on the controller,
+/// capture on the source, then return ownership before formatting or preparing.
+pub(crate) struct PaEqObservation {
+    context: crate::host::pa_v2::EqContext,
+    retirement: crate::host::pa_v2::PreparedEq,
+    indices: Option<[usize; 2]>,
+    result: i32,
+    pa_status: std::result::Result<crate::host::pa_v2::Status, i32>,
+}
+impl PaEqObservation {
+    fn new(api: &crate::host::pa_v2::PaPreparation, map: &[usize]) -> Result<Self> {
+        let indices = (|| {
+            let mut indices = [0; 2];
+            for (bus, index) in indices.iter_mut().enumerate() {
+                let mut matches = map.iter().enumerate().filter(|(_, b)| **b == bus);
+                *index = matches.next()?.0;
+                if matches.next().is_some() {
+                    return None;
+                }
+            }
+            Some(indices)
+        })();
+        Ok(Self {
+            context: api.create_eq_context().map_err(|e| e.to_string())?,
+            retirement: api.eq_retirement_slot(),
+            indices,
+            result: -5,
+            pa_status: Err(-5),
+        })
+    }
+    fn status(&self) -> std::result::Result<crate::host::pa_v2::EqStatus, i32> {
+        if self.result != 0 {
+            return Err(self.result);
+        }
+        self.context.status()
+    }
+}
+pub(crate) mod source;
+use source::{ModuleObservation, ModuleSource};
+/// The compatibility facade never shares active state with a detached owner.
+/// Direct render methods require the source to have been restored first.
+struct SourceSlot(Option<ModuleSource>);
+impl std::ops::Deref for SourceSlot {
+    type Target = ModuleSource;
+    fn deref(&self) -> &ModuleSource {
+        self.0.as_ref().expect("module source detached")
+    }
+}
+impl std::ops::DerefMut for SourceSlot {
+    fn deref_mut(&mut self) -> &mut ModuleSource {
+        self.0.as_mut().expect("module source detached")
+    }
+}
+/// Exclusively transferred bounded lifecycle/observation packet. REC handles and
+/// native retirement allocations stay retained until controller consumption.
+pub(crate) struct ModuleExchange {
+    owner: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    epoch: u64,
+    start: Option<Recorder>,
+    stop: bool,
+    retired_recorder: Option<Recorder>,
+    activated_frame: Option<u64>,
+    observation: ModuleObservation,
+    pa: Option<PaEqObservation>,
+    pa_retirement: Option<crate::host::pa_v2::Prepared>,
+    retired_storage: Option<PaStorage>,
+    serviced: bool,
+    accepted: bool,
+}
+
 pub struct ModuleGraph {
     manifest: Manifest,
-    fx: Dsp,
-    pa: Dsp,
     take: Option<Take>,
     lifecycle: Option<Lifecycle>,
-    processed: u64,
-    source_fault: u32,
-    epoch: u64,
-    next: u64,
-    wet: [f64; FRAMES * 2],
-    sum: [f64; FRAMES * 2],
-    program: [f64; FRAMES * 2],
-    raw: Vec<f64>,
-    output: [f64; FRAMES * 6],
     last_poll: Option<u64>,
-    inputs: usize,
-    pa_v2: Option<crate::host::pa_v2::Pa>,
-    pa_storage: Option<PaStorage>,
-    pa_retired_storage: Option<PaStorage>,
-    pa_hold: bool,
+    source: SourceSlot,
+    observed: ModuleObservation,
+    fx_capabilities: FxCapabilities,
+    pa_descriptor: PaDescriptor,
+    pa_preparation: Option<crate::host::pa_v2::PaPreparation>,
+    pa_observed: Option<PaEqObservation>,
+    pa_metadata: Option<PaMetadata>,
+    prepared_recorder: Option<Recorder>,
+    returned_recorder: Option<Recorder>,
+    recorder_stop: bool,
+    exchange_pending: bool,
+    closure: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
+
 impl ModuleGraph {
+    /// Exclusive transfer; the facade retains only controller state and snapshots.
+    pub(crate) fn take_source(&mut self) -> Result<ModuleSource> {
+        if self.exchange_pending {
+            return Err("module exchange outstanding".into());
+        }
+        self.observe_pa();
+        self.source
+            .0
+            .take()
+            .ok_or("module source already detached".into())
+    }
+    pub(crate) fn restore_source(&mut self, source: ModuleSource) -> Result<()> {
+        if self.source.0.is_some()
+            || self.exchange_pending
+            || source.epoch != self.observed.epoch
+            || !std::sync::Arc::ptr_eq(&self.closure, &source.closure)
+        {
+            return Err("module source restore ownership/epoch".into());
+        }
+        self.source.0 = Some(source);
+        self.observe_pa();
+        Ok(())
+    }
+    /// Reserve exactly one return packet before publication. No source reference
+    /// is needed; all native storage here is allocated by the controller.
+    pub(crate) fn prepare_exchange(&mut self) -> Result<ModuleExchange> {
+        if self.exchange_pending {
+            return Err("module exchange outstanding".into());
+        }
+        let packet = ModuleExchange {
+            owner: self.closure.clone(),
+            epoch: self.observed.epoch,
+            start: self.prepared_recorder.take(),
+            stop: std::mem::take(&mut self.recorder_stop),
+            retired_recorder: None,
+            activated_frame: None,
+            observation: self.observed.clone(),
+            pa: self.pa_observed.take(),
+            pa_retirement: self
+                .pa_preparation
+                .as_ref()
+                .map(|api| api.retirement_slot()),
+            retired_storage: None,
+            serviced: false,
+            accepted: false,
+        };
+        self.exchange_pending = true;
+        Ok(packet)
+    }
+    /// Restore a packet refused before source service. No REC activation or PA
+    /// context capture occurred, so its reserved storage remains reusable.
+    pub(crate) fn cancel_exchange(&mut self, mut packet: ModuleExchange) -> Result<()> {
+        if !self.exchange_pending
+            || packet.serviced
+            || packet.epoch != self.observed.epoch
+            || !std::sync::Arc::ptr_eq(&self.closure, &packet.owner)
+            || self.prepared_recorder.is_some()
+            || self.pa_observed.is_some()
+        {
+            return Err("module exchange cancellation identity".into());
+        }
+        self.prepared_recorder = packet.start.take();
+        self.recorder_stop |= packet.stop;
+        self.pa_observed = packet.pa.take();
+        self.exchange_pending = false;
+        Ok(())
+    }
+    /// Consume only after exclusive source publication. Native destruction and
+    /// REC finalizer scheduling occur here, never in ModuleSource::exchange.
+    pub(crate) fn finish_exchange(&mut self, mut packet: ModuleExchange) -> Result<()> {
+        if !self.exchange_pending
+            || !packet.serviced
+            || !std::sync::Arc::ptr_eq(&self.closure, &packet.owner)
+        {
+            return Err("module exchange not completed".into());
+        }
+        self.exchange_pending = false;
+        if packet.accepted {
+            self.observed = packet.observation;
+        }
+        self.pa_observed = packet.pa.take();
+        if let (Some(observation), Some(api)) = (&mut self.pa_observed, &self.pa_preparation)
+            && !observation.retirement.is_empty()
+        {
+            // Exclusive return has completed. Dispose native retired ownership
+            // here and reserve an empty slot for the next source exchange.
+            observation.retirement = api.eq_retirement_slot();
+        }
+        if let Some(frame) = packet.activated_frame
+            && let Some(t) = &mut self.take
+        {
+            t.status.first_source_frame = Some(Counter(frame));
+            if t.status.state != "finalizing" {
+                t.status.state = "recording".into();
+            }
+        }
+        // Refused activation is retained in the packet until this controller
+        // can schedule finalization, including an epoch/fault cancellation.
+        if let Some(mut recorder) = packet.retired_recorder.take().or(packet.start.take()) {
+            if self.observed.recorder_cancel_code != 0 {
+                recorder.fault(self.observed.recorder_cancel_code);
+            }
+            if let Some(t) = &mut self.take {
+                t.status.state = "finalizing".into();
+            }
+            self.finish_worker(recorder)?;
+        }
+        Ok(())
+    }
+    fn service_attached_exchange(&mut self) -> Result<()> {
+        if self.source.0.is_none() || self.exchange_pending {
+            return Ok(());
+        }
+        let mut packet = self.prepare_exchange()?;
+        self.source.exchange(&mut packet);
+        self.finish_exchange(packet)
+    }
+    /// Explicit compatibility observation exchange after numeric source work.
+    /// Independent execution returns the same owned observation/context packet.
+    #[cfg(test)]
+    pub(crate) fn observe_after_render(&mut self) {
+        self.observe_pa();
+    }
+
     pub fn load(manifest: Manifest, epoch: u64, frame: u64) -> Result<Self> {
         Self::load_configured(manifest, epoch, frame, 8)
     }
@@ -315,12 +514,12 @@ impl ModuleGraph {
         {
             return Err("unsupported owner descriptor".into());
         }
-        Ok(Self {
-            manifest,
+        let closure = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let source = ModuleSource {
+            closure: closure.clone(),
+            library_identity: manifest.pa.library_sha256.as_bytes().try_into().unwrap(),
             fx,
             pa,
-            take: None,
-            lifecycle: None,
             processed: 0,
             source_fault: 0,
             epoch,
@@ -330,18 +529,41 @@ impl ModuleGraph {
             program: [0.; FRAMES * 2],
             raw: vec![0.; FRAMES * inputs],
             output: [0.; FRAMES * 6],
-            last_poll: None,
             inputs,
             pa_v2: None,
             pa_storage: None,
             pa_retired_storage: None,
             pa_hold: false,
+            recorder: None,
+            recording: false,
+            recorder_cancel_code: 0,
+        };
+        Ok(Self {
+            observed: source.observation(),
+            fx_capabilities: fc,
+            pa_descriptor: pd,
+            source: SourceSlot(Some(source)),
+            manifest,
+            take: None,
+            lifecycle: None,
+            last_poll: None,
+            pa_preparation: None,
+            pa_observed: None,
+            pa_metadata: None,
+            prepared_recorder: None,
+            returned_recorder: None,
+            recorder_stop: false,
+            exchange_pending: false,
+            closure,
         })
     }
     /// Off callback, whole-boundary quiescence. Recreates PA and resets FX. An
     /// active take remains under its original epoch and is marked incomplete.
     pub fn discontinuity(&mut self, epoch: u64, frame: u64) -> Result<()> {
-        if (self.pa_v2.is_some() || self.inputs != 8) && epoch <= self.epoch {
+        if self.source.0.is_none() || self.exchange_pending {
+            return Err("source recovery requires returned ownership".into());
+        }
+        if (self.source.pa_v2.is_some() || self.source.inputs != 8) && epoch <= self.source.epoch {
             return Err("fresh module source epoch required".into());
         }
         if epoch == 0 || !frame.is_multiple_of(48) {
@@ -349,7 +571,7 @@ impl ModuleGraph {
         }
         let pa = Dsp::load(&self.manifest.pa.library, "pa", 48).map_err(|e| e.to_string())?;
         // Controller-side recovery prepares first; a refusal preserves old state.
-        let recovered_v2 = if let Some(storage) = &self.pa_storage {
+        let recovered_v2 = if let Some(storage) = &self.source.pa_storage {
             Some(
                 crate::host::pa_v2::Pa::load(
                     &self.manifest.pa.library,
@@ -362,35 +584,51 @@ impl ModuleGraph {
         } else {
             None
         };
-        self.fx.reset();
-        self.pa = pa;
+        let recovered_preparation = recovered_v2.as_ref().map(|pa| pa.preparation());
+        let recovered_observation = recovered_preparation
+            .as_ref()
+            .filter(|api| api.detached_eq_available())
+            .map(|api| PaEqObservation::new(api, self.pa_program_buses()))
+            .transpose()?;
+        self.source.fx.reset();
+        self.source.pa = pa;
         self.retire_pa_changes();
-        self.pa_v2 = recovered_v2;
-        self.pa_hold = self.pa_hold || self.pa_v2.is_some() || self.inputs != 8;
-        if let Some(storage) = &mut self.pa_storage {
+        self.source.pa_v2 = recovered_v2;
+        self.pa_preparation = recovered_preparation;
+        self.pa_observed = recovered_observation;
+        self.source.pa_hold =
+            self.source.pa_hold || self.source.pa_v2.is_some() || self.source.inputs != 8;
+        if let Some(storage) = &mut self.source.pa_storage {
             storage.input.fill(0.);
             storage.output.fill(0.);
         }
         if let Some(t) = &mut self.take
-            && (self.lifecycle.is_some() || t.recorder.is_some())
+            && (self.lifecycle.is_some() || self.source.recorder.is_some())
         {
             t.status.state = "finalizing".into();
             if let Some(worker) = &mut self.lifecycle {
                 if worker.cancel_code == 0 {
-                    worker.cancel_code = 4;
+                    worker.cancel_code = if self.source.recorder_cancel_code != 0 {
+                        self.source.recorder_cancel_code
+                    } else {
+                        4
+                    };
                 }
-            } else if let Some(mut r) = t.recorder.take() {
+            } else if let Some(mut r) = self.source.recorder.take() {
                 r.fault(4);
                 self.finish_worker(r)?;
             }
         }
-        self.epoch = epoch;
-        self.next = frame;
-        self.source_fault = 0;
-        self.output.fill(0.);
+        self.source.epoch = epoch;
+        self.source.next = frame;
+        self.source.source_fault = 0;
+        self.source.recorder_cancel_code = 0;
+        self.closure.store(0, std::sync::atomic::Ordering::Release);
+        self.source.output.fill(0.);
+        self.observe_pa();
         Ok(())
     }
-    /// No allocation, locks, I/O or lifecycle/query calls. The same unprocessed
+    /// No allocation, locks, I/O or controller lifecycle calls. The same unprocessed
     /// eight-input block feeds recording and GP04; FOH alone feeds wet+dry→PA.
     pub fn process(
         &mut self,
@@ -420,10 +658,10 @@ impl ModuleGraph {
         self.process_interleaved_brain(epoch, frame, raw, mixed, buses, external_wet, None)
     }
     pub fn meter_main_pre_pa(&self) -> &[f64; FRAMES * 2] {
-        &self.sum
+        &self.source.sum
     }
     pub fn program_before_talkback(&self) -> &[f64; FRAMES * 2] {
-        &self.program
+        &self.source.program
     }
     #[allow(clippy::too_many_arguments)]
     pub fn process_interleaved_brain(
@@ -436,112 +674,29 @@ impl ModuleGraph {
         external_wet: Option<&[f64]>,
         talkback: Option<&[f64]>,
     ) -> std::result::Result<(), ProcessError> {
-        self.output.fill(0.);
-        if let Some(storage) = &mut self.pa_storage {
-            storage.output.fill(0.);
-        }
-        if raw.len() != FRAMES * self.inputs
-            || buses < 2
-            || buses.checked_mul(FRAMES) != Some(mixed.len())
-            || external_wet.is_some_and(|w| w.len() != FRAMES * 2)
-            || talkback.is_some_and(|v| v.len() != mixed.len() || v.iter().any(|x| !x.is_finite()))
-            || self
-                .pa_storage
-                .as_ref()
-                .is_some_and(|s| buses < s.total_buses)
-        {
-            self.mark_source_fault(7);
-            return Err(ProcessError::Source);
-        }
-        if epoch != self.epoch || frame != self.next || frame.checked_add(48).is_none() {
-            self.mark_source_fault(6);
-            return Err(ProcessError::Timeline);
-        }
-        if raw.iter().any(|v| {
-            !v.is_finite()
-                || *v < -1.
-                || *v > 8_388_607. / 8_388_608.
-                || (v * 8_388_608.).fract() != 0.
-        }) {
-            self.mark_source_fault(7);
-            return Err(ProcessError::Source);
-        }
-        for i in 0..FRAMES {
-            self.raw[i * self.inputs..(i + 1) * self.inputs]
-                .copy_from_slice(&raw[i * self.inputs..(i + 1) * self.inputs]);
-            self.sum[i * 2..i * 2 + 2].copy_from_slice(&mixed[i * buses..i * buses + 2]);
-        }
-        if let Some(t) = &mut self.take
-            && t.status.state == "recording"
-            && let Some(r) = &mut t.recorder
-        {
-            let _ = r.push(frame, &self.raw);
-        }
-        let fx = if let Some(wet) = external_wet {
-            self.wet.copy_from_slice(wet);
-            0
-        } else {
-            self.fx.process_result(&self.sum, &mut self.wet, 2)
-        };
-        if fx != 0 {
-            self.wet.fill(0.);
-        }
-        for i in 0..FRAMES * 2 {
-            self.sum[i] += self.wet[i];
-        }
-        self.program.copy_from_slice(&self.sum);
-        if let Some(tb) = talkback {
-            for f in 0..FRAMES {
-                self.sum[f * 2] += tb[f * buses];
-                self.sum[f * 2 + 1] += tb[f * buses + 1];
-            }
-        }
-        let pa = if let (Some(pa), Some(storage)) = (&mut self.pa_v2, &mut self.pa_storage) {
-            let count = storage.program_buses.len();
-            for i in 0..FRAMES {
-                for (channel, &bus) in storage.program_buses.iter().enumerate() {
-                    // Main buses include the actual wet return before owner
-                    // summing/crossover/protection; monitor buses remain explicit.
-                    storage.input[i * count + channel] = if bus < 2 {
-                        self.sum[i * 2 + bus]
-                    } else {
-                        mixed[i * buses + bus] + talkback.map_or(0., |tb| tb[i * buses + bus])
-                    };
-                }
-            }
-            pa.process(&storage.input, &mut storage.output, epoch, frame)
-        } else {
-            let result = self.pa.process_result(&self.sum, &mut self.output, 6);
-            if self.pa_hold {
-                self.output.fill(0.);
-            }
-            result
-        };
-        if pa != 0 {
-            self.output.fill(0.);
-            if let Some(storage) = &mut self.pa_storage {
-                storage.output.fill(0.);
-            }
-        }
-        self.next += 48;
-        self.processed = self.processed.saturating_add(1);
-        if pa != 0 {
-            Err(ProcessError::Pa(pa))
-        } else if fx != 0 {
-            Err(ProcessError::Fx(fx))
-        } else {
-            Ok(())
-        }
+        let result = self.source.process_interleaved_brain(
+            epoch,
+            frame,
+            raw,
+            mixed,
+            buses,
+            external_wet,
+            talkback,
+        );
+        self.observe_pa();
+        result
     }
     fn mark_source_fault(&mut self, code: u32) {
-        if self.source_fault == 0 {
-            self.source_fault = code;
+        let _ = self.closure.compare_exchange(
+            0,
+            code,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+        if let Some(source) = &mut self.source.0 {
+            source.mark_source_fault(code);
         }
-        if let Some(t) = &mut self.take
-            && let Some(r) = &mut t.recorder
-        {
-            r.fault(code);
-        }
+        self.observe_pa();
         if let Some(worker) = &mut self.lifecycle
             && worker.cancel_code == 0
         {
@@ -550,11 +705,27 @@ impl ModuleGraph {
     }
     pub fn quiesce_source(&mut self) -> Result<()> {
         self.mark_source_fault(6);
+        if self.source.0.is_none() {
+            self.recorder_stop = true;
+            if let Some(worker) = &mut self.lifecycle
+                && worker.cancel_code == 0
+            {
+                worker.cancel_code = 6;
+            }
+            if let Some(t) = &mut self.take
+                && t.status.state != "finalized"
+            {
+                t.status.state = "finalizing".into();
+            }
+            return Ok(());
+        }
         self.mute_pa()?;
         if let Some(t) = &mut self.take {
             if let Some(worker) = &mut self.lifecycle {
-                worker.cancel_code = 6;
-            } else if let Some(mut recorder) = t.recorder.take() {
+                if worker.cancel_code == 0 {
+                    worker.cancel_code = self.observed.recorder_cancel_code;
+                }
+            } else if let Some(mut recorder) = self.source.recorder.take() {
                 t.status.state = "finalizing".into();
                 recorder.fault(6);
                 self.finish_worker(recorder)?;
@@ -565,11 +736,14 @@ impl ModuleGraph {
     /// Initial convenience only: before processing, prepare stereo program
     /// buses. Runtime changes must use the retained boundary transaction below.
     pub fn configure_pa_v2(&mut self, json: &[u8]) -> Result<()> {
-        if self.processed != 0 || self.pa_v2.is_some() {
+        if self.source.0.is_none() {
+            return Err("initial PA configuration requires source ownership".into());
+        }
+        if self.source.processed != 0 || self.source.pa_v2.is_some() {
             return Err("initial PA configuration requires an unprocessed legacy graph".into());
         }
         let mut prepared = self.prepare_pa_change(json, vec![0, 1], 2)?;
-        let result = self.commit_pa_change(&mut prepared, self.epoch, self.next);
+        let result = self.commit_pa_change(&mut prepared, self.source.epoch, self.source.next);
         if result != 0 {
             return Err(format!("initial PA commit {result}"));
         }
@@ -584,7 +758,7 @@ impl ModuleGraph {
         program_buses: Vec<usize>,
         total_buses: usize,
     ) -> Result<GraphPaPrepared> {
-        if self.pa_retired_storage.is_some() {
+        if self.observed.pa_retirement_occupied {
             return Err("PA retirement reservation occupied".into());
         }
         if total_buses < 2
@@ -593,7 +767,7 @@ impl ModuleGraph {
         {
             return Err("PA program bus reference".into());
         }
-        let initial = if self.pa_v2.is_none() {
+        let initial = if self.observed.pa_v2_status.is_none() {
             Some(
                 crate::host::pa_v2::Pa::open(&self.manifest.pa.library)
                     .map_err(|e| e.to_string())?,
@@ -601,12 +775,17 @@ impl ModuleGraph {
         } else {
             None
         };
-        let pa = self
-            .pa_v2
+        let preparation = initial.as_ref().map(|pa| pa.preparation());
+        let api = self
+            .pa_preparation
             .as_ref()
-            .or(initial.as_ref())
-            .ok_or("PA unavailable")?;
-        let owner = pa.prepare(json).map_err(|e| e.to_string())?;
+            .or(preparation.as_ref())
+            .ok_or("PA preparation unavailable")?;
+        let owner = api.prepare(json).map_err(|e| e.to_string())?;
+        let observation = api
+            .detached_eq_available()
+            .then(|| PaEqObservation::new(api, &program_buses))
+            .transpose()?;
         let status = owner
             .status()
             .map_err(|e| format!("prepared PA status {e}"))?;
@@ -631,15 +810,23 @@ impl ModuleGraph {
             .map_err(|e| e.to_string())?
             .to_owned();
         let generation = self
-            .pa_v2
+            .pa_observed
             .as_ref()
-            .map(|p| p.status().map(|s| s.generation))
+            .map(|p| p.pa_status)
+            .or(self.observed.pa_v2_status)
+            .map(|status| status.map(|s| s.generation))
             .transpose()
-            .map_err(|e| format!("active PA status {e}"))?
+            .map_err(|e| format!("observed PA status {e}"))?
             .unwrap_or(0);
         Ok(GraphPaPrepared {
             owner,
             initial,
+            preparation,
+            observation,
+            metadata: Some(PaMetadata {
+                configuration_json: configuration_json.clone(),
+                program_buses: program_buses.clone(),
+            }),
             storage: Some(PaStorage {
                 input: vec![0.; input_samples],
                 output: vec![0.; output_samples],
@@ -648,7 +835,7 @@ impl ModuleGraph {
                 total_buses,
             }),
             expected_generation: generation,
-            expected_epoch: self.epoch,
+            expected_epoch: self.observed.epoch,
             expected_library_sha256: self.manifest.pa.library_sha256.clone(),
         })
     }
@@ -660,65 +847,63 @@ impl ModuleGraph {
         epoch: u64,
         frame: u64,
     ) -> i32 {
-        if prepared.storage.is_none()
-            || prepared.expected_library_sha256 != self.manifest.pa.library_sha256
-        {
-            return -1;
-        }
-        if self.pa_retired_storage.is_some() {
-            return -3;
-        }
-        if epoch != self.epoch || epoch != prepared.expected_epoch || frame != self.next {
-            return -4;
-        }
-        if self.source_fault != 0 {
-            return -2;
-        }
-        if let Some(pa) = &self.pa_v2 {
-            let status = match pa.status() {
-                Ok(s) => s,
-                Err(e) => return e,
-            };
-            if status.generation != prepared.expected_generation {
-                return -4;
-            }
-        } else if self.processed != 0 && !self.pa_hold {
-            return -3;
-        }
-        let result = if let Some(pa) = &mut self.pa_v2 {
-            pa.commit(&mut prepared.owner, epoch, frame)
-        } else if let Some(pa) = &mut prepared.initial {
-            pa.commit(&mut prepared.owner, epoch, frame)
-        } else {
-            return -1;
-        };
+        let result = self.source.commit_pa_change(prepared, epoch, frame);
+        self.finish_pa_change(prepared, result);
+        self.observe_pa();
+        result
+    }
+    /// Controller completion after a globally ordered source commit. Replaced
+    /// metadata/context owners stay in the prepared packet until caller disposal.
+    /// Complete before issuing the next ModuleExchange: an already outstanding
+    /// packet owns the previous PA context/indices and must not overwrite this
+    /// completion. A future fused command packet must swap contexts source-side.
+    pub(crate) fn finish_pa_change(&mut self, prepared: &mut GraphPaPrepared, result: i32) {
         if result != 0 {
-            return result;
+            return;
         }
-        if self.pa_v2.is_none() {
-            self.pa_v2 = prepared.initial.take();
+        // Keep replaced contexts/API ownership in the caller's prepared packet;
+        // even a successful boundary commit performs no native destruction.
+        if prepared.preparation.is_some() {
+            std::mem::swap(&mut self.pa_preparation, &mut prepared.preparation);
         }
-        self.pa_retired_storage = self.pa_storage.take();
-        self.pa_storage = prepared.storage.take();
-        self.pa_hold = true;
-        0
+        std::mem::swap(&mut self.pa_observed, &mut prepared.observation);
+        std::mem::swap(&mut self.pa_metadata, &mut prepared.metadata);
+    }
+    /// Bounded compatibility handoff. A detached caller transfers the same packet
+    /// to ModuleSource::capture_pa_observation and returns it to the controller.
+    fn observe_pa(&mut self) {
+        let Some(source) = &self.source.0 else {
+            return;
+        };
+        self.observed = source.observation();
+        if let Some(observation) = &mut self.pa_observed {
+            source.capture_pa_observation(observation);
+        }
     }
     /// Controller-only retirement, including old host vectors/configuration.
     pub fn retire_pa_changes(&mut self) {
-        if let Some(pa) = &mut self.pa_v2 {
+        let Some(source) = &mut self.source.0 else {
+            return;
+        };
+        if let Some(pa) = &mut source.pa_v2 {
             pa.retire();
         }
-        self.pa_retired_storage = None;
+        source.pa_retired_storage = None;
+        self.observed.pa_retirement_occupied = false;
     }
     pub fn mute_pa(&mut self) -> Result<()> {
-        if let Some(pa) = &mut self.pa_v2 {
-            let result = pa.mute();
-            if result != 0 {
-                return Err(format!("PA mute {result}"));
-            }
+        let result = self
+            .source
+            .0
+            .as_mut()
+            .ok_or("PA mute requires prepared source command")?
+            .mute_pa();
+        self.observe_pa();
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(format!("PA mute {result}"))
         }
-        self.pa_hold = true;
-        Ok(())
     }
     pub fn master_eq_indices(&self) -> Result<[usize; 2]> {
         let map = self.pa_program_buses();
@@ -733,17 +918,31 @@ impl ModuleGraph {
         Ok(result)
     }
     pub fn master_eq_source_recovery_required(&self) -> bool {
-        self.source_fault != 0
+        self.observed.source_fault != 0
     }
     pub fn master_eq_status(&self) -> std::result::Result<crate::host::pa_v2::EqStatus, i32> {
-        self.pa_v2.as_ref().ok_or(-5)?.eq_status()
+        match &self.pa_observed {
+            Some(observed) => observed.status(),
+            None => self.observed.eq_status.ok_or(-5)?,
+        }
     }
     pub fn master_eq_readback(&self) -> Result<String> {
-        self.pa_v2
-            .as_ref()
-            .ok_or("PA unavailable")?
-            .eq_readback(self.master_eq_indices()?)
-            .map_err(|e| e.to_string())
+        let Some(observed) = self.pa_observed.as_ref() else {
+            return self
+                .source
+                .0
+                .as_ref()
+                .ok_or("legacy PA readback requires source ownership")?
+                .pa_v2
+                .as_ref()
+                .ok_or("PA unavailable")?
+                .eq_readback(self.master_eq_indices()?)
+                .map_err(|e| e.to_string());
+        };
+        observed
+            .status()
+            .map_err(|e| format!("PA observation {e}"))?;
+        observed.context.readback().map_err(|e| e.to_string())
     }
     pub fn prepare_master_eq(
         &mut self,
@@ -756,11 +955,47 @@ impl ModuleGraph {
             return Err("stale PA bus map".into());
         }
         let indices = self.master_eq_indices()?;
-        let pa = self.pa_v2.as_mut().ok_or("live EQ unavailable")?;
-        pa.retire_eq(); // controller-only, explicit retirement before admission
-        let owner = pa
-            .prepare_eq(json, expected, frame)
-            .map_err(|e| e.to_string())?;
+        // Explicit source return, followed by controller destruction. Preparation
+        // below uses only copied context and the retained API, never active DSP.
+        let owner = if let Some(observation) = self.pa_observed.as_mut() {
+            let api = self
+                .pa_preparation
+                .as_ref()
+                .ok_or("PA preparation unavailable")?;
+            // Compatibility callers may return a packet directly rather than
+            // through finish_exchange. Release its already-returned allocation
+            // before asking the source to fill the reserved slot again.
+            if !observation.retirement.is_empty() {
+                observation.retirement = api.eq_retirement_slot();
+            }
+            if let Some(source) = &mut self.source.0 {
+                let code = source.return_eq_retirement(observation);
+                if code != 0 {
+                    return Err(format!("EQ retirement return {code}"));
+                }
+            }
+            if !observation.retirement.is_empty() {
+                observation.retirement = api.eq_retirement_slot();
+            }
+            observation
+                .context
+                .prepare(json, expected, frame)
+                .map_err(|e| e.to_string())?
+        } else {
+            // Legacy synchronous ABI compatibility. This owner cannot qualify for
+            // detached source execution until its context interface is available.
+            let pa = self
+                .source
+                .0
+                .as_mut()
+                .ok_or("legacy PA preparation requires source ownership")?
+                .pa_v2
+                .as_mut()
+                .ok_or("live EQ unavailable")?;
+            pa.retire_eq();
+            pa.prepare_eq(json, expected, frame)
+                .map_err(|e| e.to_string())?
+        };
         // The actual owner has already strictly validated this narrow patch.
         let patch: serde_json::Value = serde_json::from_slice(json).map_err(|e| e.to_string())?;
         let edits = patch["inputs"].as_array().ok_or("EQ inputs")?;
@@ -771,7 +1006,7 @@ impl ModuleGraph {
         if actual.len() != 2 || !indices.iter().all(|i| actual.contains(&Some(*i))) {
             return Err("master stereo identity".into());
         }
-        let storage = self.pa_storage.as_ref().ok_or("PA metadata unavailable")?;
+        let storage = self.pa_metadata.as_ref().ok_or("PA metadata unavailable")?;
         let mut metadata: serde_json::Value =
             serde_json::from_str(&storage.configuration_json).map_err(|e| e.to_string())?;
         for edit in edits {
@@ -786,65 +1021,63 @@ impl ModuleGraph {
         }
         Ok(GraphEqPrepared {
             owner,
+            accepted_metadata: metadata.clone(),
             metadata,
             expected_map: expected_map.to_vec(),
         })
     }
     pub fn commit_master_eq(&mut self, p: &mut GraphEqPrepared, epoch: u64, frame: u64) -> i32 {
-        if self.source_fault != 0 {
-            return -2;
-        }
-        if epoch != self.epoch || frame != self.next || p.expected_map != self.pa_program_buses() {
-            return -4;
-        }
-        let Some(storage) = self.pa_storage.as_mut() else {
-            return -5;
-        };
-        let Some(pa) = self.pa_v2.as_mut() else {
-            return -5;
-        };
-        let code = pa.commit_eq(&mut p.owner, epoch, frame);
-        if code == 0 {
-            std::mem::swap(&mut storage.configuration_json, &mut p.metadata);
-        }
+        let code = self.source.commit_master_eq(p, epoch, frame);
+        self.finish_master_eq(p, code);
+        self.observe_pa();
         code
     }
+    pub(crate) fn finish_master_eq(&mut self, p: &mut GraphEqPrepared, code: i32) {
+        if code == 0
+            && let Some(metadata) = &mut self.pa_metadata
+        {
+            std::mem::swap(&mut metadata.configuration_json, &mut p.accepted_metadata);
+        }
+    }
+
     pub fn pa_configuration_json(&self) -> Option<&str> {
-        self.pa_storage
+        self.pa_metadata
             .as_ref()
             .map(|s| s.configuration_json.as_str())
     }
     pub fn pa_program_buses(&self) -> &[usize] {
-        self.pa_storage
+        self.pa_metadata
             .as_ref()
             .map_or(&[], |s| s.program_buses.as_slice())
     }
     pub fn pa_v2_capabilities(&self) -> Option<crate::host::pa_v2::Capabilities> {
-        self.pa_v2.as_ref().map(|p| p.capabilities())
+        self.observed.pa_v2_capabilities
     }
     pub fn pa_v2_status(&self) -> Option<std::result::Result<crate::host::pa_v2::Status, i32>> {
-        self.pa_v2.as_ref().map(|p| p.status())
+        self.pa_observed
+            .as_ref()
+            .map(|p| p.pa_status)
+            .or(self.observed.pa_v2_status)
     }
     pub fn rearm_pa(&mut self) -> Result<()> {
-        if self.source_fault != 0 {
-            return Err("source fault requires fresh epoch before PA rearm".into());
+        let result = self
+            .source
+            .0
+            .as_mut()
+            .ok_or("PA rearm requires prepared source command")?
+            .rearm_pa();
+        self.observe_pa();
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(format!("PA rearm {result}"))
         }
-        if let Some(pa) = &mut self.pa_v2 {
-            let r = pa.rearm(self.epoch, self.next);
-            if r != 0 {
-                return Err(format!("PA rearm {r}"));
-            }
-        }
-        self.pa_hold = false;
-        Ok(())
     }
     pub fn output_interleaved(&self) -> &[f64] {
-        self.pa_storage
-            .as_ref()
-            .map_or(&self.output, |s| s.output.as_slice())
+        self.source.output_interleaved()
     }
     pub fn output(&self) -> &[f64; FRAMES * 6] {
-        &self.output
+        &self.source.output
     }
     /// Accepts preparation only. One bounded worker creates the handle and
     /// observer. No physical endpoints and no client-chosen recording paths.
@@ -852,16 +1085,27 @@ impl ModuleGraph {
         if !crate::show::id(take_id) || operation_id.0 == 0 {
             return Err("record identity".into());
         }
-        if self.source_fault != 0 {
+        if self.observed.source_fault != 0
+            || self.closure.load(std::sync::atomic::Ordering::Acquire) != 0
+        {
             return Err("source discontinuity requires explicit recreation".into());
         }
-        if self.lifecycle.is_some() || self.take.as_ref().is_some_and(|t| t.recorder.is_some()) {
+        if self.lifecycle.is_some()
+            || self.exchange_pending
+            || self.prepared_recorder.is_some()
+            || self.returned_recorder.is_some()
+            || self.observed.recorder_present
+            || self
+                .take
+                .as_ref()
+                .is_some_and(|t| t.status.state != "finalized")
+        {
             return Err("recorder busy".into());
         }
         let path = root.join(take_id);
         let library = self.manifest.rec.library.clone();
-        let epoch = self.epoch;
-        let channels = self.inputs;
+        let epoch = self.observed.epoch;
+        let channels = self.observed.inputs;
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::Builder::new()
             .name("gp05-rec-prepare".into())
@@ -878,9 +1122,9 @@ impl ModuleGraph {
         let status = RecordingStatus {
             take_id: take_id.into(),
             operation_id,
-            source_epoch: Counter(self.epoch),
+            source_epoch: Counter(self.observed.epoch),
             first_source_frame: None,
-            mapping: (0..self.inputs)
+            mapping: (0..self.observed.inputs)
                 .map(|i| format!("input-{:02}/raw", i + 1))
                 .collect(),
             state: "preparing".into(),
@@ -896,8 +1140,8 @@ impl ModuleGraph {
             writer_fault: false,
             host_fault: 0,
         };
+        self.recorder_stop = false;
         self.take = Some(Take {
-            recorder: None,
             observer: None,
             status,
         });
@@ -921,14 +1165,25 @@ impl ModuleGraph {
                 return Err("already finalizing".into());
             }
             if worker.cancel_code == 0 {
-                worker.cancel_code = 5;
+                worker.cancel_code = if self.observed.recorder_cancel_code != 0 {
+                    self.observed.recorder_cancel_code
+                } else {
+                    5
+                };
             }
             t.status.state = "finalizing".into();
             return Ok(());
         }
-        let r = t.recorder.take().ok_or("already finalized")?;
+        if t.status.state == "finalizing" || t.status.state == "finalized" {
+            return Err("already finalizing".into());
+        }
         t.status.state = "finalizing".into();
-        self.finish_worker(r)
+        self.recorder_stop = true;
+        if let Some(mut recorder) = self.prepared_recorder.take() {
+            recorder.fault(5);
+            return self.finish_worker(recorder);
+        }
+        self.service_attached_exchange()
     }
     fn finish_worker(&mut self, mut recorder: Recorder) -> Result<()> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -947,7 +1202,7 @@ impl ModuleGraph {
             Err(e) => {
                 recorder.fault(10);
                 if let Some(t) = &mut self.take {
-                    t.recorder = Some(recorder);
+                    self.returned_recorder = Some(recorder);
                     t.status.state = "finalizing".into();
                     t.status.host_fault = 10;
                 }
@@ -959,7 +1214,7 @@ impl ModuleGraph {
             let mut r = e.0;
             r.fault(10);
             if let Some(t) = &mut self.take {
-                t.recorder = Some(r);
+                self.returned_recorder = Some(r);
                 t.status.host_fault = 10;
             }
             let _ = thread.join();
@@ -974,6 +1229,21 @@ impl ModuleGraph {
     }
     /// Nonblocking readiness/completion transfer, outside bounded processing.
     pub fn poll_lifecycle(&mut self) -> Result<()> {
+        self.poll_lifecycle_result()?;
+        self.service_attached_exchange()
+    }
+    fn poll_lifecycle_result(&mut self) -> Result<()> {
+        if self.lifecycle.is_none()
+            && let Some(recorder) = self.returned_recorder.take()
+        {
+            self.finish_worker(recorder)?;
+        }
+        if self.observed.recorder_cancel_code != 0
+            && let Some(worker) = &mut self.lifecycle
+            && worker.cancel_code == 0
+        {
+            worker.cancel_code = self.observed.recorder_cancel_code;
+        }
         let Some(worker) = &self.lifecycle else {
             return Ok(());
         };
@@ -999,9 +1269,9 @@ impl ModuleGraph {
                     r.fault(worker.cancel_code);
                     self.finish_worker(r)?;
                 } else {
-                    t.status.first_source_frame = Some(Counter(self.next));
-                    t.status.state = "recording".into();
-                    t.recorder = Some(r);
+                    // Host recording readiness is published only after the
+                    // source accepts this handle at its own frame boundary.
+                    self.prepared_recorder = Some(r);
                 }
             }
             WorkerResult::Prepared(Err(_)) => {
@@ -1062,7 +1332,11 @@ impl ModuleGraph {
             {
                 let p = observer.snapshot().map_err(|e| e.to_string())?;
                 let finalizing = t.status.state == "finalizing";
+                let preparing = t.status.state == "preparing";
                 Self::update(t, p);
+                if preparing {
+                    t.status.state = "preparing".into();
+                }
                 // Owner atomics can lead the host handoff/join. Publish progress
                 // while keeping host finalization pending until worker completion.
                 if finalizing {
@@ -1072,21 +1346,18 @@ impl ModuleGraph {
             }
             self.last_poll = Some(now);
         }
-        let mut status = ModuleStatus::unavailable(show, self.epoch, self.next);
+        let mut status = ModuleStatus::unavailable(show, self.observed.epoch, self.observed.next);
         status.available = true;
         status.protection = "owner-sample-limiter-only".into();
         status.configuration = Some(Configuration {
             sample_rate: 48000,
             block_frames: 48,
-            raw_inputs: (0..self.inputs)
+            raw_inputs: (0..self.observed.inputs)
                 .map(|i| format!("input-{:02}/raw", i + 1))
                 .collect(),
             fx_mix: "dry-plus-fixed-wet".into(),
-            pa_inputs: self.pa_v2.as_ref().map_or(2, |p| p.input_channels() as u32),
-            pa_outputs: self
-                .pa_v2
-                .as_ref()
-                .map_or(6, |p| p.output_channels() as u32),
+            pa_inputs: self.observed.pa_inputs as u32,
+            pa_outputs: self.observed.pa_outputs as u32,
         });
         for (owner, a) in [
             ("rec", &self.manifest.rec),
@@ -1109,27 +1380,40 @@ impl ModuleGraph {
             );
         }
         status.fx = Some(FxHealth {
-            capabilities: self.fx.fx_capabilities().map_err(|e| e.to_string())?,
-            status: self.fx.fx_status().map_err(|e| e.to_string())?,
+            capabilities: self.fx_capabilities.clone(),
+            status: self
+                .observed
+                .fx_status
+                .clone()
+                .map_err(|e| format!("FX status {e}"))?,
         });
-        if let (Some(pa), Some(storage)) = (&self.pa_v2, &self.pa_storage) {
+        if let (Some(capabilities), Some(storage)) =
+            (self.observed.pa_v2_capabilities, &self.pa_metadata)
+        {
             status.version = 2;
             status.pa_v2 = Some(PaHealthV2 {
-                capabilities: pa.capabilities(),
-                status: pa.status().map_err(|e| format!("PA status {e}"))?,
+                capabilities,
+                status: self
+                    .pa_v2_status()
+                    .ok_or("PA observation unavailable")?
+                    .map_err(|e| format!("PA status {e}"))?,
                 configuration_json: storage.configuration_json.clone(),
                 program_buses: storage.program_buses.clone(),
             });
         } else {
             status.pa = Some(PaHealth {
-                descriptor: self.pa.pa_descriptor().map_err(|e| e.to_string())?,
-                status: self.pa.pa_status().map_err(|e| e.to_string())?,
+                descriptor: self.pa_descriptor.clone(),
+                status: self
+                    .observed
+                    .pa_status
+                    .clone()
+                    .map_err(|e| format!("PA status {e}"))?,
             });
         }
-        if self.inputs != 8 {
+        if self.observed.inputs != 8 {
             status.version = 2;
         }
-        status.source_fault = self.source_fault;
+        status.source_fault = self.observed.source_fault;
         status.readiness = if status
             .pa
             .as_ref()
@@ -1140,20 +1424,22 @@ impl ModuleGraph {
                 .is_some_and(|p| p.status.fault_latched != 0)
         {
             "faulted"
-        } else if self.source_fault != 0
+        } else if self.observed.source_fault != 0
             || status
                 .fx
                 .as_ref()
                 .is_some_and(|f| f.status.last_process_result != 0)
         {
             "degraded"
-        } else if self.pa_hold || status.pa_v2.as_ref().is_some_and(|p| p.status.muted != 0) {
+        } else if self.observed.pa_hold
+            || status.pa_v2.as_ref().is_some_and(|p| p.status.muted != 0)
+        {
             "muted"
         } else {
             "ready"
         }
         .into();
-        status.activity = if self.processed == 0 {
+        status.activity = if self.observed.processed == 0 {
             "idle"
         } else {
             "processed"
@@ -1166,6 +1452,12 @@ impl ModuleGraph {
 
 impl Drop for ModuleGraph {
     fn drop(&mut self) {
+        let _ = self.closure.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
         // Explicit control-side shutdown joins only this owned lifecycle worker.
         // A late prepared handle is faulted/finalized by Recorder::drop, never
         // reactivated. All observers/libraries remain retained through cleanup.
@@ -1175,11 +1467,411 @@ impl Drop for ModuleGraph {
                 drop(result);
             }
         }
-        if let Some(t) = &mut self.take
-            && let Some(mut r) = t.recorder.take()
-        {
+        if let Some(mut r) = self.source.0.as_mut().and_then(|s| s.recorder.take()) {
             r.fault(1);
             let _ = r.finish();
         }
+    }
+}
+
+#[cfg(test)]
+mod detached_pa_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "actual PA/FX/REC bindings: GP05_MANIFEST and GP_PA_CONFIG"]
+    fn actual_module_owned_recorder_exchange_and_closure() {
+        use std::time::Duration;
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let path =
+            std::env::temp_dir().join(format!("gp-h1-module-exchange-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let directory = Directory(path);
+        let manifest =
+            Manifest::load(Path::new(&std::env::var_os("GP05_MANIFEST").unwrap())).unwrap();
+        let config = std::fs::read(std::env::var_os("GP_PA_CONFIG").unwrap()).unwrap();
+        let mut graph = ModuleGraph::load(manifest, 1, 0).unwrap();
+        graph.configure_pa_v2(&config).unwrap();
+        graph.rearm_pa().unwrap();
+        let mut source = graph.take_source().unwrap();
+        graph.start(&directory.0, "owned-take", Counter(1)).unwrap();
+        assert!((0..1000).any(|_| {
+            graph.poll_lifecycle().unwrap();
+            if graph.prepared_recorder.is_some() {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+                false
+            }
+        }));
+        assert_eq!(
+            graph.status("test", 0).unwrap().recording.unwrap().state,
+            "preparing"
+        );
+        let mut packet = graph.prepare_exchange().unwrap();
+        assert!(graph.prepare_exchange().is_err());
+        // A mixer command refused before source service must return this packet
+        // without stranding the REC handle, PA context or exchange reservation.
+        graph.cancel_exchange(packet).unwrap();
+        assert!(graph.prepared_recorder.is_some());
+        packet = graph.prepare_exchange().unwrap();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                crate::remote::assert_no_allocations(|| {
+                    source.exchange(&mut packet);
+                    for block in 0..32 {
+                        source
+                            .process_interleaved_brain(
+                                1,
+                                block * 48,
+                                &[0.125; 384],
+                                &[0.125; 192],
+                                4,
+                                None,
+                                None,
+                            )
+                            .unwrap();
+                    }
+                    // A retained completion cannot be applied twice or overwritten.
+                    source.exchange(&mut packet);
+                    assert_eq!(packet.activated_frame, Some(0));
+                    assert_eq!(packet.observation.next, 0);
+                    source.observe_exchange(&mut packet);
+                    assert_eq!(packet.observation.next, 1536);
+                });
+            });
+            // Complete graph metadata and native detached EQ readback never
+            // inspect the actively rendering source while the packet is away.
+            assert_eq!(graph.pa_configuration_json().unwrap().as_bytes(), config);
+            assert_eq!(graph.status("test", 1).unwrap().frame.0, 0);
+            worker.join().unwrap();
+        });
+        graph.finish_exchange(packet).unwrap();
+        assert_eq!(
+            graph
+                .status("test", 2)
+                .unwrap()
+                .recording
+                .unwrap()
+                .first_source_frame,
+            Some(Counter(0))
+        );
+        let mut stale = graph.prepare_exchange().unwrap();
+        stale.epoch = 2;
+        stale.stop = true;
+        crate::remote::assert_no_allocations(|| {
+            source.exchange(&mut stale);
+            assert!(source.recorder.is_some());
+            assert!(source.recording);
+        });
+        graph.finish_exchange(stale).unwrap();
+        graph.stop("owned-take", Counter(1)).unwrap();
+        let mut packet = graph.prepare_exchange().unwrap();
+        crate::remote::assert_no_allocations(|| {
+            source.exchange(&mut packet);
+            assert!(source.recorder.is_none());
+            assert!(packet.retired_recorder.is_some());
+            for block in 32..40 {
+                source
+                    .process_interleaved_brain(
+                        1,
+                        block * 48,
+                        &[0.125; 384],
+                        &[0.125; 192],
+                        4,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+            }
+        });
+        graph.finish_exchange(packet).unwrap();
+        assert!((0..1000).any(|_| {
+            graph.poll_lifecycle().unwrap();
+            if graph
+                .status("test", 10000)
+                .unwrap()
+                .recording
+                .unwrap()
+                .state
+                == "finalized"
+            {
+                true
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+                false
+            }
+        }));
+        let status = graph.status("test", 20000).unwrap().recording.unwrap();
+        assert_eq!(status.outcome, "complete");
+        assert_eq!(status.accepted_frames.0, 1536);
+        assert_eq!(status.written_frames.0, 1536);
+        assert_eq!(status.dropped_frames.0, 0);
+        let wavs: Vec<_> = std::fs::read_dir(directory.0.join("owned-take"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "wav"))
+            .collect();
+        assert_eq!(wavs.len(), 8);
+        for path in wavs {
+            let mut wav = hound::WavReader::open(path).unwrap();
+            assert_eq!(wav.spec().bits_per_sample, 24);
+            let samples: Vec<_> = wav.samples::<i32>().map(|sample| sample.unwrap()).collect();
+            assert_eq!(samples, vec![1_048_576; 1536]);
+        }
+        // Structural preparation is controller-only even after source transfer;
+        // both native graph retirement and host vectors return in one packet.
+        assert_eq!(source.mute_pa(), 0);
+        for block in 40..48 {
+            source
+                .process_interleaved_brain(
+                    1,
+                    block * 48,
+                    &[0.125; 384],
+                    &[0.125; 192],
+                    4,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let mut packet = graph.prepare_exchange().unwrap();
+        crate::remote::assert_no_allocations(|| source.exchange(&mut packet));
+        graph.finish_exchange(packet).unwrap();
+        let mut change = graph.prepare_pa_change(&config, vec![0, 1], 4).unwrap();
+        crate::remote::assert_no_allocations(|| {
+            assert_eq!(source.commit_pa_change(&mut change, 2, 2304), -4);
+            assert_eq!(source.commit_pa_change(&mut change, 1, 2304), 0);
+            assert!(source.pa_retired_storage.is_some());
+        });
+        graph.finish_pa_change(&mut change, 0);
+        drop(change);
+        let mut packet = graph.prepare_exchange().unwrap();
+        crate::remote::assert_no_allocations(|| {
+            source.exchange(&mut packet);
+            assert!(!packet.pa_retirement.as_ref().unwrap().is_empty());
+            assert!(packet.retired_storage.is_some());
+            assert!(source.pa_retired_storage.is_none());
+        });
+        graph.finish_exchange(packet).unwrap();
+        assert_eq!(graph.pa_v2_status().unwrap().unwrap().next_frame, 2304);
+        assert!(graph.prepare_pa_change(&config, vec![0, 1], 4).is_ok());
+        // Controller loss reaches an owned source without another exchange.
+        drop(graph);
+        crate::remote::assert_no_allocations(|| {
+            assert_eq!(
+                source.process_interleaved_brain(
+                    1,
+                    2304,
+                    &[0.125; 384],
+                    &[0.125; 192],
+                    4,
+                    None,
+                    None
+                ),
+                Err(ProcessError::Source)
+            );
+            assert!(source.output_interleaved().iter().all(|v| *v == 0.));
+        });
+    }
+
+    #[test]
+    #[ignore = "actual PA/FX/REC bindings: GP05_MANIFEST and GP_PA_CONFIG"]
+    fn actual_module_numeric_observation_and_commit_retention() {
+        let manifest =
+            Manifest::load(Path::new(&std::env::var_os("GP05_MANIFEST").unwrap())).unwrap();
+        let config = std::fs::read(std::env::var_os("GP_PA_CONFIG").unwrap()).unwrap();
+        let mut graph = ModuleGraph::load(manifest, 1, 0).unwrap();
+        graph.configure_pa_v2(&config).unwrap();
+        graph.rearm_pa().unwrap();
+        let before = graph.status("test", 0).unwrap();
+        assert_eq!(before.frame.0, 0);
+        for block in 0..32 {
+            crate::remote::assert_no_allocations(|| {
+                graph
+                    .source
+                    .process_interleaved_brain(
+                        1,
+                        block * 48,
+                        &[0.125; 384],
+                        &[0.125; 192],
+                        4,
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                let observed = graph.source.observation();
+                assert_eq!(observed.next, (block + 1) * 48);
+                assert_eq!(observed.fx_status.as_ref().unwrap().last_process_result, 0);
+                assert_eq!(
+                    observed.pa_v2_status.unwrap().unwrap().next_frame,
+                    observed.next
+                );
+            });
+        }
+        // Controller readback remains a coherent owned observation; it cannot
+        // announce source progress until the observation is explicitly handed back.
+        assert_eq!(graph.status("test", 1).unwrap().frame.0, 0);
+        graph.observe_pa();
+        assert_eq!(graph.status("test", 2).unwrap().frame.0, 1536);
+        graph.mute_pa().unwrap();
+        // Structural replacement waits for the existing owner mute ramp.
+        for block in 32..40 {
+            graph
+                .process_interleaved_brain(
+                    1,
+                    block * 48,
+                    &[0.125; 384],
+                    &[0.125; 192],
+                    4,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let mut next = graph.prepare_pa_change(&config, vec![0, 1], 4).unwrap();
+        crate::remote::assert_no_allocations(|| {
+            assert_eq!(graph.source.commit_pa_change(&mut next, 2, 1920), -4);
+            assert!(next.storage.is_some());
+            assert_eq!(graph.source.commit_pa_change(&mut next, 1, 1920), 0);
+            assert!(next.storage.is_none());
+            assert!(graph.source.pa_retired_storage.is_some());
+            // Refusal preserves both active and retired storage.
+            assert_eq!(graph.source.commit_pa_change(&mut next, 1, 1920), -1);
+            assert!(graph.source.pa_retired_storage.is_some());
+        });
+        graph.retire_pa_changes();
+        drop(next);
+    }
+
+    #[test]
+    #[ignore = "actual PA/FX/REC bindings: GP05_MANIFEST and GP_PA_CONFIG"]
+    fn actual_module_detached_pa_packet_and_retirement() {
+        let manifest =
+            Manifest::load(Path::new(&std::env::var_os("GP05_MANIFEST").unwrap())).unwrap();
+        let config = std::fs::read(std::env::var_os("GP_PA_CONFIG").unwrap()).unwrap();
+        let mut graph = ModuleGraph::load(manifest, 1, 0).unwrap();
+        graph.configure_pa_v2(&config).unwrap();
+        graph.rearm_pa().unwrap();
+        let mut reference = ModuleGraph::load(graph.manifest.clone(), 1, 0).unwrap();
+        reference.configure_pa_v2(&config).unwrap();
+        reference.rearm_pa().unwrap();
+        let mut samples = Vec::with_capacity(32);
+        for block in 0..32 {
+            reference
+                .process_interleaved_brain(
+                    1,
+                    block * 48,
+                    &[0.125; 384],
+                    &[0.125; 192],
+                    4,
+                    None,
+                    None,
+                )
+                .unwrap();
+            samples.push(reference.output_interleaved().to_vec());
+        }
+        assert!(samples.iter().flatten().any(|s| s.abs() > 0.0001));
+        let mut observed = graph.pa_observed.take().unwrap();
+        let expected = observed.status().unwrap();
+        let readback = observed.context.readback().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&readback).unwrap();
+        let mut patch = serde_json::json!({"version":1,"inputs":value["target"]});
+        patch["inputs"][0]["eq"][0]["db"] = serde_json::json!(3.0);
+        let patch = serde_json::to_vec(&patch).unwrap();
+        // The production packet and library-only preparer remain on the
+        // controller while the actual ModuleSource runs PA and local FX.
+        std::thread::scope(|scope| {
+            let source = &mut graph.source;
+            let worker = scope.spawn(move || {
+                for (block, expected_samples) in samples.iter().enumerate() {
+                    crate::remote::assert_no_allocations(|| {
+                        source
+                            .process_interleaved_brain(
+                                1,
+                                block as u64 * 48,
+                                &[0.125; 384],
+                                &[0.125; 192],
+                                4,
+                                None,
+                                None,
+                            )
+                            .unwrap();
+                        assert_eq!(
+                            source.pa_storage.as_ref().unwrap().output,
+                            *expected_samples
+                        );
+                    });
+                }
+            });
+            for _ in 0..4 {
+                let token = observed.context.prepare(&patch, expected, 1536).unwrap();
+                drop(token);
+                let prepared = graph
+                    .pa_preparation
+                    .as_ref()
+                    .unwrap()
+                    .prepare(&config)
+                    .unwrap();
+                drop(prepared);
+                assert_eq!(observed.context.readback().unwrap(), readback);
+                assert_eq!(observed.status().unwrap().next_frame, 0);
+            }
+            worker.join().unwrap();
+        });
+        let mut token = observed.context.prepare(&patch, expected, 1536).unwrap();
+        crate::remote::assert_no_allocations(|| {
+            assert_eq!(
+                graph
+                    .source
+                    .pa_v2
+                    .as_mut()
+                    .unwrap()
+                    .commit_eq(&mut token, 1, 1536),
+                0
+            );
+            for block in 32..37 {
+                graph
+                    .source
+                    .process_interleaved_brain(1, block * 48, &[0.; 384], &[0.; 192], 4, None, None)
+                    .unwrap();
+            }
+            assert_eq!(graph.source.return_eq_retirement(&mut observed), 0);
+            assert_eq!(graph.source.return_eq_retirement(&mut observed), -3);
+        });
+        assert!(!observed.retirement.is_empty());
+        assert_eq!(observed.status().unwrap().next_frame, 1776);
+        assert_ne!(observed.context.readback().unwrap(), readback);
+        // A directly returned occupied packet must not make the next controller
+        // preparation ask the source to fill that occupied slot again.
+        graph.pa_observed = Some(observed);
+        let expected = graph.master_eq_status().unwrap();
+        let mut second = graph
+            .prepare_master_eq(&patch, expected, &[0, 1], 1776)
+            .unwrap();
+        assert!(graph.pa_observed.as_ref().unwrap().retirement.is_empty());
+        crate::remote::assert_no_allocations(|| {
+            assert_eq!(graph.commit_master_eq(&mut second, 1, 1776), 0);
+            for block in 37..42 {
+                graph
+                    .source
+                    .process_interleaved_brain(1, block * 48, &[0.; 384], &[0.; 192], 4, None, None)
+                    .unwrap();
+            }
+        });
+        // The production packet return destroys retirement controller-side and
+        // leaves a reusable empty slot for the following source observation.
+        graph.poll_lifecycle().unwrap();
+        assert!(graph.pa_observed.as_ref().unwrap().retirement.is_empty());
+        let expected = graph.master_eq_status().unwrap();
+        let third = graph
+            .prepare_master_eq(&patch, expected, &[0, 1], 2016)
+            .unwrap();
+        drop(third);
     }
 }

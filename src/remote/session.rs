@@ -9,6 +9,23 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 /// prototype. Dispatch must check payload-derived permissions, writer, leases,
 /// revision and retry history before scheduling a real sample boundary.
 pub trait AuthorityEndpoint {
+    #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+    fn take_brain_handoff(&mut self, _context: &AuthenticatedContext) -> Option<SourceBrainMedia> {
+        None
+    }
+
+    #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+    fn take_wet_input(&mut self, _context: &AuthenticatedContext) -> Option<SourceWetInput> {
+        None
+    }
+
+    /// Optional sole media consumer, transferred after authenticated negotiation.
+    /// Its network drain must not require controller mailbox service.
+    #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+    fn take_media_output(&mut self, _context: &AuthenticatedContext) -> Option<SourceEgressOutput> {
+        None
+    }
+
     fn diagnostic_trace(&self) -> Handle {
         None
     }
@@ -419,15 +436,19 @@ impl ServerSession {
 /// reconnect/replay, grant resurrection, output rearm or saved command queue.
 /// Dropping a worker aborts its independent reader without joining or leaking a
 /// task waiting for a first control byte. No receiver exists on legacy media.
-pub struct FxReplyReader(tokio::task::JoinHandle<()>);
+pub struct FxReplyReader(
+    tokio::task::JoinHandle<()>,
+    Arc<std::sync::atomic::AtomicBool>,
+);
 impl FxReplyReader {
     pub fn abort(&self) {
+        self.1.store(true, std::sync::atomic::Ordering::Release);
         self.0.abort();
     }
 }
 impl Drop for FxReplyReader {
     fn drop(&mut self) {
-        self.0.abort();
+        self.abort();
     }
 }
 pub struct RemoteClient {
@@ -542,10 +563,12 @@ impl RemoteClient {
         }
     }
     pub fn close(&self) {
+        self.context.close_audio();
         self.connection.close(0u8.into(), b"operator disconnect");
     }
     fn check(&self) -> Result<()> {
         if self.connection.close_reason().is_some() {
+            self.context.close_audio();
             return Err("remote connection closed".into());
         }
         if let Err(error) = self.policy.check(&self.context) {
@@ -611,11 +634,10 @@ impl RemoteClient {
         {
             return Err("Brain media negotiation not accepted/current".into());
         }
-        let bytes = self
-            .connection
-            .read_datagram()
-            .await
-            .map_err(|e| e.to_string())?;
+        let bytes = self.connection.read_datagram().await.map_err(|e| {
+            self.context.close_audio();
+            e.to_string()
+        })?;
         self.check()?;
         let packet = BrainPacket::decode(&bytes, descriptor, BrainMediaRole::Monitor)?;
         if self
@@ -643,8 +665,11 @@ impl RemoteClient {
         // Drain the final reliable boundary result even if QUIC has subsequently
         // closed after acknowledging it. New sends/media still require a live connection.
         self.policy.check(&self.context)?;
-        let response: Response =
-            read_response(self.recv.as_mut().ok_or("control receiver moved")?).await?;
+        let response: Response = read_response(self.recv.as_mut().ok_or("control receiver moved")?)
+            .await
+            .inspect_err(|_| {
+                self.context.close_audio();
+            })?;
         self.policy.check(&self.context)?;
         let session = match &response {
             Response::Reply { session, .. }
@@ -695,6 +720,7 @@ impl RemoteClient {
         }
         let mut recv = self.recv.take().ok_or("control reader already moved")?;
         let context = self.context.clone();
+        let closed = context.disconnect_signal();
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let task = tokio::spawn(async move {
             loop {
@@ -713,12 +739,16 @@ impl RemoteClient {
                     }),
                 };
                 let failed = result.is_err();
+                if failed {
+                    context.close_audio();
+                }
                 if tx.send(result).await.is_err() || failed {
+                    context.close_audio();
                     break;
                 }
             }
         });
-        Ok((rx, FxReplyReader(task)))
+        Ok((rx, FxReplyReader(task, closed)))
     }
     pub async fn negotiate(&mut self, descriptor: MediaDescriptor) -> Result<()> {
         self.check()?;
@@ -782,11 +812,10 @@ impl RemoteClient {
         if self.media_taken || self.brain_taken {
             return Err("media owned by independent channel".into());
         }
-        let bytes = self
-            .connection
-            .read_datagram()
-            .await
-            .map_err(|e| e.to_string())?;
+        let bytes = self.connection.read_datagram().await.map_err(|e| {
+            self.context.close_audio();
+            e.to_string()
+        })?;
         self.check()?;
         self.media.receive(&bytes, MediaSide::Brain, None)?;
         Ok(bytes.to_vec())
@@ -810,6 +839,11 @@ pub struct MediaChannel {
 }
 impl MediaChannel {
     #[cfg(feature = "hardware-host")]
+    pub(crate) fn audio_fence(&self) -> super::policy::PolicyFence {
+        self.context.audio_fence()
+    }
+
+    #[cfg(feature = "hardware-host")]
     pub(crate) fn diagnostic_stats(&self, trace: &Handle, source_frame: u64) {
         diagnostics::quinn_stats(
             trace,
@@ -823,11 +857,14 @@ impl MediaChannel {
         );
     }
     fn check(&self) -> Result<()> {
+        if self.connection.close_reason().is_some() {
+            self.context.close_audio();
+            return Err("media channel closed".into());
+        }
         if self.generation
             != self
                 .current_generation
                 .load(std::sync::atomic::Ordering::Acquire)
-            || self.connection.close_reason().is_some()
         {
             return Err("media channel stale or closed".into());
         }
@@ -836,6 +873,10 @@ impl MediaChannel {
             return Err(error);
         }
         Ok(())
+    }
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn check_current(&self) -> Result<()> {
+        self.check()
     }
     pub fn descriptor(&self) -> &MediaDescriptor {
         self.registry.descriptor().expect("admitted descriptor")
@@ -853,11 +894,10 @@ impl MediaChannel {
     pub async fn receive(&mut self) -> Result<Vec<u8>> {
         self.check()?;
         loop {
-            let bytes = self
-                .connection
-                .read_datagram()
-                .await
-                .map_err(|e| e.to_string())?;
+            let bytes = self.connection.read_datagram().await.map_err(|e| {
+                self.context.close_audio();
+                e.to_string()
+            })?;
             self.check()?;
             if self
                 .registry
@@ -883,8 +923,16 @@ pub struct BrainMediaChannel {
     last_received: Option<(u64, u64)>,
 }
 impl BrainMediaChannel {
+    /// Scheduling hint only. Every send/receive still performs full policy and
+    /// descriptor admission; this does not grant media authority.
+    #[cfg(all(target_os = "linux", feature = "hardware-host"))]
+    pub(crate) fn accepted_generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     fn check(&self, descriptor: &BrainMediaDescriptor) -> Result<()> {
         if self.connection.close_reason().is_some() {
+            self.context.close_audio();
             return Err("Brain media connection closed".into());
         }
         self.policy.check(&self.context)?;
@@ -910,11 +958,10 @@ impl BrainMediaChannel {
     pub async fn receive(&mut self, descriptor: &BrainMediaDescriptor) -> Result<BrainPacket> {
         self.check(descriptor)?;
         loop {
-            let bytes = self
-                .connection
-                .read_datagram()
-                .await
-                .map_err(|e| e.to_string())?;
+            let bytes = self.connection.read_datagram().await.map_err(|e| {
+                self.context.close_audio();
+                e.to_string()
+            })?;
             self.check(descriptor)?;
             if let Ok(packet) = BrainPacket::decode(&bytes, descriptor, BrainMediaRole::Monitor)
                 && !self.last_received.is_some_and(|(generation, frame)| {

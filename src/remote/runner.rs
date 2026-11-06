@@ -1,6 +1,7 @@
 //! Explicit bounded authenticated synthetic or separately authorized physical runs.
 //! Configuration, credentials and reports remain task-private. This is not a
 //! service installer, load benchmark or hardware qualification.
+pub(crate) mod analysis;
 use super::*;
 use crate::{
     control_model::{Command, Request as AudioRequest},
@@ -8,7 +9,7 @@ use crate::{
     show::Counter,
     topology::EngineTopology,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -119,7 +120,7 @@ fn analysis_reference(id: &str) -> Result<(u64, i32)> {
     Ok((period, amplitude))
 }
 // Optional software diagnostic, outside physical callbacks. Values are local to
-// the calling source thread; no peer-clock subtraction is involved.
+// the controller dispatch thread; gp-source CPU/faults are not included.
 fn thread_resources() -> Option<[u64; 5]> {
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) } != 0 {
@@ -198,167 +199,42 @@ pub enum RunConfig {
         report: PathBuf,
     },
 }
-#[derive(Serialize)]
-struct RevisionWindow {
-    revision: Counter,
-    first_source_frame: u64,
-    last_source_frame: u64,
-    blocks: u64,
-    energy_per_playback_slot: Vec<f64>,
-    first_block_samples: Vec<f64>,
+/// Production source lifecycle; service never supplies capture quanta.
+struct ProviderSource {
+    status: super::SourceClockStatus,
 }
-// Diagnostic storage is capped independently of fake or physical run duration.
-// Collection happens after the composed source worker, never inside Mixer/PA DSP.
-const OUTPUT_WINDOW_FRAMES: u64 = 4_800;
-// 60s owner observations (up to20/s), 100ms buckets and bounded control changes.
-const OUTPUT_WINDOW_LIMIT: usize = 2_048;
-const REVISION_WINDOW_LIMIT: usize = 2_048;
-#[derive(Serialize)]
-struct BrainWindow {
-    elapsed_ms: u64,
-    source_frame: u64,
-    snapshot: crate::brain_control::Snapshot,
-    bridge: Option<crate::brain_audio::bridge::BridgeStatus>,
-    playback: Vec<f64>,
-    monitor: Vec<f64>,
-    fx_send: Vec<f64>,
-}
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
-struct OutputState {
-    source_epoch: Counter,
-    revision: Counter,
-    map_revision: Counter,
-    clock_state: crate::clock_domain::ClockState,
-    outputs_quiesced: bool,
-    media_session: Option<Counter>,
-    wet_return_negotiated: bool,
-}
-fn output_state(host: &mut HostAuthority) -> OutputState {
-    let media_session = host.descriptor().map(|d| d.session);
-    let wet_return_negotiated = host
-        .descriptor()
-        .is_some_and(|d| d.channels(MediaRole::WetReturn) > 0);
-    let provider = host.provider_mut();
-    let map_revision = Counter(provider.topology().map_revision);
-    let engine = provider.engine_mut();
-    OutputState {
-        source_epoch: Counter(engine.clock_status().epoch),
-        revision: engine.revision(),
-        map_revision,
-        clock_state: engine.clock_status().state,
-        outputs_quiesced: engine.outputs_quiesced(),
-        media_session,
-        wet_return_negotiated,
+impl ProviderSource {
+    fn start(
+        host: &mut HostAuthority,
+        now_ms: u64,
+        period_ms: u64,
+        duration_ms: u64,
+        duplex: Option<crate::host::duplex::Duplex>,
+    ) -> Result<Self> {
+        let status = if let Some(device) = duplex {
+            host.start_device_source_clock(now_ms, duration_ms, device)?
+        } else {
+            host.start_source_clock(
+                now_ms,
+                Duration::from_millis(period_ms),
+                (duration_ms / period_ms).max(1),
+            )?
+        };
+        Ok(Self { status })
+    }
+    fn service(&self, host: &mut HostAuthority, now_ms: u64) -> Result<()> {
+        host.service_source_clock(now_ms)
+    }
+    fn stopped(&self) -> bool {
+        self.status.stopped()
+    }
+    fn finish(self, host: &mut HostAuthority) -> Result<super::SourceClockReport> {
+        host.finish_source_clock(&self.status)
     }
 }
-#[derive(Clone, Copy, Default)]
-struct WetCounters {
-    packets: u64,
-    samples: u64,
-    energy: f64,
-}
-impl WetCounters {
-    fn read(host: &HostAuthority) -> Self {
-        let stats = host.media_stats();
-        Self {
-            packets: stats.accepted_wet_packets,
-            samples: stats.nonzero_rendered_wet_samples,
-            energy: stats.rendered_wet_energy,
-        }
-    }
-}
-#[derive(Serialize)]
-struct OutputWindow {
-    #[serde(flatten)]
-    state: OutputState,
-    first_source_frame: u64,
-    last_source_frame: u64,
-    first_elapsed_ms: u64,
-    last_elapsed_ms: u64,
-    media_absent_since_source_frame: Option<u64>,
-    blocks: u64,
-    state_transition_blocks: u64,
-    accepted_wet_packets_delta: u64,
-    nonzero_rendered_wet_samples_delta: u64,
-    rendered_wet_energy_delta: f64,
-    energy_per_playback_slot: Vec<f64>,
-    peak_per_playback_slot: Vec<f64>,
-}
-struct OutputBlock<'a> {
-    frame: u64,
-    elapsed_ms: u64,
-    before: OutputState,
-    after: OutputState,
-    wet_before: WetCounters,
-    wet_after: WetCounters,
-    playback: &'a [f64],
-    width: usize,
-}
-#[derive(Default)]
-struct OutputWindows {
-    windows: Vec<OutputWindow>,
-    overflow_blocks: u64,
-    previous_state: Option<OutputState>,
-    absent_since_frame: Option<u64>,
-}
-impl OutputWindows {
-    fn observe(&mut self, block: OutputBlock<'_>) {
-        let state = block.after;
-        if state.media_session.is_some() {
-            self.absent_since_frame = None;
-        } else if self.previous_state.is_none_or(|prior| {
-            prior.media_session.is_some() || prior.source_epoch != state.source_epoch
-        }) {
-            self.absent_since_frame = Some(block.frame);
-        }
-        self.previous_state = Some(state);
-        let transition = block.before != block.after;
-        let new_window = self.windows.last().is_none_or(|last| {
-            last.state != state
-                || transition
-                || last.state_transition_blocks > 0
-                || block.frame != last.last_source_frame.saturating_add(1)
-                || block.frame >= last.first_source_frame.saturating_add(OUTPUT_WINDOW_FRAMES)
-        });
-        if new_window {
-            if self.windows.len() == OUTPUT_WINDOW_LIMIT {
-                self.overflow_blocks += 1;
-                return;
-            }
-            self.windows.push(OutputWindow {
-                state,
-                first_source_frame: block.frame,
-                last_source_frame: block.frame,
-                first_elapsed_ms: block.elapsed_ms,
-                last_elapsed_ms: block.elapsed_ms,
-                media_absent_since_source_frame: self.absent_since_frame,
-                blocks: 0,
-                state_transition_blocks: 0,
-                accepted_wet_packets_delta: 0,
-                nonzero_rendered_wet_samples_delta: 0,
-                rendered_wet_energy_delta: 0.,
-                energy_per_playback_slot: vec![0.; block.width],
-                peak_per_playback_slot: vec![0.; block.width],
-            });
-        }
-        let window = self.windows.last_mut().expect("window just admitted");
-        window.last_source_frame = block.frame + 47;
-        window.last_elapsed_ms = block.elapsed_ms;
-        window.blocks += 1;
-        window.state_transition_blocks += u64::from(transition);
-        window.accepted_wet_packets_delta += block.wet_after.packets - block.wet_before.packets;
-        window.nonzero_rendered_wet_samples_delta +=
-            block.wet_after.samples - block.wet_before.samples;
-        window.rendered_wet_energy_delta += block.wet_after.energy - block.wet_before.energy;
-        for row in block.playback.chunks_exact(block.width) {
-            for (channel, sample) in row.iter().enumerate() {
-                window.energy_per_playback_slot[channel] += sample * sample;
-                window.peak_per_playback_slot[channel] =
-                    window.peak_per_playback_slot[channel].max(sample.abs());
-            }
-        }
-    }
-}
+#[cfg(test)]
+#[path = "runner/source_tests.rs"]
+mod source_tests;
 
 fn save(path: &Path, value: &Value) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
@@ -467,10 +343,10 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             if let Some(take) = &record_take {
                 start_recording(&mut provider, &show_id, take, monotonic_ms())?;
             }
-            let mut duplex = if let Some(p) = &physical_device {
+            let duplex = if let Some(p) = &physical_device {
                 crate::host::duplex::validate_provider_map(provider.topology(), &p.topology)
                     .map_err(|e| e.to_string())?;
-                let mut device = crate::host::duplex::Duplex::open(
+                let device = crate::host::duplex::Duplex::open(
                     &p.device,
                     p.topology.clone(),
                     &p.acceptance,
@@ -478,11 +354,13 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                     p.buffer_frames,
                 )
                 .map_err(|e| e.to_string())?;
-                device.start().map_err(|e| e.to_string())?;
                 Some(device)
             } else {
                 None
             };
+            if physical {
+                provider.engine_mut().mark_verified_mapping()?;
+            }
             let mut host = HostAuthority::new(provider, 1)?;
             let capture_channels = host.provider().topology().capture_channels;
             let playback_channels = host.provider().topology().playback_channels;
@@ -505,32 +383,17 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                     &json!({"state":"ready","bind":address.to_string(),"source_epoch":source_epoch,"inputs":inputs,"capture_channels":capture_channels,"playback_channels":playback_channels,"outputs_initially_muted":true}),
                 )?;
             }
+            let media_queue_drops = super::proxy::MediaQueueDropTotals::default();
             let mut mailboxes = Vec::new();
             let mut networks = Vec::new();
-            let mut timer = tokio::time::interval(if physical {
-                Duration::from_micros(250)
-            } else {
-                Duration::from_millis(period_ms)
-            });
-            timer.set_missed_tick_behavior(if physical {
-                tokio::time::MissedTickBehavior::Skip
-            } else {
-                tokio::time::MissedTickBehavior::Burst
-            });
+            let mut timer = tokio::time::interval(Duration::from_millis(1));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let deadline = tokio::time::sleep(Duration::from_millis(duration_ms));
             tokio::pin!(deadline);
             let started = Instant::now();
-            let mut capture = vec![0.; 48 * capture_channels];
-            let mut playback = vec![0.; 48 * playback_channels];
-            let mut peaks = vec![0f64; playback_channels];
-            let mut sums = vec![0f64; playback_channels];
-            let mut revision_windows: Vec<RevisionWindow> = Vec::new();
-            let mut revision_windows_overflow = 0u64;
-            let mut output_windows = OutputWindows::default();
-            let mut brain_windows: Vec<BrainWindow> = Vec::new();
-            let mut brain_windows_overflow = 0u64;
-            let mut brain_window_identity = None;
-            let mut blocks = 0u64;
+            let source =
+                ProviderSource::start(&mut host, monotonic_ms(), period_ms, duration_ms, duplex)?;
+            let resources_ready = crate::brain_runtime::process_resources().ok();
             let mut sessions = 0u64;
             let mut control_faults = 0u64;
             let mut fault = None;
@@ -539,88 +402,39 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                     _=&mut deadline=>break,
                     accepted=accepted_rx.recv()=>{
                         let Some(session)=accepted else{fault=Some("accept worker stopped".to_string());break;};
-                        let (mut proxy,mut mailbox)=authority_channel(session.context(),host.identity())?;
+                        let (mut proxy,mut mailbox)=super::proxy::authority_channel_counted(session.context(),host.identity(),media_queue_drops.clone())?;
                         proxy.set_diagnostics(&mut mailbox,trace.clone());
                         mailboxes.push(mailbox);sessions+=1;
                         networks.retain(|task: &tokio::task::JoinHandle<_>| !task.is_finished());
                         networks.push(tokio::spawn(async move{session.run(&mut proxy).await}));
                     }
                     _=timer.tick()=>{
-                        // A fake device keeps its own elapsed-time cadence. Catch up
-                        // one bounded block per iteration; never hide skipped frames
-                        // as oscillator drift or accumulate more than100ms of debt.
-                        let due=started.elapsed().as_millis() as u64 / period_ms;
-                        if !physical && due.saturating_sub(blocks)>100/period_ms.max(1) {fault=Some("synthetic source scheduling debt exceeded100ms".into());break;}
-                        let diagnostic_begin=trace.as_ref().map(|t|t.now()).unwrap_or(0);
-                        let mut diagnostic_dispatch=0;let mut diagnostic_render=0;
-                        let diagnostic_debt=if trace.is_some(){started.elapsed().as_micros().saturating_sub(blocks as u128*period_ms as u128*1000) as u64}else{0};
-                        let now=monotonic_ms();
-                        let before_state=output_state(&mut host);
-                        let wet_before=WetCounters::read(&host);
-                        let frame=host.provider().frame();
-                        if let Some(device) = &mut duplex {
-                            let result=device.pump_authority_with(&mut host,now,|owner,fresh_now| {
-                                for mailbox in &mut mailboxes {if mailbox.service(owner,fresh_now).is_err(){control_faults+=1;}}
-                                Ok(())
-                            });
-                            if let Err(error)=result {fault=Some(error.to_string());break;}
-                            capture.copy_from_slice(device.last_capture());
-                            playback.copy_from_slice(device.last_playback());
-                        } else {
-                            let dispatch_begin=trace.as_ref().map(|t|t.now()).unwrap_or(0);
-                            for mailbox in &mut mailboxes {if mailbox.service(&mut host,now).is_err(){control_faults+=1;}}
-                            diagnostic_dispatch=trace.as_ref().map(|t|t.now().saturating_sub(dispatch_begin)).unwrap_or(0);
-                            capture.fill(0.);
-                            for f in 0..48 {for (index,input) in host.provider().topology().inputs.iter().enumerate(){
-                                let polarity=if ((frame+f as u64)/(24+index as u64)).is_multiple_of(2) {1.}else{-1.};
-                                capture[f*capture_channels+input.capture_slot]=polarity*((index+1)*128) as f64/8_388_608.;
-                            }}
-                            let render_begin=trace.as_ref().map(|t|t.now()).unwrap_or(0);
-                            let resources_begin=media_timing.then(thread_resources).flatten();
-                            if let Err(error)=host.process_source(now,source_epoch,frame,&capture,&mut playback){fault=Some(error);break;}
-                            diagnostic_render=trace.as_ref().map(|t|t.now().saturating_sub(render_begin)).unwrap_or(0);
-                            if let (Some(before),Some(after),Some(trace))=(resources_begin,media_timing.then(thread_resources).flatten(),&trace) {
-                                let delta: [u64;5]=std::array::from_fn(|i|after[i].saturating_sub(before[i]));
-                                trace.record(super::diagnostics::Token{session:delta[1],ordinal:frame,request:delta[0],kind:delta[3]},super::diagnostics::Stage::SourceResources,delta[4],delta[2]);
-                            }
+                        if source.stopped() { break; }
+                        let now = monotonic_ms();
+                        let resources_begin = media_timing.then(thread_resources).flatten();
+                        let diagnostic_begin = trace.as_ref().map(|t| t.now()).unwrap_or(0);
+                        if let Err(error) = source.service(&mut host, now) { fault=Some(error); break; }
+                        for mailbox in &mut mailboxes {
+                            if mailbox.service(&mut host, now).is_err() { control_faults += 1; }
                         }
-                        let report_begin=trace.as_ref().map(|t|t.now()).unwrap_or(0);
-                        mailboxes.retain(|m|!m.retired());
-                        output_windows.observe(OutputBlock{frame,elapsed_ms:started.elapsed().as_millis() as u64,before:before_state,after:output_state(&mut host),wet_before,wet_after:WetCounters::read(&host),playback:&playback,width:playback_channels});
-                        for row in playback.chunks_exact(playback_channels){for(channel,sample)in row.iter().enumerate(){peaks[channel]=peaks[channel].max(sample.abs());sums[channel]+=sample*sample;}}
-                        let revision=host.provider_mut().engine_mut().revision();
-                        let brain=host.provider().brain_snapshot();
-                        let brain_identity=(revision.0,brain.selection_generation.0,brain.held_generation,frame/4800);
-                        if brain_window_identity!=Some(brain_identity){
-                            // Retain native samples; materialize per-sample JSON
-                            // only after the bounded source run has stopped.
-                            if brain_windows.len()<2048{brain_windows.push(BrainWindow{elapsed_ms:started.elapsed().as_millis() as u64,source_frame:frame,snapshot:brain,bridge:host.brain_bridge_status(),playback:playback.clone(),monitor:host.provider().brain_monitor_output().to_vec(),fx_send:host.provider().brain_fx_send().to_vec()});}else{brain_windows_overflow+=1;}
-                            brain_window_identity=Some(brain_identity);
+                        mailboxes.retain(|m| !m.retired());
+                        if let (Some(before), Some(after), Some(trace)) = (resources_begin, media_timing.then(thread_resources).flatten(), &trace) {
+                            let delta: [u64;5] = std::array::from_fn(|i| after[i].saturating_sub(before[i]));
+                            trace.record(super::diagnostics::Token { session: delta[1], ordinal: host.provider().frame(), request: delta[0], kind: delta[3] }, super::diagnostics::Stage::SourceDispatchResources, delta[4], delta[2]);
                         }
-                        if revision_windows.last().is_none_or(|w|w.revision!=revision) {
-                            if revision_windows.len()<REVISION_WINDOW_LIMIT {
-                                revision_windows.push(RevisionWindow{revision,first_source_frame:frame,last_source_frame:frame+47,blocks:0,energy_per_playback_slot:vec![0.;playback_channels],first_block_samples:playback.clone()});
-                            } else {revision_windows_overflow+=1;}
+                        if let Some(trace) = &trace {
+                            trace.record(super::diagnostics::Token { session: 0, ordinal: host.provider().frame(), request: 0, kind: trace.now().saturating_sub(diagnostic_begin) }, super::diagnostics::Stage::SourceTick, 0, trace.now().saturating_sub(diagnostic_begin));
                         }
-                        if let Some(window)=revision_windows.last_mut().filter(|w|w.revision==revision) {
-                            window.last_source_frame=frame+47;window.blocks+=1;
-                            for row in playback.chunks_exact(playback_channels){for(channel,sample)in row.iter().enumerate(){window.energy_per_playback_slot[channel]+=sample*sample;}}
-                        }
-                        if let Some(trace)=&trace {trace.record(super::diagnostics::Token{session:trace.now().saturating_sub(report_begin),ordinal:frame,request:diagnostic_debt,kind:diagnostic_dispatch},super::diagnostics::Stage::SourceTick,diagnostic_render,trace.now().saturating_sub(diagnostic_begin));}
-                        blocks+=1;
                     }
                 }
             }
-            if physical {
-                if let Err(error) = host
-                    .provider_mut()
-                    .quiesce_source("bounded_physical_source_end")
-                {
-                    fault.get_or_insert(error);
-                }
-                host.provider_mut().close_brain_audio();
-                drop(duplex.take());
+            let resources_before_stop = crate::brain_runtime::process_resources().ok();
+            let prepared_media_storage = host.prepared_media_storage()?;
+            let source_report = source.finish(&mut host)?;
+            if let Some(error) = source_report.fault {
+                fault.get_or_insert(error.to_string());
             }
+            let blocks = source_report.blocks;
             acceptor.abort();
             let _ = acceptor.await;
             for network in &networks {
@@ -658,9 +472,14 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             } else {
                 host.provider_mut().module_status(monotonic_ms())?
             };
+            host.finish_source_ingress();
+            host.finish_source_egress();
             let snapshot = host.provider_mut().snapshot()?;
             let structure = host.provider_mut().structural_snapshot()?;
-            let mut evidence = json!({"mode":"provider","software_only":!physical,"physical_qualified":false,"real_time_qualified":false,"inputs":inputs,"capture_channels":capture_channels,"playback_channels":playback_channels,"source_epoch":source_epoch,"processed_frames":blocks*48,"blocks":blocks,"elapsed_ms":started.elapsed().as_millis(),"synthetic_period_ms":(!physical).then_some(period_ms),"clock_driver":if physical {"physical_capture"}else{"synthetic_elapsed_clock"},"sessions":sessions,"control_faults":control_faults,"revision_windows":revision_windows,"brain_windows":brain_windows,"brain_windows_overflow":brain_windows_overflow,"revision_windows_overflow":revision_windows_overflow,"output_window_frames":OUTPUT_WINDOW_FRAMES,"output_window_limit":OUTPUT_WINDOW_LIMIT,"output_windows":output_windows.windows,"output_windows_overflow_blocks":output_windows.overflow_blocks,"media":host.media_stats(),"accepted_wet_arrival_sha256":host.accepted_wet_sha256(),"fault":fault,"peak_per_playback_slot":peaks,"energy_per_playback_slot":sums,"final_snapshot":snapshot,"final_structure":structure,"modules":modules,"record_take":record_take,"recording_root":private_directory.join("takes")});
+            let mut evidence = json!({"mode":"provider","software_only":!physical,"physical_qualified":false,"real_time_qualified":false,"inputs":inputs,"capture_channels":capture_channels,"playback_channels":playback_channels,"source_epoch":source_epoch,"processed_frames":blocks*48,"blocks":blocks,"elapsed_ms":started.elapsed().as_millis(),"synthetic_period_ms":(!physical).then_some(period_ms),"source_execution":"dedicated_worker_autonomous","resource_observation":"controller_service_only","clock_driver":if physical {"physical_capture"}else{"synthetic_elapsed_clock"},"sessions":sessions,"control_faults":control_faults,"media_queue_drops":media_queue_drops.snapshot(),"source_report":source_report,"sample_window_schema":"source_clock_v2","revision_windows":null,"brain_windows":null,"media":host.media_stats(),"source_egress":host.source_egress_report(),"accepted_wet_arrival_sha256":host.accepted_wet_sha256(),"fault":fault,"peak_per_playback_slot":source_report.peaks,"energy_per_playback_slot":source_report.energy,"final_snapshot":snapshot,"final_structure":structure,"modules":modules,"record_take":record_take,"recording_root":private_directory.join("takes")});
+            evidence["prepared_media_storage"] = prepared_media_storage;
+            evidence["process_resources_ready"] = json!(resources_ready);
+            evidence["process_resources_before_stop"] = json!(resources_before_stop);
             if let Some(trace) = &trace {
                 evidence["provider_timing"] =
                     serde_json::to_value(trace.report()).map_err(|e| e.to_string())?;
@@ -694,7 +513,8 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             let credentials = Credentials::load_der(&certificate, &key, &ca)?;
             let endpoint = client_endpoint(bind, &credentials)?;
             let policy = PolicyStore::new(peers)?;
-            let mut client = RemoteClient::connect(endpoint, peer, &server_name, policy).await?;
+            let mut client =
+                RemoteClient::connect(endpoint, peer, &server_name, policy.clone()).await?;
             let request = AudioRequest {
                 contract: "C-AUDIO".into(),
                 version: 2,
@@ -717,8 +537,8 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                 serde_json::from_value(payload["snapshot"]["authority"]["inputs"].clone())
                     .map_err(|e| e.to_string())?;
             let max = client.max_datagram();
-            let mut streams = grouped_streams(MediaRole::Analysis, &ids, 48, 0, 1, max)?;
-            let first = streams.len() as u32 + 1;
+            let mut streams = Vec::new();
+            let first = 1;
             if fx_aux_sha256.is_some() && fx_control_sha256.is_some() {
                 return Err("select four auxes or legacy stereo FX control".into());
             }
@@ -770,6 +590,24 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             } else {
                 false
             };
+            let execution_deadline = Instant::now() + Duration::from_millis(duration_ms);
+            if aux_controls {
+                worker.start_aux_execution(execution_deadline)?;
+            } else {
+                worker.start_fx_execution(execution_deadline)?;
+            }
+            let mut analysis = analysis::Worker::start(
+                bind,
+                peer,
+                server_name,
+                credentials,
+                policy,
+                identity,
+                ids.clone(),
+                verify_synthetic_source,
+                execution_deadline,
+            )?;
+            let resources_ready = crate::brain_runtime::process_resources().ok();
             let (mut control_rx, control_task) = if controls {
                 let (rx, task) = client.take_fx_replies()?;
                 (rx, Some(task))
@@ -786,25 +624,10 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             let shutdown_hold_ms = u64::from(return_delay_frames)
                 .div_ceil(48)
                 .min(duration_ms / 2);
-            let finish_at = tokio::time::Instant::now() + Duration::from_millis(duration_ms);
+            let finish_at = tokio::time::Instant::from_std(execution_deadline);
             let deadline =
                 tokio::time::sleep_until(finish_at - Duration::from_millis(shutdown_hold_ms));
             tokio::pin!(deadline);
-            let mut first_source = None;
-            let mut last_source = None;
-            let mut analysis_hash = Sha256::new();
-            let mut mismatches = 0u64;
-            let mut channel_samples: std::collections::BTreeMap<String, u64> =
-                ids.iter().cloned().map(|id| (id, 0)).collect();
-            let references: std::collections::BTreeMap<_, _> = ids
-                .iter()
-                .map(|id| {
-                    let reference = verify_synthetic_source
-                        .then(|| analysis_reference(id))
-                        .transpose()?;
-                    Ok((id.clone(), reference))
-                })
-                .collect::<Result<_>>()?;
             let mut fault = None;
             loop {
                 tokio::select! {
@@ -839,23 +662,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
                         }
                     },
                     result=worker.step()=>match result {
-                        Ok(Some(bytes))=>{
-                            let packet=crate::transport::Packet::parse(&bytes).map_err(|e|format!("analysis evidence {e:?}"))?;
-                            first_source.get_or_insert(packet.source_frame());last_source=Some(packet.source_frame());
-                            let stream=descriptor.streams.iter().find(|s|s.stream==packet.spec().stream).ok_or("analysis evidence stream")?;
-                            for (channel,id) in stream.channel_ids.iter().enumerate() {
-                                let reference=references.get(id).ok_or("analysis reference channel")?;
-                                for f in 0..usize::from(packet.spec().frames) {
-                                    let actual=packet.pcm(f*usize::from(packet.spec().channels)+channel).map_err(|e|format!("analysis PCM {e:?}"))?;
-                                    if let Some((period,amplitude))=reference {
-                                        let expected=if ((packet.source_frame()+f as u64)/period).is_multiple_of(2) {*amplitude} else {-*amplitude};
-                                        if actual!=expected {mismatches+=1;}
-                                    }
-                                }
-                                *channel_samples.get_mut(id).ok_or("analysis channel evidence")?+=u64::from(packet.spec().frames);
-                            }
-                            analysis_hash.update(&bytes);
-                        },
+                        Ok(Some(_))=>{fault=Some("analysis entered FX connection".into());break;},
                         Ok(None)=>(),Err(error)=>{fault=Some(error);break;}
                     }
                 }
@@ -866,7 +673,17 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             if let Some(task) = control_task {
                 task.abort();
             }
+            let resources_before_stop = crate::brain_runtime::process_resources().ok();
+            worker.finish_execution();
             client.close();
+            let analysis_report = analysis.finish()?;
+            let first_source = analysis_report.first_source;
+            let last_source = analysis_report.last_source;
+            let mismatches = analysis_report.mismatches;
+            let channel_samples = &analysis_report.channel_samples;
+            if let Some(error) = &analysis_report.fault {
+                fault = Some(error.clone());
+            }
             if mismatches != 0 {
                 fault = Some("raw analysis sample mismatch".into());
             }
@@ -879,12 +696,28 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             if verify_synthetic_source && worker.nonzero_return_samples() == 0 {
                 fault = Some("functional acceptance observed no nonzero owner wet result; source may remain muted".into());
             }
-            let mut evidence = json!({"mode":"brain","software_only":verify_synthetic_source,"physical_io_owned":false,"physical_qualified":false,"descriptor":descriptor,"elapsed_ms":started.elapsed().as_millis(),"first_analysis_source_frame":first_source,"last_analysis_source_frame":last_source,"analysis_packets":worker.stats.analysis_packets,"synthetic_reference_checked":verify_synthetic_source,"analysis_sample_mismatches":if verify_synthetic_source {Some(mismatches)}else{None},"analysis_samples_per_channel":channel_samples,"analysis_arrival_sha256":format!("{:x}",analysis_hash.finalize()),"returned_wet_sha256":worker.returned_sha256(),"nonzero_returned_wet_samples":worker.nonzero_return_samples(),"fx_send_packets":worker.stats.send_packets,"actual_owner_fx_blocks":worker.stats.processed_blocks,"wet_packets":worker.stats.returned_packets,"incomplete_blocks":worker.stats.incomplete_blocks,"stale_groups":worker.stats.stale_groups,"fx_owner_resets":worker.owner_resets(),"fx_intentional_delay_frames":if controls {None}else{Some(worker.intentional_delay_frames())},"fx_controls_available":controls,"four_aux_controls":aux_controls,"fx_aux_owner_observation":if aux_controls {worker.poll_aux_observation().ok()}else{None},"fx_owner_observation":worker.fx_observation().ok(),"fault":fault});
+            let execution_report = worker.execution_report();
+            if let Some(report) = &execution_report
+                && let Some(code) = report["terminal_fault"].as_u64().filter(|code| *code != 0)
+            {
+                fault = Some(format!(
+                    "legacy FX execution fault {code}, native code {}",
+                    report["terminal_native_code"]
+                ));
+            }
+            let mut evidence = json!({"mode":"brain","software_only":verify_synthetic_source,"physical_io_owned":false,"physical_qualified":false,"descriptor":descriptor,"elapsed_ms":started.elapsed().as_millis(),"first_analysis_source_frame":first_source,"last_analysis_source_frame":last_source,"analysis_packets":analysis_report.packets,"synthetic_reference_checked":verify_synthetic_source,"analysis_sample_mismatches":if verify_synthetic_source {Some(mismatches)}else{None},"analysis_samples_per_channel":channel_samples,"analysis_arrival_sha256":analysis_report.sha256,"returned_wet_sha256":worker.returned_sha256(),"nonzero_returned_wet_samples":worker.nonzero_return_samples(),"fx_send_packets":worker.stats.send_packets,"actual_owner_fx_blocks":worker.stats.processed_blocks,"wet_packets":worker.stats.returned_packets,"incomplete_blocks":worker.stats.incomplete_blocks,"stale_groups":worker.stats.stale_groups,"fx_owner_resets":worker.owner_resets(),"fx_intentional_delay_frames":if controls {None}else{Some(worker.intentional_delay_frames())},"fx_controls_available":controls,"four_aux_controls":aux_controls,"fx_aux_owner_observation":if aux_controls {worker.poll_aux_observation().ok()}else{None},"fx_owner_observation":worker.fx_observation().ok(),"fault":fault});
+            evidence["analysis_execution"] =
+                serde_json::to_value(&analysis_report).map_err(|e| e.to_string())?;
             if let Some(trace) = &trace {
                 evidence["timing"] =
                     serde_json::to_value(trace.report()).map_err(|e| e.to_string())?;
             }
             evidence["shutdown_hold_ms"] = json!(shutdown_hold_ms);
+            evidence["fx_execution"] = json!(execution_report);
+            evidence["process_resources_ready"] = json!(resources_ready);
+            evidence["process_resources_before_stop"] = json!(resources_before_stop);
+            evidence["process_resources_stopped"] =
+                json!(crate::brain_runtime::process_resources().ok());
             save(&report, &evidence)?;
             Ok(evidence)
         }
@@ -1237,117 +1070,9 @@ pub(crate) fn start_recording(
 }
 
 #[cfg(test)]
-mod output_window_tests {
+mod provider_admission_tests {
     use super::*;
 
-    fn state(session: Option<u64>) -> OutputState {
-        OutputState {
-            source_epoch: Counter(14),
-            revision: Counter(8),
-            map_revision: Counter(3),
-            clock_state: crate::clock_domain::ClockState::Running,
-            outputs_quiesced: false,
-            media_session: session.map(Counter),
-            wet_return_negotiated: session.is_some(),
-        }
-    }
-
-    #[test]
-    fn actual_sample_windows_separate_session_loss_and_settled_dry_output() {
-        let mut recorder = OutputWindows::default();
-        let samples = [2.; 96];
-        let mut prior = state(Some(1));
-        let mut wet = WetCounters::default();
-        for block in 0..225_u64 {
-            let after = state(if block < 10 {
-                Some(1)
-            } else if block < 220 {
-                None
-            } else {
-                Some(2)
-            });
-            let before_wet = wet;
-            if !(16..220).contains(&block) {
-                wet.samples += 96;
-                wet.energy += 0.25;
-            }
-            if after.media_session.is_some() {
-                wet.packets += 1;
-            }
-            recorder.observe(OutputBlock {
-                frame: block * 48,
-                elapsed_ms: block,
-                before: prior,
-                after,
-                wet_before: before_wet,
-                wet_after: wet,
-                playback: &samples,
-                width: 2,
-            });
-            prior = after;
-        }
-        assert_eq!(recorder.overflow_blocks, 0);
-        assert_eq!(recorder.windows.iter().map(|w| w.blocks).sum::<u64>(), 225);
-        let dry = recorder
-            .windows
-            .iter()
-            .find(|w| {
-                w.state.media_session.is_none()
-                    && w.first_source_frame > w.media_absent_since_source_frame.unwrap() + 240
-                    && w.blocks == 100
-                    && w.nonzero_rendered_wet_samples_delta == 0
-            })
-            .unwrap();
-        assert_eq!(dry.rendered_wet_energy_delta, 0.);
-        assert_eq!(dry.state_transition_blocks, 0);
-        assert_eq!(dry.energy_per_playback_slot, vec![4. * 48. * 100.; 2]);
-        assert_eq!(dry.peak_per_playback_slot, vec![2.; 2]);
-        assert_eq!(dry.last_source_frame - dry.first_source_frame + 1, 4_800);
-        assert!(
-            recorder
-                .windows
-                .iter()
-                .any(|w| w.state.media_session == Some(Counter(2)))
-        );
-        assert_eq!(
-            recorder
-                .windows
-                .iter()
-                .map(|w| w.state_transition_blocks)
-                .sum::<u64>(),
-            2
-        );
-        let value = serde_json::to_value(dry).unwrap();
-        assert_eq!(value["media_session"], Value::Null);
-        assert_eq!(value["revision"], "8");
-        assert_eq!(value["outputs_quiesced"], false);
-    }
-
-    #[test]
-    fn diagnostic_capacity_is_explicit_and_never_relabels_dropped_samples() {
-        let mut recorder = OutputWindows::default();
-        let samples = [0.; 48];
-        for block in 0..OUTPUT_WINDOW_LIMIT as u64 + 3 {
-            let mut current = state(None);
-            current.revision = Counter(block);
-            recorder.observe(OutputBlock {
-                frame: block * 48,
-                elapsed_ms: block,
-                before: current,
-                after: current,
-                wet_before: WetCounters::default(),
-                wet_after: WetCounters::default(),
-                playback: &samples,
-                width: 1,
-            });
-        }
-        assert_eq!(recorder.windows.len(), OUTPUT_WINDOW_LIMIT);
-        assert_eq!(recorder.overflow_blocks, 3);
-        assert_eq!(
-            recorder.windows.iter().map(|w| w.blocks).sum::<u64>(),
-            OUTPUT_WINDOW_LIMIT as u64
-        );
-    }
     fn physical_fixture() -> PhysicalProviderConfig {
         let mut topology = EngineTopology::software(16, 5, 0).unwrap();
         topology.mapping_evidence = "operator-verified".into();

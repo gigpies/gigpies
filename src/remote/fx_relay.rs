@@ -25,6 +25,7 @@ struct Pending {
     deadline: u64,
     prepared: bool,
     permitted: bool,
+    writer_fence: PolicyFence,
 }
 impl HostAuthority {
     fn fx_binding_current(&self, b: &Binding) -> bool {
@@ -159,11 +160,43 @@ impl HostAuthority {
         }
         if p.prepared && !p.permitted {
             let mut p = self.fx.pending.take().unwrap();
-            let frame = self.provider.frame();
-            self.provider
-                .engine_mut()
-                .schedule_fx_external(&p.request, &p.fingerprint, frame)?;
-            let reply = self.provider.engine_mut().commit_external(now, || Ok(()))?;
+            let reply = if self.source_clock_status.is_some() {
+                self.provider.clocked_remote_permission(
+                    now,
+                    &p.request,
+                    &p.fingerprint,
+                    p.apply_frame,
+                    [
+                        p.writer_fence.clone(),
+                        self.fx.owner.as_ref().ok_or("FX owner lost")?.audio_fence(),
+                    ],
+                    None,
+                )
+            } else {
+                let frame = self.provider.frame();
+                self.provider.engine_mut().schedule_fx_external(
+                    &p.request,
+                    &p.fingerprint,
+                    frame,
+                )?;
+                self.provider.engine_mut().commit_external(now, || Ok(()))
+            };
+            let reply = match reply {
+                Ok(reply) => reply,
+                Err(error) => {
+                    self.provider
+                        .engine_mut()
+                        .cancel_fx_external(&p.request, &p.fingerprint);
+                    self.fx_send(
+                        p.mutation.binding.session.0,
+                        OwnerCommand::Cancel {
+                            ticket: Counter(p.ticket),
+                        },
+                    );
+                    self.fx_result(&p, "cancelled", Some(&error));
+                    return Ok(());
+                }
+            };
             if reply.kind != "applied" {
                 self.fx_send(
                     p.mutation.binding.session.0,
@@ -194,6 +227,9 @@ impl HostAuthority {
         payload: Value,
         now: u64,
     ) -> Result<Value> {
+        if self.source_clock_status.is_some() {
+            self.provider.service_source_clock(now)?;
+        }
         if payload.get("kind").and_then(Value::as_str) == Some("fx_owner") {
             #[derive(serde::Deserialize)]
             #[serde(deny_unknown_fields)]
@@ -406,11 +442,14 @@ impl HostAuthority {
         if self.provider.engine_mut().writer_scope(&request, now) != Some(Scope::FxConfiguration) {
             return Err("FX scope lease required".into());
         }
-        let apply_frame = self
-            .provider
-            .frame()
-            .checked_add(mutation.lead_frames.0)
-            .ok_or("FX frame exhausted")?;
+        let apply_frame = if self.source_clock_status.is_some() {
+            self.provider.remote_target_frame(mutation.lead_frames.0)?
+        } else {
+            self.provider
+                .frame()
+                .checked_add(mutation.lead_frames.0)
+                .ok_or("FX frame exhausted")?
+        };
         if self
             .fx
             .observation
@@ -447,6 +486,7 @@ impl HostAuthority {
             deadline,
             prepared: false,
             permitted: false,
+            writer_fence: context.audio_fence(),
         };
         self.fx.ticket = ticket;
         self.fx_send(
@@ -498,6 +538,9 @@ mod tests {
     }
     impl Harness {
         fn new(name: &str) -> Self {
+            Self::with_clock(name, false)
+        }
+        fn with_clock(name: &str, clocked: bool) -> Self {
             let path = std::env::temp_dir().join(format!("gp21-{}-{name}", std::process::id()));
             std::fs::create_dir(&path).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -548,10 +591,17 @@ mod tests {
                     scope: Scope::FxConfiguration,
                 },
             };
+            // Clocked startup retains the time charged by media preparation.
+            // A time-zero lease may already be expired in a shared test process.
+            let grant_now = if clocked {
+                host.provider.source_control_time()
+            } else {
+                0
+            };
             let lease = host
                 .provider
                 .engine_mut()
-                .handle(&grant, 0)
+                .handle(&grant, grant_now)
                 .unwrap()
                 .outcome
                 .unwrap()
@@ -591,6 +641,60 @@ mod tests {
                 .process_source(now, 9, f, &capture, &mut playback)
                 .unwrap();
         }
+    }
+    #[test]
+    fn clocked_legacy_permission_survives_controller_stall() {
+        let mut h = Harness::with_clock("clocked-permission", true);
+        let status = h
+            .host
+            .start_source_clock(0, std::time::Duration::from_millis(2), 240)
+            .unwrap();
+        let o = h.observation();
+        h.observe(o.clone(), 0);
+        h.snapshot(0);
+        let request = h.mutation();
+        let reply = h.host.dispatch(&h.writer, request, 0).unwrap().unwrap();
+        let ticket: Counter = serde_json::from_value(reply["ticket"].clone()).unwrap();
+        let target = h.host.fx.pending.as_ref().unwrap().apply_frame;
+        h.message(
+            OwnerMessage::Prepared {
+                ticket,
+                binding: o.binding.clone(),
+                generation: o.generation,
+                configuration_json: Some(o.owner_json.replace("20.0", "1.0")),
+                panic_mask: None,
+            },
+            1,
+        )
+        .unwrap();
+        h.host.service_source_clock(1).unwrap();
+        assert!(h.host.fx.pending.as_ref().unwrap().permitted);
+        assert!(h.host.provider.frame() < target);
+        assert!(
+            h.host
+                .fx
+                .messages
+                .iter()
+                .any(|(_, v)| v["command"]["kind"] == "permit")
+                || h.host
+                    .fx
+                    .messages
+                    .iter()
+                    .any(
+                        |(_, v)| serde_json::from_value::<OwnerCommand>(v["command"].clone())
+                            .is_ok_and(|c| matches!(c, OwnerCommand::Permit { .. }))
+                    )
+        );
+        let before = status.blocks();
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while status.blocks() * 48 <= target + 48 {
+            assert!(std::time::Instant::now() < limit);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(status.blocks() > before);
+        h.host.service_source_clock(300).unwrap();
+        assert!(h.host.fx.pending.as_ref().unwrap().permitted);
+        h.host.finish_source_clock(&status).unwrap();
     }
     #[test]
     fn gp21_relay_preparation_does_not_stall_dry_and_cancels_unpermitted_target() {

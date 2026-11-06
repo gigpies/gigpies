@@ -58,6 +58,14 @@ impl JitterBuffer {
             stats: BufferStats::default(),
         })
     }
+    /// Includes actual slot tags/alignment, not just wire packet payloads.
+    pub fn prepared_storage(&self) -> super::PreparedStorage {
+        super::PreparedStorage::checked(
+            std::mem::size_of::<Self>(),
+            std::mem::size_of_val(self.slots.as_ref()),
+        )
+        .expect("admitted bounded jitter storage")
+    }
     /// Enforce the real PA deadline even if the receiving worker has not yet
     /// caught its read cursor up after a scheduling stall. Call after validation.
     pub fn insert_wet_at(&mut self, packet: Packet<'_>, pa_frame_now: u64) -> Result<(), Error> {

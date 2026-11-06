@@ -42,3 +42,27 @@ impl<T: Copy> CaptureFanout<T> {
         }
     }
 }
+
+/// Inline datagram storage for SPSC ingress. Copy ownership means dequeue,
+/// rejection and queue overflow cannot free a payload on the receiving thread.
+#[derive(Clone, Copy, Debug)]
+pub struct MediaDatagram {
+    len: u16,
+    bytes: [u8; super::MAX_DATAGRAM],
+}
+impl MediaDatagram {
+    pub fn copy_from(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.is_empty() || bytes.len() > super::MAX_DATAGRAM {
+            return Err(Error::Size);
+        }
+        let mut packet = Self {
+            len: bytes.len() as u16,
+            bytes: [0; super::MAX_DATAGRAM],
+        };
+        packet.bytes[..bytes.len()].copy_from_slice(bytes);
+        Ok(packet)
+    }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+}

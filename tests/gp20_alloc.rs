@@ -43,6 +43,7 @@ fn reserved_mic_borrowed_offer_never_allocates_or_retires() {
         offline_evidence: vec![],
     })
     .unwrap();
+    let mut source = state.detach_capture().unwrap();
     let mut topology = EngineTopology::software(16, 2, 2).unwrap();
     topology.capture_channels = 17;
     topology.measurement_slots = vec![16];
@@ -88,9 +89,9 @@ fn reserved_mic_borrowed_offer_never_allocates_or_retires() {
     EVENTS.with(|n| n.set(0));
     ACTIVE.with(|a| a.set(true));
     for block in 0..684 {
-        state.offer(1, 1, block * 48, &raw, true);
+        source.offer(1, 1, block * 48, &raw, true);
     }
-    state.offer(2, 2, 0, &raw, false);
+    source.offer(2, 2, 0, &raw, false);
     ACTIVE.with(|a| a.set(false));
     assert_eq!(EVENTS.with(Cell::get), 0);
     assert_eq!(state.progress().unwrap().received_samples, 32768);

@@ -1,7 +1,7 @@
 //! Serialized native-f64 SHR FX palette owner. No DSP is duplicated here.
 use libloading::Library;
 use serde::{Deserialize, Serialize};
-use std::{ffi::c_void, path::Path};
+use std::{ffi::c_void, path::Path, sync::Arc};
 type Result<T> = std::result::Result<T, String>;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -89,7 +89,108 @@ pub struct Owner {
     parameter: unsafe extern "C" fn(u32, u32, *mut Parameter, u32, u32) -> i32,
     delay_time: Option<unsafe extern "C" fn(f64, u32, u32, *mut f64) -> i32>,
     pub capabilities: Capabilities,
-    _library: Library,
+    _library: Arc<Library>,
+}
+// SAFETY: the v2 ABI permits ownership transfer. Every instance call requires
+// exclusive access; this type is deliberately not Sync. The library remains
+// loaded for the entire instance lifetime.
+unsafe impl Send for Owner {}
+
+/// Caller-owned prepared storage. Transfer does not touch the instance. Drop is
+/// allowed only on the controller/retirement worker, never in a render quantum.
+pub(crate) struct PreparedToken {
+    pointer: *mut c_void,
+    cancel: Free,
+    library: Arc<Library>,
+}
+// SAFETY: an unpublished or relinquished token has one owner and no concurrent
+// instance access. The ABI explicitly permits preparation on another thread.
+unsafe impl Send for PreparedToken {}
+impl Drop for PreparedToken {
+    fn drop(&mut self) {
+        if !self.pointer.is_null() {
+            unsafe { (self.cancel)(self.pointer) };
+        }
+    }
+}
+
+/// Instance-free preparation uses copied settings and pins the same library.
+#[derive(Clone)]
+pub(crate) struct Preparer {
+    prepare: Create,
+    cancel: Free,
+    library: Arc<Library>,
+    delay_time: Option<unsafe extern "C" fn(f64, u32, u32, *mut f64) -> i32>,
+    defaults: unsafe extern "C" fn(u32, *mut Settings, u32, u32) -> i32,
+    parameter: unsafe extern "C" fn(u32, u32, *mut Parameter, u32, u32) -> i32,
+    pub(crate) capabilities: Capabilities,
+}
+impl Preparer {
+    pub(crate) fn defaults(&self, algorithm: u32) -> Result<Settings> {
+        if algorithm >= 32 || self.capabilities.algorithm_mask & (1 << algorithm) == 0 {
+            return Err("FX algorithm unavailable".into());
+        }
+        let mut s = Settings::default();
+        if unsafe { (self.defaults)(algorithm, &mut s, 2, 64) } != 0
+            || s.version != 2
+            || s.size != 64
+            || s.algorithm != algorithm
+        {
+            return Err("FX defaults ABI".into());
+        }
+        Ok(s)
+    }
+    pub(crate) fn parameters(&self, algorithm: u32) -> Result<Vec<Parameter>> {
+        self.defaults(algorithm)?;
+        (1..=6)
+            .map(|id| {
+                let mut p = Parameter::default();
+                if unsafe { (self.parameter)(algorithm, id, &mut p, 2, 48) } != 0
+                    || p.version != 2
+                    || p.size != 48
+                    || p.algorithm != algorithm
+                    || p.parameter != id
+                    || !p.minimum.is_finite()
+                    || !p.maximum.is_finite()
+                    || p.minimum > p.maximum
+                    || !p.default_value.is_finite()
+                {
+                    return Err("FX parameter ABI".into());
+                }
+                Ok(p)
+            })
+            .collect()
+    }
+    pub(crate) fn empty_token(&self) -> PreparedToken {
+        PreparedToken {
+            pointer: std::ptr::null_mut(),
+            cancel: self.cancel,
+            library: self.library.clone(),
+        }
+    }
+
+    pub(crate) fn delay_time(&self, bpm: f64, denominator: u32, modifier: u32) -> Result<f64> {
+        let resolve = self
+            .delay_time
+            .ok_or("provider tempo divisions unavailable")?;
+        let mut ms = 0.;
+        if unsafe { resolve(bpm, denominator, modifier, &mut ms) } != 0 {
+            return Err("delay division outside provider time/BPM bounds".into());
+        }
+        Ok(ms)
+    }
+
+    pub(crate) fn prepare(&self, settings: &Settings) -> Result<PreparedToken> {
+        let pointer = unsafe { (self.prepare)(48000, 48, settings) };
+        if pointer.is_null() {
+            return Err("FX settings refused".into());
+        }
+        Ok(PreparedToken {
+            pointer,
+            cancel: self.cancel,
+            library: self.library.clone(),
+        })
+    }
 }
 impl Owner {
     pub fn load(path: &Path) -> Result<Self> {
@@ -150,7 +251,7 @@ impl Owner {
             }
             .ok()
             .map(|s| *s),
-            _library: library,
+            _library: Arc::new(library),
         };
         let settings = owner.defaults(1)?;
         owner.handle = unsafe { create(48000, 48, &settings) };
@@ -159,6 +260,54 @@ impl Owner {
         }
         owner.status()?;
         Ok(owner)
+    }
+    pub(crate) fn preparer(&self) -> Preparer {
+        Preparer {
+            prepare: self.prepare,
+            cancel: self.cancel,
+            library: self._library.clone(),
+            delay_time: self.delay_time,
+            defaults: self.defaults,
+            parameter: self.parameter,
+            capabilities: self.capabilities,
+        }
+    }
+    /// Publish external storage; the caller retains its wrapper for off-thread
+    /// destruction even on success. No Arc decrement occurs in this method.
+    pub(crate) fn publish_token(
+        &mut self,
+        token: &mut PreparedToken,
+        request: u64,
+        revision: u64,
+    ) -> std::result::Result<(), i32> {
+        if token.pointer.is_null() || !Arc::ptr_eq(&self._library, &token.library) {
+            return Err(-1);
+        }
+        let result = unsafe { (self.publish)(self.handle, token.pointer, request, revision) };
+        if result != 0 {
+            return Err(result);
+        }
+        token.pointer = std::ptr::null_mut();
+        Ok(())
+    }
+    /// Poll at most one relinquished object. Caller must reserve a retirement
+    /// queue slot first and move the returned token there without dropping it.
+    pub(crate) fn retired_token(&mut self) -> Option<PreparedToken> {
+        let pointer = unsafe { (self.retire)(self.handle) };
+        (!pointer.is_null()).then(|| PreparedToken {
+            pointer,
+            cancel: self.cancel,
+            library: self._library.clone(),
+        })
+    }
+    /// Transfer one relinquished object into a preallocated wrapper. The
+    /// wrapper must be empty and originate from this library. Never frees.
+    pub(crate) fn take_retired(&mut self, into: &mut PreparedToken) -> bool {
+        if !into.pointer.is_null() || !Arc::ptr_eq(&self._library, &into.library) {
+            return false;
+        }
+        into.pointer = unsafe { (self.retire)(self.handle) };
+        !into.pointer.is_null()
     }
     pub fn defaults(&self, algorithm: u32) -> Result<Settings> {
         if algorithm >= 32 || self.capabilities.algorithm_mask & (1 << algorithm) == 0 {
@@ -206,6 +355,9 @@ impl Owner {
         Ok(ms)
     }
     pub fn status(&mut self) -> Result<Status> {
+        self.status_bounded().map_err(str::to_owned)
+    }
+    pub(crate) fn status_bounded(&mut self) -> std::result::Result<Status, &'static str> {
         let mut s = Status::default();
         if unsafe { (self.query)(self.handle, &mut s, 2, 200) } != 0
             || s.version != 2
@@ -213,7 +365,7 @@ impl Owner {
             || s.rate != 48000
             || s.max_block != 48
         {
-            return Err("FX palette status ABI".into());
+            return Err("FX palette status ABI");
         }
         Ok(s)
     }
@@ -232,9 +384,21 @@ impl Owner {
         if self.token.is_null() {
             return Err("FX token absent".into());
         }
+        self.publish_bounded(request, revision)
+            .map_err(|code| format!("FX publish refused {code}"))
+    }
+    /// Numeric errors preserve allocation-free failure as well as success.
+    pub(crate) fn publish_bounded(
+        &mut self,
+        request: u64,
+        revision: u64,
+    ) -> std::result::Result<(), i32> {
+        if self.token.is_null() {
+            return Err(-1);
+        }
         let result = unsafe { (self.publish)(self.handle, self.token, request, revision) };
         if result != 0 {
-            return Err(format!("FX publish refused {result}"));
+            return Err(result);
         }
         self.token = std::ptr::null_mut();
         Ok(())
@@ -252,8 +416,11 @@ impl Owner {
         }
     }
     pub fn reset(&mut self) -> Result<()> {
+        self.reset_bounded().map_err(str::to_owned)
+    }
+    pub(crate) fn reset_bounded(&mut self) -> std::result::Result<(), &'static str> {
         if unsafe { (self.reset)(self.handle) } != 0 {
-            return Err("FX reset failed".into());
+            return Err("FX reset failed");
         }
         Ok(())
     }

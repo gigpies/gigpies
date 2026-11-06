@@ -82,7 +82,103 @@ struct EqCapabilities {
     extra_work_units: u32,
     reserved: u32,
 }
+struct EqContextApi {
+    create: unsafe extern "C" fn() -> Handle,
+    destroy: Destroy,
+    capture: unsafe extern "C" fn(Handle, Handle, u32, u32) -> i32,
+    status: unsafe extern "C" fn(Handle, *mut EqStatus) -> i32,
+    prepare: unsafe extern "C" fn(Handle, *const u8, u32, u64) -> Handle,
+    readback: unsafe extern "C" fn(Handle, *mut u8, u32) -> i32,
+}
+impl EqContextApi {
+    unsafe fn load(l: &Library) -> Option<Self> {
+        unsafe {
+            Some(Self {
+                create: *l.get(b"shr_pa_eq_context_v1_create").ok()?,
+                destroy: *l.get(b"shr_pa_eq_context_v1_destroy").ok()?,
+                capture: *l.get(b"shr_pa_eq_context_v1_capture").ok()?,
+                status: *l.get(b"shr_pa_eq_context_v1_status").ok()?,
+                prepare: *l.get(b"shr_pa_eq_context_v1_prepare").ok()?,
+                readback: *l.get(b"shr_pa_eq_context_v1_readback").ok()?,
+            })
+        }
+    }
+}
+/// Independently owned copied EQ state; never contains a borrowed active handle.
+/// Allocate/drop on the controller; transfer exclusively for source capture.
+pub struct EqContext {
+    handle: Handle,
+    api: Arc<Api>,
+}
+// SAFETY: the context owns only copied fixed-size native state. All accesses are
+// serialized by ownership; the Arc keeps its code loaded through destruction.
+unsafe impl Send for EqContext {}
+impl EqContext {
+    pub fn status(&self) -> std::result::Result<EqStatus, i32> {
+        let api = self
+            .api
+            .eq
+            .as_ref()
+            .and_then(|e| e.context.as_ref())
+            .ok_or(-5)?;
+        let mut status = EqStatus::default();
+        let code = unsafe { (api.status)(self.handle, &mut status) };
+        if code == 0 { Ok(status) } else { Err(code) }
+    }
+    pub fn prepare(&self, json: &[u8], expected: EqStatus, frame: u64) -> Result<PreparedEq> {
+        if json.is_empty() || json.len() > 32768 {
+            return Err("EQ JSON bound".into());
+        }
+        let current = self
+            .status()
+            .map_err(|e| format!("EQ context status {e}"))?;
+        if current.instance != expected.instance
+            || current.graph_generation != expected.graph_generation
+            || current.eq_generation != expected.eq_generation
+            || current.epoch != expected.epoch
+        {
+            return Err("stale EQ identity".into());
+        }
+        let api = self
+            .api
+            .eq
+            .as_ref()
+            .and_then(|e| e.context.as_ref())
+            .ok_or("detached EQ unavailable")?;
+        let handle = unsafe { (api.prepare)(self.handle, json.as_ptr(), json.len() as u32, frame) };
+        if handle.is_null() {
+            return Err("EQ owner preparation refused".into());
+        }
+        Ok(PreparedEq {
+            handle,
+            api: Arc::clone(&self.api),
+        })
+    }
+    pub fn readback(&self) -> Result<String> {
+        let api = self
+            .api
+            .eq
+            .as_ref()
+            .and_then(|e| e.context.as_ref())
+            .ok_or("detached EQ unavailable")?;
+        let mut bytes = vec![0; 65536];
+        let code = unsafe { (api.readback)(self.handle, bytes.as_mut_ptr(), bytes.len() as u32) };
+        if code <= 0 {
+            return Err(format!("EQ context readback {code}").into());
+        }
+        bytes.truncate(code as usize);
+        String::from_utf8(bytes).map_err(Into::into)
+    }
+}
+impl Drop for EqContext {
+    fn drop(&mut self) {
+        if let Some(api) = self.api.eq.as_ref().and_then(|e| e.context.as_ref()) {
+            unsafe { (api.destroy)(self.handle) };
+        }
+    }
+}
 struct EqApi {
+    context: Option<EqContextApi>,
     status: unsafe extern "C" fn(Handle, *mut EqStatus, u32, u32) -> i32,
     prepare: unsafe extern "C" fn(Handle, *const u8, u32, u32, u64, u64, u64, u64) -> Handle,
     apply: unsafe extern "C" fn(Handle, *mut Handle, u64, u64) -> i32,
@@ -113,6 +209,7 @@ impl EqApi {
                 return None;
             }
             Some(Self {
+                context: EqContextApi::load(l),
                 status: *l.get(b"shr_pa_eq_v1_status").ok()?,
                 prepare: *l.get(b"shr_pa_eq_v1_prepare").ok()?,
                 apply: *l.get(b"shr_pa_eq_v1_apply").ok()?,
@@ -126,6 +223,13 @@ impl EqApi {
 pub struct PreparedEq {
     handle: Handle,
     api: Arc<Api>,
+}
+// SAFETY: exclusively owned native token; no thread-affine data or active borrow.
+unsafe impl Send for PreparedEq {}
+impl PreparedEq {
+    pub fn is_empty(&self) -> bool {
+        self.handle.is_null()
+    }
 }
 impl Drop for PreparedEq {
     fn drop(&mut self) {
@@ -154,7 +258,12 @@ pub struct Prepared {
     handle: Handle,
     api: Arc<Api>,
 }
+// SAFETY: exclusively owned graph state, with library lifetime retained.
+unsafe impl Send for Prepared {}
 impl Prepared {
+    pub fn is_empty(&self) -> bool {
+        self.handle.is_null()
+    }
     /// Exclusive read of the fresh owner shape, before host buffer admission.
     pub fn status(&self) -> std::result::Result<Status, i32> {
         if self.handle.is_null() {
@@ -171,6 +280,76 @@ impl Drop for Prepared {
         unsafe { (self.api.destroy)(self.handle) };
     }
 }
+/// Controller-owned library API. Preparing a new graph never reads the source
+/// graph, and tokens retain the exact API identity required by boundary commit.
+pub struct PaPreparation {
+    api: Arc<Api>,
+}
+impl PaPreparation {
+    pub fn detached_eq_available(&self) -> bool {
+        self.api.eq.as_ref().is_some_and(|e| e.context.is_some())
+    }
+    /// Allocation, parsing and coefficient design occur only here in the owner.
+    pub fn prepare(&self, json: &[u8]) -> Result<Prepared> {
+        if json.is_empty() || json.len() > self.api.capabilities.max_json_bytes as usize {
+            return Err("SHR PA v2 JSON resource bound".into());
+        }
+        let mut reason = [0u8; 512];
+        // SAFETY: disjoint live input/error storage; owner copies configuration.
+        unsafe {
+            let result = (self.api.validate)(
+                json.as_ptr(),
+                json.len() as u32,
+                reason.as_mut_ptr(),
+                reason.len() as u32,
+            );
+            if result != 0 {
+                let len = reason.iter().position(|v| *v == 0).unwrap_or(reason.len());
+                return Err(format!(
+                    "SHR PA v2 preparation refused: {}",
+                    String::from_utf8_lossy(&reason[..len])
+                )
+                .into());
+            }
+            let handle = (self.api.prepare)(json.as_ptr(), json.len() as u32, 2);
+            if handle.is_null() {
+                return Err("SHR PA v2 preparation failed".into());
+            }
+            Ok(Prepared {
+                handle,
+                api: Arc::clone(&self.api),
+            })
+        }
+    }
+    pub fn create_eq_context(&self) -> Result<EqContext> {
+        let api = self
+            .api
+            .eq
+            .as_ref()
+            .and_then(|e| e.context.as_ref())
+            .ok_or("detached EQ unavailable")?;
+        let handle = unsafe { (api.create)() };
+        if handle.is_null() {
+            return Err("EQ context allocation refused".into());
+        }
+        Ok(EqContext {
+            handle,
+            api: Arc::clone(&self.api),
+        })
+    }
+    pub fn retirement_slot(&self) -> Prepared {
+        Prepared {
+            handle: std::ptr::null_mut(),
+            api: Arc::clone(&self.api),
+        }
+    }
+    pub fn eq_retirement_slot(&self) -> PreparedEq {
+        PreparedEq {
+            handle: std::ptr::null_mut(),
+            api: Arc::clone(&self.api),
+        }
+    }
+}
 /// One active handle and one reserved retired slot. A full slot rejects the next
 /// commit until the controller calls retire(); no render-side destruction occurs.
 pub struct Pa {
@@ -181,6 +360,9 @@ pub struct Pa {
     outputs: usize,
     max_block: usize,
 }
+// SAFETY: PA ABI permits exclusive ownership transfer. Methods serialize native
+// access; this does not permit concurrent prepare/query/process on one handle.
+unsafe impl Send for Pa {}
 impl Pa {
     /// Load an explicitly hash-verified trusted owner library off the render path.
     pub fn load(path: &Path, json: &[u8], epoch: u64, frame: u64) -> Result<Self> {
@@ -244,9 +426,61 @@ impl Pa {
         }
         Ok(s)
     }
+    pub fn detached_eq_available(&self) -> bool {
+        self.api.eq.as_ref().is_some_and(|e| e.context.is_some())
+    }
+    pub fn create_eq_context(&self) -> Result<EqContext> {
+        let api = self
+            .api
+            .eq
+            .as_ref()
+            .and_then(|e| e.context.as_ref())
+            .ok_or("detached EQ unavailable")?;
+        let handle = unsafe { (api.create)() };
+        if handle.is_null() {
+            return Err("EQ context allocation refused".into());
+        }
+        Ok(EqContext {
+            handle,
+            api: Arc::clone(&self.api),
+        })
+    }
+    /// Source-only bounded copy into already allocated exclusively owned storage.
+    pub fn capture_eq_context(&self, context: &mut EqContext, indices: [usize; 2]) -> i32 {
+        if !Arc::ptr_eq(&self.api, &context.api) || indices.iter().any(|i| *i > u32::MAX as usize) {
+            return -1;
+        }
+        let Some(api) = self.api.eq.as_ref().and_then(|e| e.context.as_ref()) else {
+            return -5;
+        };
+        unsafe {
+            (api.capture)(
+                self.active,
+                context.handle,
+                indices[0] as u32,
+                indices[1] as u32,
+            )
+        }
+    }
     pub fn prepare_eq(&self, json: &[u8], expected: EqStatus, frame: u64) -> Result<PreparedEq> {
         if json.is_empty() || json.len() > 32768 {
             return Err("EQ JSON bound".into());
+        }
+        if self.detached_eq_available() {
+            let patch: serde_json::Value = serde_json::from_slice(json)?;
+            let inputs = patch["inputs"].as_array().ok_or("EQ inputs")?;
+            if inputs.len() != 2 {
+                return Err("EQ inputs".into());
+            }
+            let first = inputs[0]["input_index"].as_u64().ok_or("EQ input index")?;
+            let second = inputs[1]["input_index"].as_u64().ok_or("EQ input index")?;
+            let indices = [usize::try_from(first)?, usize::try_from(second)?];
+            let mut context = self.create_eq_context()?;
+            let code = self.capture_eq_context(&mut context, indices);
+            if code != 0 {
+                return Err(format!("EQ context capture {code}").into());
+            }
+            return context.prepare(json, expected, frame);
         }
         let eq = self.api.eq.as_ref().ok_or("live EQ unavailable")?;
         let current = self.eq_status().map_err(|e| format!("EQ status {e}"))?;
@@ -287,18 +521,38 @@ impl Pa {
         };
         unsafe { (eq.apply)(self.active, &mut p.handle, epoch, frame) }
     }
-    /// Controller-only explicit disposal after endpoint/fault.
-    pub fn retire_eq(&mut self) {
-        if let Some(eq) = &self.api.eq {
-            let mut raw = std::ptr::null_mut();
-            if unsafe { (eq.retire)(self.active, &mut raw) } == 0 {
-                unsafe {
-                    (eq.destroy)(raw);
-                }
-            }
+    /// Allocate the host ownership slot before source execution.
+    pub fn eq_retirement_slot(&self) -> PreparedEq {
+        PreparedEq {
+            handle: std::ptr::null_mut(),
+            api: Arc::clone(&self.api),
         }
     }
+    /// Bounded transfer only. Caller reserves a controller retirement lane before
+    /// calling; occupied slots are refused and never destroyed here.
+    pub fn take_retired_eq(&mut self, into: &mut PreparedEq) -> i32 {
+        if !into.handle.is_null() || !Arc::ptr_eq(&self.api, &into.api) {
+            return -3;
+        }
+        let Some(eq) = &self.api.eq else {
+            return -5;
+        };
+        unsafe { (eq.retire)(self.active, &mut into.handle) }
+    }
+    /// Synchronous compatibility disposal; controller-only.
+    pub fn retire_eq(&mut self) {
+        let mut slot = self.eq_retirement_slot();
+        let _ = self.take_retired_eq(&mut slot);
+    }
     pub fn eq_readback(&self, indices: [usize; 2]) -> Result<String> {
+        if self.detached_eq_available() {
+            let mut context = self.create_eq_context()?;
+            let code = self.capture_eq_context(&mut context, indices);
+            if code != 0 {
+                return Err(format!("EQ context capture {code}").into());
+            }
+            return context.readback();
+        }
         let eq = self.api.eq.as_ref().ok_or("live EQ unavailable")?;
         let mut bytes = vec![0; 65536];
         let code = unsafe {
@@ -325,37 +579,14 @@ impl Pa {
     pub fn output_channels(&self) -> usize {
         self.outputs
     }
-    /// Allocation, parsing and coefficient design occur only here in the owner.
+    /// Controller-only API ownership; no active graph is borrowed by preparation.
+    pub fn preparation(&self) -> PaPreparation {
+        PaPreparation {
+            api: Arc::clone(&self.api),
+        }
+    }
     pub fn prepare(&self, json: &[u8]) -> Result<Prepared> {
-        if json.is_empty() || json.len() > self.api.capabilities.max_json_bytes as usize {
-            return Err("SHR PA v2 JSON resource bound".into());
-        }
-        let mut reason = [0u8; 512];
-        // SAFETY: disjoint live input/error storage; owner copies configuration.
-        unsafe {
-            let result = (self.api.validate)(
-                json.as_ptr(),
-                json.len() as u32,
-                reason.as_mut_ptr(),
-                reason.len() as u32,
-            );
-            if result != 0 {
-                let len = reason.iter().position(|v| *v == 0).unwrap_or(reason.len());
-                return Err(format!(
-                    "SHR PA v2 preparation refused: {}",
-                    String::from_utf8_lossy(&reason[..len])
-                )
-                .into());
-            }
-            let handle = (self.api.prepare)(json.as_ptr(), json.len() as u32, 2);
-            if handle.is_null() {
-                return Err("SHR PA v2 preparation failed".into());
-            }
-            Ok(Prepared {
-                handle,
-                api: Arc::clone(&self.api),
-            })
-        }
+        self.preparation().prepare(json)
     }
     /// Boundary-only ownership swap. On refusal prepared and active remain owned.
     /// No allocation, deallocation or refcount change; retire() is controller-only.
@@ -389,6 +620,18 @@ impl Pa {
             }
             result
         }
+    }
+    /// Bounded exclusive ownership transfer into controller-prepared storage.
+    /// Neither native destruction nor an Arc operation occurs on this path.
+    pub fn take_retired(&mut self, into: &mut Prepared) -> i32 {
+        if !Arc::ptr_eq(&self.api, &into.api) {
+            return -1;
+        }
+        if !into.handle.is_null() {
+            return -3;
+        }
+        std::mem::swap(&mut self.retired, &mut into.handle);
+        0
     }
     /// Controller only, after exclusive render use has returned.
     pub fn retire(&mut self) {
@@ -433,5 +676,64 @@ impl Drop for Pa {
     fn drop(&mut self) {
         self.retire();
         unsafe { (self.api.destroy)(self.active) };
+    }
+}
+
+#[cfg(test)]
+mod detached_tests {
+    use super::*;
+    #[test]
+    #[ignore = "actual PA library and stereo4way fixture: GP_PA_LIBRARY, GP_PA_CONFIG"]
+    fn actual_detached_preparation_during_render_and_transferred_retirement() {
+        let path = std::env::var_os("GP_PA_LIBRARY").unwrap();
+        let config = std::fs::read(std::env::var_os("GP_PA_CONFIG").unwrap()).unwrap();
+        let mut pa = Pa::load(Path::new(&path), &config, 1, 0).unwrap();
+        assert!(pa.detached_eq_available());
+        let mut context = pa.create_eq_context().unwrap();
+        let mut retirement = pa.eq_retirement_slot();
+        crate::remote::assert_no_allocations(|| {
+            assert_eq!(pa.capture_eq_context(&mut context, [0, 1]), 0);
+        });
+        let expected = context.status().unwrap();
+        let readback = context.readback().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&readback).unwrap();
+        let mut patch = serde_json::json!({"version":1,"inputs":value["target"]});
+        patch["inputs"][0]["eq"][0]["db"] = serde_json::json!(3.0);
+        let patch = serde_json::to_vec(&patch).unwrap();
+        // Exercise the production synchronous caller's optional-interface route
+        // as well as the explicitly detached API used across ownership transfer.
+        assert_eq!(pa.eq_readback([0, 1]).unwrap(), readback);
+        let production_token = pa.prepare_eq(&patch, expected, 48000).unwrap();
+        drop(production_token);
+        let count = pa.output_channels();
+        let mut output = vec![0.; count * 48];
+        let worker = std::thread::spawn(move || {
+            for block in 0..1000 {
+                crate::remote::assert_no_allocations(|| {
+                    assert_eq!(pa.process(&[0.; 96], &mut output, 1, block * 48), 0);
+                });
+            }
+            pa
+        });
+        for _ in 0..20 {
+            let _prepared = context.prepare(&patch, expected, 48000).unwrap();
+            assert_eq!(context.readback().unwrap(), readback);
+        }
+        let mut token = context.prepare(&patch, expected, 48000).unwrap();
+        let mut stale = context.prepare(&patch, expected, 48240).unwrap();
+        let mut pa = worker.join().unwrap();
+        let mut output = vec![0.; count * 48];
+        crate::remote::assert_no_allocations(|| {
+            assert_eq!(pa.commit_eq(&mut token, 1, 48000), 0);
+            for block in 1000..1005 {
+                assert_eq!(pa.process(&[0.; 96], &mut output, 1, block * 48), 0);
+            }
+            assert_eq!(pa.take_retired_eq(&mut retirement), 0);
+            assert_eq!(pa.take_retired_eq(&mut retirement), -3);
+            assert_eq!(pa.commit_eq(&mut stale, 1, 48240), -4);
+        });
+        assert_eq!(context.readback().unwrap(), readback);
+        // Controller owns and destroys the retired native allocation after join.
+        drop(retirement);
     }
 }

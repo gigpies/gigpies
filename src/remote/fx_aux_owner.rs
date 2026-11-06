@@ -111,7 +111,8 @@ struct Pending {
     deadline: Instant,
     permitted: bool,
     applied: bool,
-    prepared: bool,
+    token: Option<crate::host::fx_palette::PreparedToken>,
+    failed: bool,
 }
 pub struct BrainAux {
     descriptor: MediaDescriptor,
@@ -119,7 +120,7 @@ pub struct BrainAux {
     buses: [Bus; 4],
     next: Option<u64>,
     pending: Option<Pending>,
-    refused: Option<(u64, String)>,
+    refused: Option<(u64, &'static str)>,
     resets: u64,
     _library_file: std::fs::File,
 }
@@ -185,6 +186,10 @@ impl BrainAux {
             resets: 0,
             _library_file: file,
         })
+    }
+    pub(crate) fn into_execution_parts(self) -> ([Owner; 4], [Configuration; 4], std::fs::File) {
+        let configs = self.buses.each_ref().map(|b| b.config.clone());
+        (self.buses.map(|b| b.owner), configs, self._library_file)
     }
     pub fn observation(&mut self) -> Result<Observation> {
         let mut states = Vec::new();
@@ -279,14 +284,19 @@ impl BrainAux {
                         {
                             return Err("FX aux tempo/time".into());
                         }
-                        b.owner.prepare(&c.settings)?;
                     }
                     let prepared = config
                         .as_ref()
                         .is_some_and(|c| c.settings != b.config.settings);
-                    if !prepared {
-                        b.owner.cancel();
-                    }
+                    let token = if prepared {
+                        Some(
+                            b.owner
+                                .preparer()
+                                .prepare(&config.as_ref().unwrap().settings)?,
+                        )
+                    } else {
+                        None
+                    };
                     self.pending = Some(Pending {
                         ticket: ticket.0,
                         mutation: mutation.clone(),
@@ -295,7 +305,8 @@ impl BrainAux {
                         deadline: Instant::now() + Duration::from_millis(1500),
                         permitted: false,
                         applied: false,
-                        prepared,
+                        token,
+                        failed: false,
                     });
                     Ok(())
                 })();
@@ -317,7 +328,8 @@ impl BrainAux {
                     .pending
                     .as_mut()
                     .ok_or("FX aux permit absent preparation")?;
-                if p.ticket != ticket.0
+                if p.failed
+                    || p.ticket != ticket.0
                     || descriptor != self.descriptor
                     || p.frame != apply_frame.0
                     || p.permitted
@@ -342,24 +354,33 @@ impl BrainAux {
             }
         }
     }
-    fn refuse_pending(&mut self, reason: &str) {
-        if let Some(p) = self.pending.take() {
-            self.buses[p.mutation.bus].owner.cancel();
-            self.refused = Some((p.ticket, reason.into()));
+    fn refuse_pending(&mut self, reason: &'static str) {
+        if let Some(p) = &mut self.pending {
+            // Retain the token, request and both configurations until control
+            // observes the refusal. A full retirement slot rejects new preparation.
+            if !p.failed {
+                p.failed = true;
+                self.refused = Some((p.ticket, reason));
+            }
         }
     }
-    pub fn process(&mut self, frame: u64, input: &[f64], wet: &mut [f64]) -> Result<()> {
+    pub fn process(
+        &mut self,
+        frame: u64,
+        input: &[f64],
+        wet: &mut [f64],
+    ) -> std::result::Result<(), &'static str> {
         wet.fill(0.);
         if input.len() != 384 || wet.len() != 384 {
-            return Err("FX aux media shape".into());
+            return Err("FX aux media shape");
         }
+        let next_frame = frame.checked_add(48).ok_or("FX frame exhausted")?;
         if self.next.is_some_and(|n| n != frame) {
             self.refuse_pending("FX aux source gap");
             for b in &mut self.buses {
-                b.owner.reset()?;
+                b.owner.reset_bounded()?;
                 b.owner_request = None;
-                b.owner.reclaim();
-                let s = b.owner.status()?;
+                let s = b.owner.status_bounded()?;
                 if b.config.settings != s.current {
                     b.config.settings = s.current;
                     b.config.tempo = None;
@@ -371,53 +392,56 @@ impl BrainAux {
                 b.applied = b.generation;
             }
             self.resets += 1;
-            self.next = frame.checked_add(48);
+            self.next = Some(next_frame);
             return Ok(());
         }
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|p| !p.applied && (frame > p.frame || Instant::now() >= p.deadline))
-        {
+        if self.pending.as_ref().is_some_and(|p| {
+            !p.failed && !p.applied && (frame > p.frame || Instant::now() >= p.deadline)
+        }) {
             self.refuse_pending("FX aux missed boundary/deadline");
         }
         if self
             .pending
             .as_ref()
-            .is_some_and(|p| !p.applied && frame == p.frame)
+            .is_some_and(|p| !p.failed && !p.applied && frame == p.frame)
         {
             let p = self.pending.as_mut().unwrap();
             if !p.permitted {
                 self.refuse_pending("FX aux absent permit");
             } else {
                 let b = &mut self.buses[p.mutation.bus];
-                let result = (|| -> Result<()> {
+                let result = (|| -> std::result::Result<(), &'static str> {
                     if p.mutation.panic {
-                        b.owner.reset()?;
+                        b.owner.reset_bounded()?;
                         b.owner_request = None;
-                        let s = b.owner.status()?;
+                        let s = b.owner.status_bounded()?;
                         if b.config.settings != s.current {
                             b.config.settings = s.current;
                             b.config.tempo = None;
                         }
                     } else {
-                        if p.prepared {
-                            let s = b.owner.status()?;
+                        if let Some(token) = &mut p.token {
+                            let s = b.owner.status_bounded()?;
                             let id = s
                                 .accepted_request
                                 .checked_add(1)
                                 .ok_or("FX request exhausted")?;
-                            b.owner.publish(id, s.revision)?;
+                            b.owner
+                                .publish_token(token, id, s.revision)
+                                .map_err(|_| "FX aux publish refused")?;
                             b.owner_request = Some(id);
                         }
-                        b.config = p.config.clone().ok_or("FX aux configuration")?;
+                        // Keep the retired Vec in the occupied pending slot;
+                        // only poll/command on the controller may destroy it.
+                        let prepared = p.config.as_mut().ok_or("FX aux configuration")?;
+                        std::mem::swap(&mut b.config, prepared);
                     }
                     b.generation += 1;
                     p.applied = true;
                     Ok(())
                 })();
                 if let Err(e) = result {
-                    self.refuse_pending(&e);
+                    self.refuse_pending(e);
                 }
             }
         }
@@ -433,7 +457,7 @@ impl BrainAux {
                 wet[f * 8 + bus * 2..f * 8 + bus * 2 + 2].copy_from_slice(&out[f * 2..f * 2 + 2]);
             }
         }
-        self.next = Some(frame.checked_add(48).ok_or("FX frame exhausted")?);
+        self.next = Some(next_frame);
         Ok(())
     }
     pub fn poll(&mut self) -> Result<Option<Message>> {
@@ -450,10 +474,18 @@ impl BrainAux {
             self.refuse_pending("FX aux owner fault after publication");
         }
         if let Some((ticket, reason)) = self.refused.take() {
+            if let Some(p) = self.pending.take() {
+                self.buses[p.mutation.bus].owner.cancel();
+            }
             return Ok(Some(Message::Refused {
                 ticket: Counter(ticket),
-                reason,
+                reason: reason.into(),
             }));
+        }
+        if let Some(p) = &mut self.pending
+            && let Some(token) = &mut p.token
+        {
+            self.buses[p.mutation.bus].owner.take_retired(token);
         }
         let observation = self.observation()?;
         if let Some(p) = self.pending.as_ref().filter(|p| p.applied) {

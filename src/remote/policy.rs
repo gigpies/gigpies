@@ -3,9 +3,31 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, RwLock},
+    sync::{
+        Arc, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
+#[cfg(feature = "hardware-host")]
+use std::sync::atomic::AtomicU64;
+
+/// Read-only render witness. It can only close an authenticated session; it
+/// never supplies permissions or replaces network/control authorization.
+#[cfg(feature = "hardware-host")]
+#[derive(Debug, Clone)]
+pub(crate) struct PolicyFence {
+    current: Arc<AtomicU64>,
+    admitted: u64,
+    disconnected: Arc<AtomicBool>,
+}
+#[cfg(feature = "hardware-host")]
+impl PolicyFence {
+    pub(crate) fn valid(&self) -> bool {
+        !self.disconnected.load(Ordering::Acquire)
+            && self.current.load(Ordering::Acquire) == self.admitted
+    }
+}
 /// Independent permissions. A channel grant never includes PA or patch authority.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -34,6 +56,8 @@ pub struct Peer {
 #[derive(Debug, Clone)]
 struct Policy {
     generation: u64,
+    #[cfg(feature = "hardware-host")]
+    fence: Arc<AtomicU64>,
     peers: BTreeMap<String, Peer>,
 }
 
@@ -46,6 +70,8 @@ impl PolicyStore {
         let peers = validate(peers)?;
         Ok(Self(Arc::new(RwLock::new(Policy {
             generation: 1,
+            #[cfg(feature = "hardware-host")]
+            fence: Arc::new(AtomicU64::new(1)),
             peers,
         }))))
     }
@@ -56,7 +82,18 @@ impl PolicyStore {
             .generation
             .checked_add(1)
             .ok_or("policy generation exhausted")?;
-        *policy = Policy { generation, peers };
+        #[cfg(feature = "hardware-host")]
+        let fence = policy.fence.clone();
+        // Publish closure before acknowledging the replacement. A render owner
+        // does not take the policy lock and cannot wait behind control parsing.
+        #[cfg(feature = "hardware-host")]
+        fence.store(generation, Ordering::Release);
+        *policy = Policy {
+            generation,
+            peers,
+            #[cfg(feature = "hardware-host")]
+            fence,
+        };
         Ok(generation)
     }
     pub(crate) fn authenticate(
@@ -73,6 +110,7 @@ impl PolicyStore {
             .peers
             .get(&fingerprint)
             .ok_or("peer not paired or revoked")?;
+        let disconnected = Arc::new(AtomicBool::new(false));
         Ok(AuthenticatedContext {
             peer_id: peer.id.clone(),
             certificate_sha256: fingerprint.clone(),
@@ -81,6 +119,13 @@ impl PolicyStore {
             policy_generation: policy.generation,
             permissions: peer.permissions.clone(),
             policy: self.0.clone(),
+            disconnected: disconnected.clone(),
+            #[cfg(feature = "hardware-host")]
+            fence: PolicyFence {
+                current: policy.fence.clone(),
+                admitted: policy.generation,
+                disconnected,
+            },
         })
     }
     pub fn check(&self, context: &AuthenticatedContext) -> Result<()> {
@@ -138,6 +183,9 @@ pub struct AuthenticatedContext {
     pub(crate) policy_generation: u64,
     pub(crate) permissions: BTreeSet<Permission>,
     policy: Arc<RwLock<Policy>>,
+    disconnected: Arc<AtomicBool>,
+    #[cfg(feature = "hardware-host")]
+    fence: PolicyFence,
 }
 impl PartialEq for AuthenticatedContext {
     fn eq(&self, other: &Self) -> bool {
@@ -152,6 +200,20 @@ impl PartialEq for AuthenticatedContext {
 }
 impl Eq for AuthenticatedContext {}
 impl AuthenticatedContext {
+    /// Shared terminal session closure. Network teardown publishes directly to
+    /// render witnesses; no controller mailbox service is required. Only fresh
+    /// authentication creates an open signal.
+    pub(crate) fn close_audio(&self) {
+        self.disconnected.store(true, Ordering::Release);
+    }
+    pub(crate) fn disconnect_signal(&self) -> Arc<AtomicBool> {
+        self.disconnected.clone()
+    }
+
+    #[cfg(feature = "hardware-host")]
+    pub(crate) fn audio_fence(&self) -> PolicyFence {
+        self.fence.clone()
+    }
     pub fn peer_id(&self) -> &str {
         &self.peer_id
     }
