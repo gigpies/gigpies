@@ -21,7 +21,7 @@ async fn gp21_actual_tls_brain_boundary_wet_pa_and_raw_recording() {
   use std::os::unix::fs::PermissionsExt;
   let path=std::env::temp_dir().join(format!("gp21-tls-{}",std::process::id()));std::fs::create_dir(&path).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o700)).unwrap();
   let library=std::path::PathBuf::from(std::env::var_os("GP21_FX_LIBRARY").unwrap());
-  let hash=format!("{:x}",sha2::Sha256::digest(std::fs::read(&library).unwrap()));
+  let hash=crate::hash::hex(sha2::Sha256::digest(std::fs::read(&library).unwrap()));
   let mut provider=crate::local_audio::LocalAudio::bind_configured(&path,"host",SHOW,Counter(9),EngineTopology::software(16,4,2).unwrap()).unwrap();
   provider.enable_modules(std::path::Path::new(&std::env::var_os("GP21_MODULE_MANIFEST").unwrap())).unwrap();
   provider.configure_pa(&std::fs::read(std::env::var_os("GP21_PA_CONFIGURATION").unwrap()).unwrap()).unwrap();

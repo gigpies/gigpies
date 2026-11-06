@@ -586,7 +586,7 @@ mod remote_send_tests {
             let mut source = engine.take_source().unwrap();
             let policy = PolicyStore::new(vec![Peer {
                 id: "remote-send".into(),
-                certificate_sha256: format!("{:x}", Sha256::digest(b"remote-send")),
+                certificate_sha256: crate::hash::hex(Sha256::digest(b"remote-send")),
                 permissions: [Permission::FxConfiguration].into_iter().collect(),
             }])
             .unwrap();

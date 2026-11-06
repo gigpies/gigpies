@@ -138,7 +138,7 @@ impl Pump {
     }
 }
 fn hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    gigpies::hash::hex(Sha256::digest(bytes))
 }
 #[test]
 #[ignore = "requires explicit trusted owner manifest, fixtures and private producer output directory"]

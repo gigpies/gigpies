@@ -384,7 +384,7 @@ impl HostAuthority {
             );
         };
         context.require(&Permission::FxConfiguration)?;
-        let fingerprint = format!("{:x}", Sha256::digest(super::encode(&payload)?));
+        let fingerprint = crate::hash::hex(Sha256::digest(super::encode(&payload)?));
         if let Some((_, reply)) = self
             .fx
             .results
@@ -813,7 +813,7 @@ mod tests {
     fn gp21_actual_owner_relay_corpus() {
         let mut h = Harness::new("actual-corpus");
         let library = std::path::PathBuf::from(std::env::var_os("GP21_FX_LIBRARY").unwrap());
-        let hash = format!("{:x}", Sha256::digest(std::fs::read(&library).unwrap()));
+        let hash = crate::hash::hex(Sha256::digest(std::fs::read(&library).unwrap()));
         let mut owner = crate::host::fx_v2::Owner::load(&library, 48)
             .unwrap()
             .unwrap();

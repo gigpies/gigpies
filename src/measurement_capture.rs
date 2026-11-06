@@ -1271,7 +1271,7 @@ mod tests {
     fn state() -> State {
         use sha2::{Digest, Sha256};
         let path = std::fs::canonicalize("/usr/bin/true").unwrap();
-        let hash = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        let hash = crate::hash::hex(Sha256::digest(std::fs::read(&path).unwrap()));
         State::new(measurement_owner::Config {
             version: 1,
             mode: "software-only".into(),

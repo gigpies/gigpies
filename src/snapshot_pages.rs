@@ -23,7 +23,7 @@ pub fn encode(bytes: Vec<u8>) -> Result<Vec<Vec<u8>>> {
         return Err("snapshot assembly admission: one MiB".into());
     }
     use sha2::{Digest, Sha256};
-    let identity = format!("{:x}", Sha256::digest(&bytes));
+    let identity = crate::hash::hex(Sha256::digest(&bytes));
     // JSON producer emits ASCII for protocol strings and parameter names; UTF8
     // splits must nevertheless preserve codepoint boundaries for labels.
     let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
@@ -121,7 +121,7 @@ impl Assembly {
         }
         let bytes = self.pages.concat().into_bytes();
         use sha2::{Digest, Sha256};
-        if bytes.len() != self.total || format!("{:x}", Sha256::digest(&bytes)) != self.identity {
+        if bytes.len() != self.total || crate::hash::hex(Sha256::digest(&bytes)) != self.identity {
             return Err("snapshot checksum".into());
         }
         *self = Self::default();

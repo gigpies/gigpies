@@ -57,7 +57,7 @@ impl OfflineEvidence {
             .take(1024 * 1024 + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        if format!("{:x}", Sha256::digest(&bytes)) != self.sha256 {
+        if crate::hash::hex(Sha256::digest(&bytes)) != self.sha256 {
             return Err("offline evidence hash".into());
         }
         let v: serde_json::Value = decode_document(&bytes, 1024 * 1024)?;
@@ -103,7 +103,7 @@ impl Config {
             .take(32 * 1024 * 1024 + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
-        if format!("{:x}", Sha256::digest(&bytes)) != self.owner_sha256 {
+        if crate::hash::hex(Sha256::digest(&bytes)) != self.owner_sha256 {
             return Err("measurement executable hash".into());
         }
         Ok(())
@@ -448,7 +448,7 @@ mod tests {
     fn worker_generation_exhaustion_and_stale_submission_fail_closed() {
         use sha2::{Digest, Sha256};
         let path = std::fs::canonicalize("/usr/bin/true").unwrap();
-        let hash = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        let hash = crate::hash::hex(Sha256::digest(std::fs::read(&path).unwrap()));
         let w = Worker::start(Config {
             version: 1,
             mode: "software-only".into(),

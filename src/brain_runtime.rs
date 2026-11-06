@@ -536,7 +536,7 @@ pub async fn run(mut config: Config, physical_authorized: bool) -> Result<Value>
     let _ = client.report_brain_device(final_observation.clone()).await;
     client.close();
     let resources_stopped = process_resources()?;
-    let report = json!({"resources_ready":resources_ready,"resources_before_stop":resources_before_stop,"resources_stopped":resources_stopped,"mode":"brain_duplex","software_only":!config.physical,"physical_qualified":false,"fault":fault,"evidence":evidence,"captured_pre_wire_sha256":media_report.captured_pre_wire_sha256,"received_monitor_sha256":media_report.received_monitor_sha256,"media_worker":media_report,"submitted_playback_sha256":format!("{:x}",playback_hash.finalize()),"final_observation":final_observation,"elapsed_ms":started.elapsed().as_millis(),"fake_skew_ppm":config.fake_skew_ppm});
+    let report = json!({"resources_ready":resources_ready,"resources_before_stop":resources_before_stop,"resources_stopped":resources_stopped,"mode":"brain_duplex","software_only":!config.physical,"physical_qualified":false,"fault":fault,"evidence":evidence,"captured_pre_wire_sha256":media_report.captured_pre_wire_sha256,"received_monitor_sha256":media_report.received_monitor_sha256,"media_worker":media_report,"submitted_playback_sha256":crate::hash::hex(playback_hash.finalize()),"final_observation":final_observation,"elapsed_ms":started.elapsed().as_millis(),"fake_skew_ppm":config.fake_skew_ppm});
     let mut file = OpenOptions::new()
         .create_new(true)
         .write(true)

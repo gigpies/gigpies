@@ -11,7 +11,7 @@ use std::{
 pub fn identity(value: &impl Serialize) -> Result<String> {
     // serde_json Value orders keys and its round-trip representation is canonical here.
     let bytes = serde_json::to_vec(&serde_json::to_value(value)?)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(crate::hash::hex(Sha256::digest(bytes)))
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -38,7 +38,7 @@ pub fn source_identities(s: &Session, root: &Path) -> Result<Vec<SourceIdentity>
             Ok(SourceIdentity {
                 file: c.file.clone(),
                 bytes,
-                sha256: format!("{:x}", hash.finalize()),
+                sha256: crate::hash::hex(hash.finalize()),
             })
         })
         .collect()
@@ -55,9 +55,9 @@ pub(super) fn file_hash(path: &Path) -> Result<String> {
         }
         hash.update(&buf[..n]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(crate::hash::hex(hash.finalize()))
 }
 
 pub(super) fn bytes_hash(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::hash::hex(Sha256::digest(bytes))
 }

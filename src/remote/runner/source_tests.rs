@@ -621,7 +621,7 @@ fn attach_actual_duplex(
     use sha2::{Digest, Sha256};
     let policy = PolicyStore::new(vec![Peer {
         id: "combined-duplex".into(),
-        certificate_sha256: format!("{:x}", Sha256::digest(b"combined-duplex")),
+        certificate_sha256: crate::hash::hex(Sha256::digest(b"combined-duplex")),
         permissions: [
             Permission::TalkbackDestinations,
             Permission::LocalOperatorMonitor,

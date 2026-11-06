@@ -285,7 +285,7 @@ pub fn config_digest(c: Configuration<'_>) -> String {
     h.update(c.destinations);
     h.update(c.gain_cdb.to_be_bytes());
     h.update([u8::from(c.mute), u8::from(c.foh)]);
-    format!("{:x}", h.finalize())
+    crate::hash::hex(h.finalize())
 }
 
 #[cfg(test)]

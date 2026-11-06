@@ -950,7 +950,7 @@ impl MediaWorker {
                             }
                             if last_report.elapsed() >= Duration::from_millis(25) {
                                 if report_tx.slots() > 0 {
-                                    report.hash = format!("{:x}", hash.clone().finalize());
+                                    report.hash = crate::hash::hex(hash.clone().finalize());
                                     let _ = report_tx.push(report.clone());
                                 } else { report.report_drops = report.report_drops.saturating_add(1); }
                                 last_report = Instant::now();
@@ -990,7 +990,7 @@ impl MediaWorker {
                 }
             });
             lanes.close();
-            report.hash = format!("{:x}", hash.finalize());
+            report.hash = crate::hash::hex(hash.finalize());
             report.analysis_unconsumed = 32 - analysis_tx.slots();
             report
         }).map_err(|e| e.to_string())?;
@@ -1054,7 +1054,7 @@ mod tests {
         let path = std::path::PathBuf::from(
             std::env::var_os("GP_FX_LIBRARY").expect("verified FX library"),
         );
-        let hash = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        let hash = crate::hash::hex(Sha256::digest(std::fs::read(&path).unwrap()));
         let mut streams =
             grouped_streams(MediaRole::FxSend, &wire::channel_ids(), 48, 0, 1, 1232).unwrap();
         streams.extend(

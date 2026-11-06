@@ -76,11 +76,13 @@ fn regenerate_gp03_corpus() {
     .map(|p| {
         (
             p.to_owned(),
-            json!(format!("{:x}", Sha256::digest(std::fs::read(p).unwrap()))),
+            json!(gigpies::hash::hex(Sha256::digest(
+                std::fs::read(p).unwrap()
+            ))),
         )
     })
     .collect();
-    let manifest = json!({"producer":"actual OfflineEngine::handle_encoded/process execution","capability":"GP03-rendered:1","baseline":"99eb0f08050a9a86039af9f1ba2a3541649ca7b6","contract_sha256":"54a887f4a300d049d3ba67077a2e0446f7a92c57c41cef9d3b7da13735a092ac","source_sha256":source,"fixture_sha256":format!("{:x}",Sha256::digest(bytes))});
+    let manifest = json!({"producer":"actual OfflineEngine::handle_encoded/process execution","capability":"GP03-rendered:1","baseline":"99eb0f08050a9a86039af9f1ba2a3541649ca7b6","contract_sha256":"54a887f4a300d049d3ba67077a2e0446f7a92c57c41cef9d3b7da13735a092ac","source_sha256":source,"fixture_sha256":gigpies::hash::hex(Sha256::digest(bytes))});
     std::fs::write(
         dir.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest).unwrap(),

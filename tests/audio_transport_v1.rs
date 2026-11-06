@@ -335,7 +335,7 @@ mod assembly {
         use gigpies::show::Counter;
         use sha2::{Digest, Sha256};
         let path = std::path::PathBuf::from(std::env::var_os("GP_FX_LIBRARY").unwrap());
-        let hash = format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap()));
+        let hash = gigpies::hash::hex(Sha256::digest(std::fs::read(&path).unwrap()));
         let mut streams =
             grouped_streams(MediaRole::FxSend, &owner::channel_ids(), 48, 0, 1, 1232).unwrap();
         streams.extend(

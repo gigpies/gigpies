@@ -104,7 +104,7 @@ impl ModuleRequest {
     }
     pub fn fingerprint(&self) -> Result<String> {
         use sha2::{Digest, Sha256};
-        Ok(format!("{:x}", Sha256::digest(self.encode()?)))
+        Ok(crate::hash::hex(Sha256::digest(self.encode()?)))
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]

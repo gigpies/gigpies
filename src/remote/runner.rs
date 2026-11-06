@@ -1076,10 +1076,7 @@ mod provider_admission_tests {
     fn physical_fixture() -> PhysicalProviderConfig {
         let mut topology = EngineTopology::software(16, 5, 0).unwrap();
         topology.mapping_evidence = "operator-verified".into();
-        let hash = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&topology).unwrap())
-        );
+        let hash = crate::hash::hex(Sha256::digest(serde_json::to_vec(&topology).unwrap()));
         PhysicalProviderConfig {
             device: "hw:observed,0".into(),
             topology,

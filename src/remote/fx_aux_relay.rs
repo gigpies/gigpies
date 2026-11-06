@@ -363,7 +363,7 @@ impl HostAuthority {
                 .ticket
                 .checked_add(1)
                 .ok_or("FX aux ticket exhausted")?;
-            let fingerprint = format!("{:x}", Sha256::digest(super::encode(&value)?));
+            let fingerprint = crate::hash::hex(Sha256::digest(super::encode(&value)?));
             let (_, cached) = self.provider.engine_mut().begin_external(
                 &r,
                 &fingerprint,
@@ -725,7 +725,7 @@ mod tests {
             };
             host.negotiate(&owner, &descriptor).unwrap();
             let library = std::path::PathBuf::from(std::env::var_os("GP_FX_LIBRARY").unwrap());
-            let hash = format!("{:x}", Sha256::digest(std::fs::read(&library).unwrap()));
+            let hash = crate::hash::hex(Sha256::digest(std::fs::read(&library).unwrap()));
             let brain = owner::BrainAux::load(descriptor.clone(), &library, &hash, 4).unwrap();
             let receiver = GroupedReceiver::new(descriptor.clone(), MediaRole::FxSend).unwrap();
             let request = Request {

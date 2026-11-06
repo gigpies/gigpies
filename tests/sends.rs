@@ -697,7 +697,7 @@ fn write_sends_producer_corpus() {
         let mut bytes = serde_json::to_vec_pretty(&value).unwrap();
         bytes.push(b'\n');
         std::fs::write(root.join(name), &bytes).unwrap();
-        hashes.insert(name.to_owned(), format!("{:x}", Sha256::digest(&bytes)));
+        hashes.insert(name.to_owned(), gigpies::hash::hex(Sha256::digest(&bytes)));
     };
     let mut e = engine();
     write(
@@ -901,7 +901,7 @@ fn write_sends_producer_corpus() {
         .map(|name| {
             (
                 name,
-                format!("{:x}", Sha256::digest(std::fs::read(name).unwrap())),
+                gigpies::hash::hex(Sha256::digest(std::fs::read(name).unwrap())),
             )
         })
         .collect();
@@ -929,7 +929,7 @@ fn verify_sends_producer_corpus() {
     for (name, hash) in manifest["fixture_sha256"].as_object().unwrap() {
         let bytes = std::fs::read(root.join(name)).unwrap();
         assert_eq!(
-            format!("{:x}", Sha256::digest(&bytes)),
+            gigpies::hash::hex(Sha256::digest(&bytes)),
             hash.as_str().unwrap()
         );
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -967,7 +967,7 @@ fn verify_sends_producer_corpus() {
                     .output()
                     .unwrap();
                 assert!(blob.status.success());
-                format!("{:x}", Sha256::digest(blob.stdout))
+                gigpies::hash::hex(Sha256::digest(blob.stdout))
             },
             hash.as_str().unwrap()
         );

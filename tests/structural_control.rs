@@ -218,14 +218,14 @@ fn physical_acceptance_rejects_reference_and_allows_only_signal_patch() {
     let mut t = EngineTopology::reference_16_18(8, 5).unwrap();
     let mut record = DeviceAcceptance {
         device: "hw:unattached".into(),
-        topology_sha256: format!("{:x}", Sha256::digest(serde_json::to_vec(&t).unwrap())),
+        topology_sha256: gigpies::hash::hex(Sha256::digest(serde_json::to_vec(&t).unwrap())),
         native_significant_bits: 24,
         socket_mapping_record: "synthetic test record".into(),
         single_clock_setup_record: "synthetic test record".into(),
     };
     assert!(record.validate("hw:unattached", &t).is_err());
     t.mapping_evidence = "operator-verified".into();
-    record.topology_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&t).unwrap()));
+    record.topology_sha256 = gigpies::hash::hex(Sha256::digest(serde_json::to_vec(&t).unwrap()));
     assert!(record.validate("hw:unattached", &t).is_ok());
     let mut patch = t.clone();
     patch.map_revision += 1;

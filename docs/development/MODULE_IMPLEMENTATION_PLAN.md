@@ -51,6 +51,35 @@ See [dated evidence](../STATUS.md), [module contracts](../reference/MODULE_CONTR
 The [previous plan](../archive/tracking-before-2026-10-09/MODULE_IMPLEMENTATION_PLAN.md) preserves legacy GP-01..09/task0009 launch cards;
 it is historical, not a queue to execute. Later accepted work supersedes its limits.
 
+## SHA-2 dependency maintenance — November 6
+
+PR [#5](https://github.com/gigpies/gigpies/pull/5) was deferred because sha2 0.11
+removed `LowerHex` from its digest output. Current upstream
+[release notes](https://github.com/RustCrypto/hashes/blob/sha2-v0.11.1/sha2/CHANGELOG.md)
+confirm 0.11.1 is released, 0.11.2 remains unreleased, and MSRV 1.88 is supported by
+our pinned Rust 1.97.1. The release also fixes AArch64 constant loading. Pin 0.11.1
+with its reviewed lockfile; preserve the current serde/rtrb/libloading pins when
+bringing the original Dependabot branch onto current main.
+
+Implementation: one byte-oriented lowercase hex encoder replaces 71 digest-format
+sites, including certificates, persisted identities, module hashes, wire request
+fingerprints, diagnostics and device lock filenames. Algorithm and hashed inputs
+are unchanged. Two native-library readers retain `io::copy` through a small digest
+writer adapter because the new digest API also removed its `std::io::Write` impl.
+Literal standard vectors, leading zeroes, the lock filename, streamed million-byte
+input and read-error propagation have focused regressions.
+
+Validation: hardware all-target compilation and all three focused compatibility
+regressions passed locally. Merge gates are normal default/hardware tests, both
+Clippy configurations and x86/ARM64 Required CI; the linked PR records their final
+results and review for the exact merged revision.
+Unchanged historical/exhaustive/audition and bridge opt-ins are excluded from this
+formatting/dependency maintenance. Review and merge must use the
+current PR head and required CI; no administrative merge bypass.
+Other Dependabot PRs are merged or superseded, with no unresolved review threads;
+all four security alerts are fixed. GP-H1 implementation was published separately
+as `ecd471e`; this maintenance does not authorize T3 or physical activation.
+
 ## Active work and dependencies
 
 | Task | Owner / contributors | State and next action |

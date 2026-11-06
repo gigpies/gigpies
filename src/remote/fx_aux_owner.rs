@@ -18,10 +18,9 @@ pub fn channel_ids() -> Vec<String> {
 }
 pub fn binding(d: &MediaDescriptor, hash: &str) -> Result<String> {
     use sha2::{Digest, Sha256};
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&(d, hash)).map_err(|e| e.to_string())?)
-    ))
+    Ok(crate::hash::hex(Sha256::digest(
+        serde_json::to_vec(&(d, hash)).map_err(|e| e.to_string())?,
+    )))
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,8 +153,9 @@ impl BrainAux {
         }
         let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
         let mut digest = Sha256::new();
-        std::io::copy(&mut file, &mut digest).map_err(|e| e.to_string())?;
-        if format!("{:x}", digest.finalize()) != hash {
+        std::io::copy(&mut file, &mut crate::hash::DigestWriter(&mut digest))
+            .map_err(|e| e.to_string())?;
+        if crate::hash::hex(digest.finalize()) != hash {
             return Err("FX aux library hash mismatch".into());
         }
         let pinned = std::path::PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));

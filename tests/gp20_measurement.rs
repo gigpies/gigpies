@@ -165,7 +165,7 @@ fn offline_evidence_requires_explicit_v2_and_pinned_regular_file() {
     let mut evidence = OfflineEvidence {
         id: "import".into(),
         path: path.clone(),
-        sha256: format!("{:x}", Sha256::digest(bytes)),
+        sha256: gigpies::hash::hex(Sha256::digest(bytes)),
     };
     assert!(evidence.load().is_ok());
     std::fs::write(&path, b"changed").unwrap();

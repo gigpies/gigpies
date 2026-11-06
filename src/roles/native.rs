@@ -501,7 +501,7 @@ impl Lease {
                 serde_json::to_vec(c).map_err(err)?,
             ),
         ] {
-            let fingerprint = format!("{:x}", Sha256::digest(bytes));
+            let fingerprint = crate::hash::hex(Sha256::digest(bytes));
             if reclaim
                 && initialized
                 && map
@@ -518,7 +518,12 @@ impl Lease {
             format!("controller:{}", b.controller),
         ]
         .iter()
-        .map(|identity| format!("device-{:x}.lock", Sha256::digest(identity.as_bytes())))
+        .map(|identity| {
+            format!(
+                "device-{}.lock",
+                crate::hash::hex(Sha256::digest(identity.as_bytes()))
+            )
+        })
         .collect();
         if map.locks.len()
             + device_names
