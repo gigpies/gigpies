@@ -4290,6 +4290,8 @@ mod clocked_control_tests {
             let context = policy.authenticate(certificate, 1).unwrap();
             provider.rearm().unwrap();
             let mut host = HostAuthority::new(provider, 1).unwrap();
+            let started = Instant::now();
+            let current_time = || 1 + started.elapsed().as_millis() as u64;
             let status = host
                 .start_source_clock(1, Duration::from_millis(2), 200)
                 .unwrap();
@@ -4323,10 +4325,16 @@ mod clocked_control_tests {
                     command,
                 };
                 host.provider_mut().last_brain_source_receipt = None;
+                let now = current_time();
                 let reply = host
                     .provider_mut()
-                    .clocked_control(id, Some(context.audio_fence()), |provider| {
-                        serde_json::to_value(provider.brain_request(request, id, true, None)?)
+                    .clocked_control(now, Some(context.audio_fence()), |provider| {
+                        // Charge more preparation time than the next request ID,
+                        // reproducing the loaded-runner clock regression.
+                        if id == 2 {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        serde_json::to_value(provider.brain_request(request, now, true, None)?)
                             .map_err(|e| e.to_string())
                     })
                     .unwrap();
@@ -4368,9 +4376,10 @@ mod clocked_control_tests {
                         armed: false,
                     },
                 };
+                let now = current_time();
                 host.provider_mut()
-                    .clocked_control(4, None, |provider| {
-                        serde_json::to_value(provider.brain_request(request, 4, true, None)?)
+                    .clocked_control(now, None, |provider| {
+                        serde_json::to_value(provider.brain_request(request, now, true, None)?)
                             .map_err(|e| e.to_string())
                     })
                     .unwrap();
@@ -4404,9 +4413,11 @@ mod clocked_control_tests {
                     expected_revision: Some(host.provider().engine().revision()),
                     command: Command::Release {},
                 };
+                let now = current_time();
                 host.provider_mut()
-                    .clocked_engine_command(4, None, |engine| {
-                        serde_json::to_value(engine.handle(&request, 4)?).map_err(|e| e.to_string())
+                    .clocked_engine_command(now, None, |engine| {
+                        serde_json::to_value(engine.handle(&request, now)?)
+                            .map_err(|e| e.to_string())
                     })
                     .unwrap();
             } else {
