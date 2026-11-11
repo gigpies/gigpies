@@ -2220,7 +2220,15 @@ with no source receipt: the fixture reused request IDs as timestamps after
 preparation had advanced authority time. The fixture now uses elapsed monotonic
 time for every request and includes a 5 ms preparation delay to cover the
 regression while preserving the release/revocation/fence assertions. Production
-clock rejection is unchanged. Local validation: the delayed regression and
+clock rejection is unchanged. The autonomous epoch-recovery and legacy FX
+permission fixtures likewise use elapsed monotonic time, offset by already
+charged media preparation where needed. Recovery deliberately crosses the old
+20 ms constant before grant/rearm, retaining stale-handle fencing and silent
+outputs until explicit rearm. The FX test retains controller-stall permission
+coverage. The media negotiation-handoff fixture waits for initial route
+installation before admitting its first capture, preserving the production
+rejection of unarmed capture while testing the later generation handoff.
+Local validation: the delayed regression and
 normal hardware-host library suite passed (235 passed, 43 opt-in ignored),
 alongside all 67 script tests. Passing software checks do not establish hardware
 timing acceptance. Both prior TLS witnesses are historical evidence for the later native-window

@@ -645,15 +645,20 @@ mod tests {
     #[test]
     fn clocked_legacy_permission_survives_controller_stall() {
         let mut h = Harness::with_clock("clocked-permission", true);
+        // Media preparation has already advanced authority time. Keep every
+        // request on that same monotonic timeline, including after the stall.
+        let origin = h.host.provider.source_control_time();
+        let started = std::time::Instant::now();
+        let now = || origin + started.elapsed().as_millis() as u64;
         let status = h
             .host
-            .start_source_clock(0, std::time::Duration::from_millis(2), 240)
+            .start_source_clock(now(), std::time::Duration::from_millis(2), 240)
             .unwrap();
         let o = h.observation();
-        h.observe(o.clone(), 0);
-        h.snapshot(0);
+        h.observe(o.clone(), now());
+        h.snapshot(now());
         let request = h.mutation();
-        let reply = h.host.dispatch(&h.writer, request, 0).unwrap().unwrap();
+        let reply = h.host.dispatch(&h.writer, request, now()).unwrap().unwrap();
         let ticket: Counter = serde_json::from_value(reply["ticket"].clone()).unwrap();
         let target = h.host.fx.pending.as_ref().unwrap().apply_frame;
         h.message(
@@ -664,10 +669,10 @@ mod tests {
                 configuration_json: Some(o.owner_json.replace("20.0", "1.0")),
                 panic_mask: None,
             },
-            1,
+            now(),
         )
         .unwrap();
-        h.host.service_source_clock(1).unwrap();
+        h.host.service_source_clock(now()).unwrap();
         assert!(h.host.fx.pending.as_ref().unwrap().permitted);
         assert!(h.host.provider.frame() < target);
         assert!(
@@ -692,7 +697,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(status.blocks() > before);
-        h.host.service_source_clock(300).unwrap();
+        h.host.service_source_clock(now()).unwrap();
         assert!(h.host.fx.pending.as_ref().unwrap().permitted);
         h.host.finish_source_clock(&status).unwrap();
     }
