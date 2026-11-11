@@ -15,6 +15,8 @@ struct Route {
 enum Update {
     Route(Route),
     Attach(service::MediaLanes),
+    #[cfg(test)]
+    Barrier(tokio::sync::oneshot::Sender<()>),
 }
 #[derive(Default, Serialize)]
 pub(super) struct Report {
@@ -56,6 +58,8 @@ impl MediaWorker {
                     update = rx.recv() => match update {
                         Some(Update::Route(next)) => route = next,
                         Some(Update::Attach(next)) => { lanes=next; route.descriptor=None; route.hold=0; route.monitor=false; },
+                        #[cfg(test)]
+                        Some(Update::Barrier(ready)) => { let _ = ready.send(()); },
                         None => break,
                     },
                     _ = timer.tick() => {
@@ -376,6 +380,12 @@ mod tests {
                     .unwrap()
             };
             publish(&worker, &descriptor);
+            // Captures before initial route installation are correctly rejected
+            // as unarmed. Establish that precondition before testing negotiation
+            // handoff; a queued route alone does not order the worker's timer.
+            let (ready, installed) = tokio::sync::oneshot::channel();
+            worker.updates.try_send(Update::Barrier(ready)).unwrap();
+            installed.await.unwrap();
             capture
                 .push(Captured {
                     epoch: 2,

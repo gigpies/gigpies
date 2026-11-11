@@ -81,15 +81,17 @@ fn runner_autonomous_epoch_reconstruction_fences_old_handles_and_requires_rearm(
     .unwrap();
     provider.rearm().unwrap();
     let mut host = HostAuthority::new(provider, 1).unwrap();
+    let started = Instant::now();
+    let current_time = || started.elapsed().as_millis() as u64;
     let source = ProviderSource::start(&mut host, 0, 2, 600, None).unwrap();
     await_blocks(&source, 4);
     assert!(
-        host.recover_source_clock(&source.status, Counter(10), 1, 10)
+        host.recover_source_clock(&source.status, Counter(10), 1, current_time())
             .is_err()
     );
     assert!(!source.stopped());
     let recovery = host
-        .recover_source_clock(&source.status, Counter(10), 0, 10)
+        .recover_source_clock(&source.status, Counter(10), 0, current_time())
         .unwrap();
     assert_eq!(recovery.previous.epoch, 9);
     assert!(recovery.previous.energy.iter().any(|energy| *energy > 0.));
@@ -99,11 +101,14 @@ fn runner_autonomous_epoch_reconstruction_fences_old_handles_and_requires_rearm(
     source.status.close();
     assert!(host.finish_source_clock(&source.status).is_err());
     assert!(
-        host.recover_source_clock(&source.status, Counter(11), 0, 20)
+        host.recover_source_clock(&source.status, Counter(11), 0, current_time())
             .is_err()
     );
+    // Source reconstruction and worker progress consume real elapsed time.
+    // Cross the former fixed 20 ms timestamp before copying authority readback.
+    std::thread::sleep(Duration::from_millis(25));
     await_blocks(&replacement, 4);
-    replacement.service(&mut host, 20).unwrap();
+    replacement.service(&mut host, current_time()).unwrap();
     assert_eq!(host.identity().source_epoch, Counter(10));
     assert!(host.descriptor().is_none());
     assert_eq!(
@@ -129,7 +134,7 @@ fn runner_autonomous_epoch_reconstruction_fences_old_handles_and_requires_rearm(
                     scope: crate::control_model::Scope::PaConfiguration,
                 },
             },
-            20,
+            current_time(),
         )
         .unwrap()
         .outcome
@@ -149,9 +154,10 @@ fn runner_autonomous_epoch_reconstruction_fences_old_handles_and_requires_rearm(
         expected_revision: Some(revision),
         command: crate::structural_control::Command::OutputRearm {},
     };
+    let now = current_time();
     host.provider_mut()
-        .clocked_control(20, None, |provider| {
-            serde_json::to_value(provider.structural_request(rearm, 20, true, None)?)
+        .clocked_control(now, None, |provider| {
+            serde_json::to_value(provider.structural_request(rearm, now, true, None)?)
                 .map_err(|error| error.to_string())
         })
         .unwrap();
