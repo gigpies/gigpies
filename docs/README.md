@@ -10,6 +10,7 @@ controls; a complete live-show setup is not yet a finished product.
 | Set up the audio desk | [Open SHR Desk](https://github.com/gigpies/shr-desk/blob/main/docs/TERMINAL.md) |
 | EQ, compress or gate a channel | [Channel controls](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#channel-eq-compression-and-gate) |
 | Check levels or inspect a spectrum | [Meters and spectrum](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#meters-and-spectrum) |
+| Save, review and restore an audio setup | [Audio setup recall](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#save-and-restore-an-audio-setup) |
 | Adjust a monitor mix | [Monitor sends](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#monitor-sends) |
 | Adjust the main PA EQ | [Master EQ](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#master-eq) |
 | See implemented PA processing, generators and setup tools | [PA capabilities](https://github.com/gigpies/shr-pa/blob/main/docs/STATUS.md) |

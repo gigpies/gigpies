@@ -2624,6 +2624,7 @@ impl AuthorityEndpoint for HostAuthority {
             let snapshot = matches!(
                 request.command,
                 crate::structural_control::Command::StructuralSnapshot {}
+                    | crate::structural_control::Command::SetupSnapshot {}
                     | crate::structural_control::Command::MasterEqSnapshot {}
             );
             let reply = if self.source_clock_status.is_some() {

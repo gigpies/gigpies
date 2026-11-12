@@ -99,3 +99,21 @@ Same-UID clients remain connection-bound; disconnect revokes their writer and
 cancels retained prepared changes. Source recovery durably advances the epoch,
 clears clients/grants and remains muted. Provider control/I/O runs outside the
 bounded Mixer/ModuleGraph render functions.
+
+
+### Audio setup hold
+
+The complete Desk setup workflow uses opt-in GP14 `setup_snapshot` (read-only,
+empty body, structural snapshot plus `setup_hold` boolean), `setup_hold` and
+`setup_release` (empty bodies, PA configuration scope). Ordinary structural
+snapshot shape is unchanged. Hold uses the existing source transaction to mute
+Stagebox/PA and close Brain routes. While held, output rearm and Brain activation
+are refused. Writer loss and source recovery do not release it. Explicit release
+keeps outputs disarmed; rearm remains a different command. A provider restart
+starts disarmed and does not restore this runtime hold from a scene file.
+
+Desk persists complete supported intent and restores per granted scope using
+existing commands. Cross-provider partial and UNKNOWN outcomes remain visible;
+no rollback or automatic reconnect replay is promised. See the
+[operator workflow](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#save-and-restore-an-audio-setup)
+and [GP-SHOW inventory](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-show--audio-scenes-and-operator-recovery).

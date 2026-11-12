@@ -464,6 +464,9 @@ impl RenderGraph {
         #[cfg(not(feature = "hardware-host"))]
         let _ = (epoch, frame);
         let closure = &self.closure;
+        let routing = &mut self.routing;
+        #[cfg(feature = "hardware-host")]
+        let clock_routing = &mut self.clock_routing;
         self.mixer.commit_external(permit, |mixer| {
             if closure.load(std::sync::atomic::Ordering::Acquire) {
                 return -15;
@@ -477,9 +480,19 @@ impl RenderGraph {
                         -11
                     }
                 }
-                super::StructuralAction::Mute => {
+                super::StructuralAction::Mute(setup) => {
                     if mixer.mute_outputs().is_err() {
                         return -12;
+                    }
+                    if *setup {
+                        routing.close_brain_audio();
+                        #[cfg(feature = "hardware-host")]
+                        if let Some(r) = clock_routing {
+                            r.monitor_silent = true;
+                            r.foh = false;
+                            r.deadline_frame = None;
+                            r.deadline_ms = None;
+                        }
                     }
                     #[cfg(feature = "hardware-host")]
                     if let Some(modules) = modules {

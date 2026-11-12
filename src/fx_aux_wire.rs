@@ -5,6 +5,14 @@ pub const CONTRACT: &str = "GP-FX-aux";
 pub const BUSES: usize = 4;
 /// Publication preflight is audited against this exact approved owner artifact.
 pub const BUNDLE_LIBRARY: &str = "cefa625b6aee8a742aa83e54d02d26ce3edef0d9907d22856488fe1517a6ae56";
+/// SHR FX 555b8f9: embedded publication code unchanged; actual bundle preflight
+/// and allocation-free publication revalidated on 2026-11-12. This is not a
+/// wildcard: saved/current artifact identity must still match exactly.
+pub const BUNDLE_LIBRARY_20261112: &str =
+    "9173dd76294ce50cefeaf0d1d4ce633ba424745cf7d4f2a0c181f6c878af90c1";
+fn bundle_library(hash: &str) -> bool {
+    matches!(hash, BUNDLE_LIBRARY | BUNDLE_LIBRARY_20261112)
+}
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -97,7 +105,7 @@ impl Mutation {
         if let Some(r) = &self.restore {
             r.saved.validate()?;
             if r.version != 1
-                || self.library_sha256 != BUNDLE_LIBRARY
+                || !bundle_library(&self.library_sha256)
                 || self.bus != 0
                 || self.panic
                 || self.expected_generation != r.expected_generations[0]
@@ -182,12 +190,14 @@ pub(crate) fn snapshot_compatibility(
         o.remove("restore_ready");
     }
     if request["body"]["saved_intent"] == true && snapshot["available"] == true {
-        snapshot["restore_version"] =
-            serde_json::json!(if snapshot["library_sha256"] == BUNDLE_LIBRARY {
-                1
-            } else {
-                0
-            });
+        snapshot["restore_version"] = serde_json::json!(if snapshot["library_sha256"]
+            .as_str()
+            .is_some_and(bundle_library)
+        {
+            1
+        } else {
+            0
+        });
     }
     if request["body"]["return_routing"] == true {
         return Ok(snapshot);

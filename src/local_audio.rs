@@ -455,11 +455,12 @@ enum StructuralAction {
     #[cfg(feature = "hardware-host")]
     MasterEq(crate::module_graph::GraphEqPrepared),
     Patch(crate::mixer::PreparedOutputPatch),
-    Mute,
+    Mute(bool),
     Rearm,
     Failed(String),
 }
 pub struct LocalAudio {
+    setup_hold: bool,
     source: source::RoutingSlot,
     render_graph: Option<Box<source::RenderGraph>>,
     source_executor: Option<crate::source_executor::SourceExecutor<Box<source::RenderGraph>>>,
@@ -734,6 +735,7 @@ impl LocalAudio {
             measurement_pending: None,
             measurement_cache: VecDeque::with_capacity(256),
             structural_pending: None,
+            setup_hold: false,
             structural_cache: VecDeque::with_capacity(256),
             #[cfg(feature = "hardware-host")]
             private_directory: directory.into(),
@@ -1142,7 +1144,16 @@ impl LocalAudio {
         }
         if self.brain_pending.is_none() {
             let mut prepared = self.brain.clone();
-            let failure = if !fresh {
+            let failure = if self.setup_hold
+                && matches!(
+                    r.command,
+                    B::MonitorSet { armed: true, .. }
+                        | B::TalkbackFoh { enabled: true }
+                        | B::Hold { .. }
+                        | B::Heartbeat { .. }
+                ) {
+                Some("audio_setup_hold".into())
+            } else if !fresh {
                 Some("stale_snapshot".into())
             } else {
                 prepared
@@ -1489,6 +1500,7 @@ impl LocalAudio {
             topology: self.topology().clone(),
             clock: self.engine.clock_status().clone(),
             outputs_quiesced: self.engine.outputs_quiesced(),
+            setup_hold: None,
             pa_configuration_json: configuration,
             pa_program_buses: buses,
             pa_status: status,
@@ -1589,6 +1601,18 @@ impl LocalAudio {
             let mut reply = Reply::new(&r, "snapshot", None, None, self.engine.revision(), None);
             reply.master_eq = Some(self.master_eq_snapshot()?);
             return Ok(reply);
+        }
+        if matches!(r.command, S::SetupSnapshot {}) {
+            let mut snapshot = self.structural_snapshot()?;
+            snapshot.setup_hold = Some(self.setup_hold);
+            return Ok(Reply::new(
+                &r,
+                "snapshot",
+                None,
+                None,
+                self.engine.revision(),
+                Some(snapshot),
+            ));
         }
         if matches!(r.command, S::StructuralSnapshot {}) {
             return Ok(Reply::new(
@@ -1700,8 +1724,20 @@ impl LocalAudio {
                         Err("live EQ unavailable".into())
                     }
                 }
-                S::OutputMute {} => Ok(StructuralAction::Mute),
-                S::OutputRearm {} => Ok(StructuralAction::Rearm),
+                S::OutputMute {} => Ok(StructuralAction::Mute(false)),
+                S::SetupHold {} => Ok(StructuralAction::Mute(true)),
+                S::SetupRelease {} => {
+                    if !self.engine.outputs_quiesced() {
+                        return Err("outputs_must_be_quiesced".into());
+                    }
+                    Ok(StructuralAction::Mute(false))
+                }
+                S::OutputRearm {} => {
+                    if self.setup_hold {
+                        return Err("audio_setup_hold_requires_explicit_release".into());
+                    }
+                    Ok(StructuralAction::Rearm)
+                }
                 S::OutputPatch { outputs } => {
                     if !self.engine.outputs_quiesced() {
                         return Err("outputs_must_be_quiesced".into());
@@ -1756,7 +1792,9 @@ impl LocalAudio {
                         Err("modules unavailable".into())
                     }
                 }
-                S::StructuralSnapshot {} | S::MasterEqSnapshot {} => unreachable!(),
+                S::StructuralSnapshot {} | S::SetupSnapshot {} | S::MasterEqSnapshot {} => {
+                    unreachable!()
+                }
             }
         })();
         self.structural_pending = Some((
@@ -1841,6 +1879,17 @@ impl LocalAudio {
         self.finish_compat_render()?;
         let result = result?;
         publication?;
+        if result.kind == "applied" {
+            match r.command {
+                crate::structural_control::Command::SetupHold {} => {
+                    self.setup_hold = true;
+                    self.brain.foh = false;
+                    self.close_brain_audio();
+                }
+                crate::structural_control::Command::SetupRelease {} => self.setup_hold = false,
+                _ => (),
+            }
+        }
         if result.kind == "applied" && matches!(action, StructuralAction::Rearm) {
             self.engine.acknowledge_output_rearm()?;
         }
@@ -2031,6 +2080,9 @@ impl LocalAudio {
     }
 
     pub fn rearm(&mut self) -> Result<()> {
+        if self.setup_hold {
+            return Err("audio setup hold requires explicit release".into());
+        }
         if self.render_graph.is_some() || self.source_executor.is_some() {
             if self.frame() != 0
                 || self
@@ -3547,6 +3599,7 @@ impl LocalAudio {
                     let read = matches!(
                         request.command,
                         crate::structural_control::Command::StructuralSnapshot {}
+                            | crate::structural_control::Command::SetupSnapshot {}
                             | crate::structural_control::Command::MasterEqSnapshot {}
                     );
                     let c = &self.clients[index];

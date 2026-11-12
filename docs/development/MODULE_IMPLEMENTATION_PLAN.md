@@ -88,7 +88,7 @@ as `ecd471e`; this maintenance does not authorize T3 or physical activation.
 | [GP-PANEL](#gp-panel--shared-physical-instrument-panel) | GigPies shared UI; Desk/Lightdesk consumers | IN PROGRESS: real-terminal proof and initial production adapters; acceptance gates remain |
 | [GP-METER](#gp-meter--measured-audio-on-the-real-desk) | GigPies lead; SHR Desk consumer | IMPLEMENTED / software-validated; owner-artifact P4 BLOCKED: supply reviewed manifest |
 | [GP-FX](#gp-fx--writable-owner-effects-in-the-console) | GigPies lead; SHR FX provider, SHR Desk consumer | SOFTWARE VALIDATED: four Brain auxes and Desk controls; physical acceptance separate |
-| [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) | GigPies lead; SHR Desk consumer | IN PROGRESS: bounded saved FX intent and reviewed disarmed restore |
+| [GP-SHOW](#gp-show--audio-scenes-and-operator-recovery) | GigPies lead; SHR Desk consumer | PROVISIONALLY COMPLETE: supported audio setup software accepted; physical qualification open |
 | [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | GigPies | IN PROGRESS: E0–E6 software validated; E7 recording checks complete, source review and musical qualification open |
 | [GP-AUTO-BASS-LOW](#gp-auto-bass-low--observed-low-energy-and-definition) | GigPies | IMPLEMENTED / software-validated: independent low-energy objective and source-stage guards; musical acceptance pending |
 | [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: optional legacy hierarchy; superseded for current auditions |
@@ -820,10 +820,150 @@ exhaustive research, load benchmarks, device activation and listening are exclud
 
 ## GP-SHOW — audio scenes and operator recovery
 
-State: IN PROGRESS overall. The first bounded slice is implemented and software-
-validated: portable four-aux FX intent and reviewed, output-quiesced restore through
-the production SHR Desk Frontend. Full audio scenes remain open. This task's new validation must stand on its own; GP-FX and GP-H1
-acceptance above is baseline evidence only.
+State: complete supported audio setup workflow PROVISIONALLY COMPLETE for software.
+Desk saves and selects sixteen private slots, reviews current versus
+saved values, restores each explicitly granted scope under a provider-owned output
+hold, and verifies correlated completion plus settled readback. Cross-scope recall
+is deliberately non-atomic: a durable before-send receipt records interruption and
+partial/unknown outcomes; reconnect requires a fresh review. Hold release leaves
+outputs disarmed. Physical qualification remains open and separately authorized.
+
+### Full setup field inventory (current code, before implementation)
+
+The supported inventory is derived from `EngineIntent`, `structural_control::Intent`,
+`brain_control::Intent`, `fx_saved::Saved` and their live snapshot/control codecs:
+
+- Core: every input fader (mdb), pan, shared mute; Master gain; every input-to-monitor
+  level and raw-post-mute / processed-pre-fader / processed-post-fader tap.
+- Channel processing: gate bypass, threshold, attack, hold, release, range,
+  hysteresis and detector frequency/Q; four EQ bands' frequency/gain/Q/bypass,
+  global EQ bypass; compressor bypass, threshold, ratio, knee, attack, release,
+  makeup. Current and target must settle before capture.
+- Routing: exact ordered input ID/capture slot/physical port bindings; exact output
+  ID/playback slot/physical port identities and each output's Main/monitor/PA source.
+  Sample rate, channel dimensions, monitor/PA capacities and measurement slots are
+  compatibility constraints. Map revision is runtime provenance, not a recalled value.
+- PA: complete owner `GraphConfig:2` and program-bus assignment. This includes
+  each input's gain/delay, eight-band PEQ enable/kind/shelf slope/frequency/Q/gain,
+  31-band GEQ enable/gains and compressor enable/threshold/ratio/knee/makeup/
+  attack/release; weighted input/node routes; each output's source, LR24 split
+  frequencies and selected band, mute, PEQ enable/eight complete bands, gain,
+  polarity, delay, limiter threshold and release. Sample rate/max block remain
+  owner-validated. Global PA muted/quiesced/armed/fault/counter status is excluded.
+- FX: each of four auxes' algorithm/bypass/time/amount/damping/rate/gain/seed,
+  optional tempo BPM/denominator/modifier, every input send, Main return and every
+  monitor return, with the exact audited library hash and input/monitor identities.
+  Owner ABI version/size/reserved constants are validated, not operator controls.
+- Brain: selected monitor/PFL/AFL source, monitor gain/mute/dim, talkback monitor
+  destinations/gain/mute. Monitor armed, FOH talkback enable and held talkback are
+  excluded; restoring stable settings must not open either audible path.
+
+Not saved: recording execution, lighting, automix decisions/modes/proposals/holds,
+leases/grants, credentials, device paths, epochs, pending requests, DSP histories,
+meters, armed state or held talkback. No new engine or transport is required.
+Cross-scope/provider recall must expose completed, failed and unknown steps; it
+cannot claim transactional rollback. Reconnect observes state and requires a new
+review. Software validation uses synthetic audio and actual provider libraries;
+physical activation remains outside this task.
+
+### Complete setup implementation and acceptance
+
+The `gigpies-audio-setup:1` envelope composes existing engine v4 / Brain v1 /
+PA intent and the existing saved-FX schema; it does not serialize execution state.
+Desk owns private durable storage and the operator workflow. GigPies adds opt-in
+`setup_snapshot`, PA-scope `setup_hold` and `setup_release` to the existing
+structural contract. Ordinary structural snapshots retain their previous shape.
+The hold closes Main/monitor/PA and Brain monitor/held-talkback paths at the source
+boundary and refuses output rearm or Brain activation until explicit release.
+It survives writer loss and source recovery. Provider restart starts disarmed;
+Desk requires a new hold before continuing recall.
+
+The selected slot's complete field differences and remaining scope commands appear
+in Desk's existing paged review. Each mutation uses existing grant, freshness,
+request correlation and provider commands, followed by exact settled readback.
+Hold/Brain/raw reads must agree on the common revision immediately before command
+admission; concurrent release/rearm changes conflict rather than being silently
+adopted. Existing FX bundle publication also rechecks quiescence on the source.
+Routing changes retain their inventory fence without overwriting the correlated
+completion with a redundant cancellation. PA/FX owner JSON compares semantically;
+provider identity and the saved FX library hash still compare exactly. No rollback,
+automatic remap, startup restore or automatic rearm is claimed. Runtime plans and
+automix modes remain outside setup recall.
+
+Operator instructions: [Desk audio setup workflow](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#save-and-restore-an-audio-setup).
+Reproducible opt-in acceptance is `tests/setup_provider.rs` in GigPies and
+`frontend::setup_tests::actual_setup_*` in Desk. Build the provider test with
+`--features hardware-host --test setup_provider --no-run`; pass its executable as
+`GP_SETUP_PROVIDER_EXE`, plus `GP_SETUP_MANIFEST`, `GP_SETUP_PA_CONFIG`,
+`GP_SETUP_FX_LIBRARY` and `GP_SETUP_FX_HASH` when running Desk `--lib actual_setup_
+-- --ignored --nocapture --test-threads=1`. All Cargo commands use Rust 1.97.1,
+`--locked -j1`, `CARGO_INCREMENTAL=0` and the parent build lock. The manifest uses
+actual PA/FX/REC libraries; the provider only renders synthetic capture and never
+opens PCM. Every output sample must remain zero. One episode saves configured
+settings, restarts, reviews, restores all eight populated scopes and verifies exact
+readback. A second interrupts the provider after the durable before-send receipt,
+checks partial/unknown instead of success, restarts with a new epoch, reviews the
+receipt, re-holds outputs and completes recovery. A third changes another scope
+after review and verifies stale refusal before any recall receipt/mutation, then
+completes a fresh restore. A fourth replaces the saved slot after review and
+requires a fresh selection before any mutation. Final frozen-tree gate results
+follow below.
+
+The current FX artifact is explicitly audited alongside the previous accepted
+artifact: SHR FX `555b8f9`, SHA-256
+`9173dd76294ce50cefeaf0d1d4ce633ba424745cf7d4f2a0c181f6c878af90c1`.
+The embedded publication implementation is unchanged; standalone JACK/dependency
+updates changed the binary. The actual-library allocation-free four-bus bundle
+preflight/publication regression passed again. This is an exact allowlist addition,
+not permission to restore across differing saved/current hashes.
+
+### Full setup software validation (2026-11-12)
+
+Canonical rpi5 checkouts, Rust 1.97.1, locked dependencies, single build job,
+`CARGO_INCREMENTAL=0`, parent nonblocking build lock and serial test execution:
+
+- GigPies `cargo test --locked -j1 --all-targets -- --test-threads=1`:
+  **563 passed, 22 ignored**. With `--features hardware-host`: **698 passed,
+  90 ignored**. Both feature sets pass all-target Clippy with `-D warnings`,
+  formatting and release builds. Normal Python script tests: **67 passed**.
+- Desk focused setup/recovery regressions: **6 passed**. All four actual-provider
+  Frontend episodes pass, including provider interruption/reconnect, stale review
+  and saved-file replacement before confirmation. Across the four final episodes,
+  **7,693,440 rendered output samples were exactly zero**. Actual PA/FX/REC libraries
+  ran with synthetic capture; no physical audio backend was opened.
+- The actual FX four-bus bundle preflight/publication test passed with the current
+  audited library. Library provenance is retained in the small ignored
+  `artifacts/gp-show/modules.json` and `*-owner.json` records, using canonical
+  sibling release libraries rather than copied binaries.
+- Desk normal all-target suites: **401 passed / 35 ignored** (default),
+  **404 passed / 35 ignored** (native), zero failures. Both all-target checks and
+  Clippy gates (`-D warnings`) pass. Formatting and **12** Python publication
+  regressions pass. Native uses the inspected CPU lavapipe ICD with DISPLAY and
+  WAYLAND_DISPLAY unset; no window, GPU or physical input/output acceptance.
+  Both default and native release builds pass.
+- Historical/exhaustive auditions, long benchmarks, distributed load, physical
+  playback, routing, listening and hardware qualification are intentionally
+  excluded. The four setup episodes and current FX publication regression are
+  the directly relevant explicit opt-ins; other historical drivers stay ignored.
+
+The final episode also exposed a late GP05 health reply on the control stream.
+Desk validates and discards unpaired health without treating fractional FX/PA
+metadata as an integer-only REC command reply, fresh readback or completion.
+A normal regression preserves epoch rejection and prevents false recorder freshness.
+The episode driver waits for fresh authority before requesting control after Cancel;
+production freshness deadlines were not weakened.
+
+Closeout: reviewed named source/docs/tests and complete publication indexes
+(GigPies **808** entries, Desk **582**); changed local documentation links resolve.
+Known completed test executables were removed only after build-lock, process and
+open-file/mapping checks: **24,508,461,056 allocated bytes** reclaimed on Pi5.
+Canonical release binaries, diagnostic dependencies and useful normal caches remain;
+no rebuild was used to verify cleanup. Small owner-provenance records and these
+reproducible commands replace disposable logs and synthetic episode directories.
+Physical listening, patch mapping, hardware timing and live-show acceptance remain
+separate; software completion does not authorize activation.
+
+### Earlier four-aux slice evidence (historical)
 
 Implementation uses a separate `gigpies-fx-intent:1` file, with exactly four complete
 configurations (all owner settings, tempo, input sends, Main and configured monitor
@@ -991,9 +1131,10 @@ acceptance drivers. Normal targets retain about 10 GiB (GigPies) and 14 GiB (Des
 of runtime, diagnostics and useful shared build caches. Existing uncommitted work
 and user data were preserved. No rebuild was performed to verify cleanup.
 
-Remaining full-scene work: core/PA safe selection and review semantics, scene library
-beyond this FX slice, coordinated cross-module transactions and separately authorized
-physical qualification. No automatic startup recall, full live recall or GP-H1 T3.
+The earlier FX-only remaining-work statement is superseded by the complete setup
+workflow above. Remaining acceptance is separately authorized physical qualification.
+No atomic cross-scope transaction, automatic startup recall, live-output recall or
+GP-H1 T3 is claimed.
 
 ## GP-AUTO — live soundcheck and bounded assistance
 

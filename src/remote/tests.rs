@@ -75,6 +75,18 @@ fn policy_revocation_identity_and_private_bind() {
         ctx.check_writer(&json!({"kind":"processing_snapshot", "writer":null}))
             .is_ok()
     );
+    assert!(
+        ctx.check_writer(&json!({"kind":"setup_snapshot", "writer":null}))
+            .is_ok()
+    );
+    assert!(
+        ctx.check_writer(&json!({"kind":"setup_snapshot", "writer":"spoof"}))
+            .is_err()
+    );
+    assert!(
+        ctx.check_writer(&json!({"kind":"setup_hold", "writer":null}))
+            .is_err()
+    );
     store.replace(vec![original]).unwrap();
     assert!(store.check(&ctx).is_err());
     for address in ["0.0.0.0:9999", "8.8.8.8:9999", "[::]:9999"] {

@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 )]
 pub enum Command {
     StructuralSnapshot {},
+    SetupSnapshot {},
+    SetupHold {},
+    SetupRelease {},
     MasterEqSnapshot {},
     MasterEqSet {
         patch_json: String,
@@ -131,7 +134,9 @@ impl Request {
             expected_revision: self.expected_revision,
             command: if matches!(
                 self.command,
-                Command::StructuralSnapshot {} | Command::MasterEqSnapshot {}
+                Command::StructuralSnapshot {}
+                    | Command::SetupSnapshot {}
+                    | Command::MasterEqSnapshot {}
             ) {
                 AudioCommand::Snapshot {}
             } else {
@@ -141,7 +146,9 @@ impl Request {
     }
     pub fn scope(&self) -> Option<Scope> {
         match self.command {
-            Command::StructuralSnapshot {} | Command::MasterEqSnapshot {} => None,
+            Command::StructuralSnapshot {}
+            | Command::SetupSnapshot {}
+            | Command::MasterEqSnapshot {} => None,
             Command::OutputPatch { .. } => Some(Scope::OutputRoutes),
             _ => Some(Scope::PaConfiguration),
         }
@@ -169,6 +176,8 @@ pub struct Snapshot {
     pub topology: crate::topology::EngineTopology,
     pub clock: crate::clock_domain::ClockDomain,
     pub outputs_quiesced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_hold: Option<bool>,
     pub pa_configuration_json: Option<String>,
     pub pa_program_buses: Vec<usize>,
     /// Actual owner status; null means the successor module is unavailable.
