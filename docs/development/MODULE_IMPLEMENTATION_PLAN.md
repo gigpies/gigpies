@@ -94,9 +94,64 @@ as `ecd471e`; this maintenance does not authorize T3 or physical activation.
 | [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: optional legacy hierarchy; superseded for current auditions |
 | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | GigPies lead; SHR Desk consumer | PLANNED: needs trustworthy measurements and an explicit musical objective |
 | [GP-REC](#gp-rec--complete-integrated-recording-workflow) | GigPies lead; SHR REC provider, SHR Desk consumer | SOFTWARE VALIDATED: reviewed recording workflow, exact 8/16-track acceptance |
+| [GP-PA-MEASURE](#gp-pa-measure--physical-measurement-workflow) | GigPies capture/workflow; SHR PA analysis; Desk review | PLANNED: extend existing software measurement into synchronized physical acquisition and verification |
 | [GP-H1](#gp-h1--physical-audio-qualification) | GigPies lead; PA/REC/FX owners as needed | PLANNED: separate physical session and observed rig required |
 | [GP-H2](#gp-h2--physical-dual-console-operation) | GigPies lead; Desk/Lightdesk contributors | Physical input/profile integration and actual display/controller acceptance; see card |
 | [GP-H3](#gp-h3--whole-show-qualification) | GigPies lead; all runtime owners | PLANNED: follows audio/console qualification and Lux LX-06 output |
+
+## GP-PA-MEASURE — physical measurement workflow
+
+State: **PLANNED**. Owner: GigPies. Contributors: SHR PA analysis/proposals and
+SHR Desk operator workflow. This card owns new cross-module work; the completed
+[GP-PA-SETUP](../archive/pa-setup-2026-10-29.md) stays archived.
+The distinct PA alignment algorithm is owned by
+[PA-ALIGN](https://github.com/gigpies/shr-pa/blob/main/docs/PHASE_ALIGNMENT.md#pa-align--measured-crossover-alignment).
+
+Outcome: an operator can measure individual speaker paths with an isolated mic
+and synchronized reference, review bounded corrections, explicitly apply them
+muted, then measure the real combined result. Preserve the current working DSP,
+software GP20 capture, overlap/EQ review and imported calibrated-sweep workflow;
+[provider contract](../reference/MEASUREMENT_PRODUCER.md) owns those interfaces.
+
+Sequence:
+
+1. **Freeze capture/excitation contract.** Inspect actual Stagebox ownership and
+   output tapping. Specify one source-frame reference origin, selected speaker
+   path, reserved mic slot, reference offset/calibration provenance and configuration
+   identity. Use Stagebox's clock; never route the setup mic into program/monitors
+   or start a second device owner. Specify bounded level, duration, tail, cancellation,
+   clipping/drop/clock-fault handling and restoration of the prior program route.
+2. **Implement host acquisition and software acceptance.** Prepare excitation and
+   capture storage off the callback; bounded copies/render work only in it. Support
+   deliberate pink-noise or repeated-sweep acquisition using owner signal contracts,
+   not a duplicate analyzer. No automatic startup excitation. Prove isolation,
+   route selection, common timing, buffer bounds, source continuity, cancellation,
+   lease loss and stale-result rejection with deterministic source/loopback tests.
+3. **Complete Desk measurement sequence.** Build on existing capture/overlap/EQ
+   review controls: identify speaker pair/position, review level and start, show
+   real progress/refusals, preserve unchanged setup on failure. Prepare/commit stays
+   explicitly muted and rearm stays deliberate. Acquire fresh combined-response
+   evidence for SHR PA's assessment; expose prediction versus measured confirmation.
+   Test the full provider/Desk sequence including reconnect and cancellation.
+4. **Qualify physical operation.** Follow [GP-H1](#gp-h1--physical-audio-qualification)
+   and the owner's physical alignment procedure. First establish electrical common
+   timing/socket mapping, then controlled speaker/mic trials at several positions.
+   Record protection settings, mic calibration, before/after sum, latency and refusal
+   cases. This requires a separately authorized physical session.
+
+Acceptance:
+
+- [ ] Reviewed source-clock capture/excitation contract and bounded resource limits.
+- [ ] Host acquisition, isolation and fault/recovery software checks.
+- [ ] Actual Desk/provider measure-review-apply-remeasure software acceptance.
+- [ ] Physical timing/clock/socket qualification, linked to GP-H1 evidence.
+- [ ] Independent acoustic before/after acceptance at representative positions.
+
+Evidence: existing software integration is documented in the provider contract and
+archived GP-PA-SETUP; none of the new physical gates is claimed complete.
+Next action: specify step 1 against current source ownership after the PA-ALIGN
+low-frequency increment. Current authorization covers planning and bounded PA
+software development/documentation, not physical excitation or host-audio changes.
 
 ## GP-METER — measured audio on the real Desk
 
