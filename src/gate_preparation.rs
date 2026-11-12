@@ -306,6 +306,17 @@ pub struct CaptureFiles {
 }
 impl CaptureFiles {
     pub fn prepare(self) -> Result<PreparedDocument, String> {
+        self.prepare_with_progress(|_, _| Ok(()))
+    }
+    pub fn prepare_with_progress(
+        self,
+        mut progress: impl FnMut(usize, usize) -> Result<(), String>,
+    ) -> Result<PreparedDocument, String> {
+        let total = self.hits.len()
+            + self.bleed.len()
+            + self.evaluation_hits.len()
+            + self.evaluation_bleed.len();
+        let mut completed = 0;
         if self.version != 2 {
             return Err("capture version".into());
         }
@@ -338,6 +349,10 @@ impl CaptureFiles {
             for path in paths {
                 if !path.is_absolute() {
                     return Err("absolute capture paths required".into());
+                }
+                progress(completed, total)?;
+                if !path.metadata().map_err(|e| e.to_string())?.is_file() {
+                    return Err("regular WAV evidence required".into());
                 }
                 let path = path.canonicalize().map_err(|e| e.to_string())?;
                 let mut reader = hound::WavReader::open(&path).map_err(|e| e.to_string())?;
@@ -378,6 +393,8 @@ impl CaptureFiles {
                     );
                 }
                 captures.push(capture.finish()?);
+                completed += 1;
+                progress(completed, total)?;
             }
             groups.push(captures);
         }
@@ -466,4 +483,88 @@ fn evaluate_files(
         }
     }
     Ok(result)
+}
+
+/// Local control-process protocol. No provider grants or persistent execution state.
+/// The caller may terminate this isolated, read-only process at any time.
+pub fn prepare_stream() -> Result<(), String> {
+    use std::io::{Read, Write};
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(512 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() > 512 * 1024 {
+        return Err("gate request capacity".into());
+    }
+    let files: CaptureFiles = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let paths: Vec<_> = [
+        &files.hits,
+        &files.bleed,
+        &files.evaluation_hits,
+        &files.evaluation_bleed,
+    ]
+    .into_iter()
+    .flatten()
+    .cloned()
+    .collect();
+    if paths.len() > 128 {
+        return Err("gate cue capacity".into());
+    }
+    let before = paths
+        .iter()
+        .map(|p| EvidenceFile::read(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    let emit = |value: serde_json::Value| -> Result<(), String> {
+        let mut out = std::io::stdout().lock();
+        serde_json::to_writer(&mut out, &value).map_err(|e| e.to_string())?;
+        writeln!(out)
+            .and_then(|_| out.flush())
+            .map_err(|e| e.to_string())
+    };
+    let document = files.prepare_with_progress(|completed, total| {
+        emit(serde_json::json!({"progress": completed, "total": total}))
+    })?;
+    let after = paths
+        .iter()
+        .map(|p| EvidenceFile::read(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    if before != after {
+        return Err("evidence files changed during preparation; select and prepare again".into());
+    }
+    emit(serde_json::json!({"document": document, "files": after}))
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct EvidenceFile {
+    path: std::path::PathBuf,
+    dev: u64,
+    ino: u64,
+    size: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+impl EvidenceFile {
+    fn read(path: &std::path::Path) -> Result<Self, String> {
+        use std::os::unix::fs::MetadataExt;
+        if !path.is_absolute() {
+            return Err("absolute evidence path required".into());
+        }
+        let m = path.metadata().map_err(|e| e.to_string())?;
+        if !m.is_file() || m.len() > 8 * 1024 * 1024 {
+            return Err("regular WAV of at most 8 MiB required".into());
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            dev: m.dev(),
+            ino: m.ino(),
+            size: m.len(),
+            mtime: m.mtime(),
+            mtime_nsec: m.mtime_nsec(),
+            ctime: m.ctime(),
+            ctime_nsec: m.ctime_nsec(),
+        })
+    }
 }

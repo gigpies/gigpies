@@ -6,10 +6,10 @@
 
 | Area | Available | Still unfinished or unverified |
 |---|---|---|
-| Audio desk | Channel EQ/compression, default-bypassed gate (processing v5), cued-PCM preparation and actual v5 Desk mutation acceptance, fader/pan, meters, monitor sends, spectrum and 24-input-bank + Master selection strip | Physical controller bindings and listening acceptance; Master software acceptance is tracked in GP-PANEL |
+| Audio desk | Channel EQ/compression, default-bypassed gate (processing v5), recorded-WAV preparation controls, evidence review and actual v5 Desk mutation acceptance, fader/pan, meters, monitor sends, spectrum and 24-input-bank + Master selection strip | Physical controller bindings and listening acceptance; Master software acceptance is tracked in GP-PANEL |
 | PA | Configurable weighted routing, crossovers, input/speaker EQ, compression, sample limiting, independent output delay/polarity and mutes through SHR PA | Physical speaker protection, full output mapping and acoustic alignment |
 | Effects | Four stereo FX auxes through Brain, wet returns to Main, palette controls, tail-preserving bypass and panic; [owning GP-FX card](development/MODULE_IMPLEMENTATION_PLAN.md#gp-fx--writable-owner-effects-in-the-console) | Saved-show integration, listening and sustained target-hardware performance |
-| Recording | Reviewed Desk Start/Stop, aligned raw tracks, readiness/progress/fault/final outcome readback | Physical storage/load and power-loss durability; standalone recorder playback |
+| Recording | Reviewed Desk Start/Stop, aligned raw tracks, readiness/progress/fault/final outcome readback; standalone SHR REC capture, durable take handoff and playback software acceptance | Physical capture/playback, storage/load and power-loss durability |
 | Talkback and listening | Brain audio routing and software recovery | Physical duplex device setup, delay and feedback checks |
 | Lighting | Manual looks, cues, scene editing and optional music-following estimates | Physical DMX output and rehearsal accuracy of musical estimates |
 | Measurement | Software reference/mic analysis, delay/polarity and crossover-sum proposals, reviewed output EQ and imported calibrated repeated-sweep evidence | Physical synchronized microphone acquisition, automated excitation/capture and measured acoustic verification |

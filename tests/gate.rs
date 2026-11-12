@@ -321,6 +321,33 @@ fn raw_cue_cli_checks_independence_and_causal_preservation() {
     assert_eq!(result["causal_evaluation"]["missed_hits"], 0);
     assert_eq!(result["causal_evaluation"]["false_opening_passages"], 0);
     println!("raw cue acceptance: {}", result["causal_evaluation"]);
+    // The Desk process protocol uses the same capture and causal evaluation, with
+    // bounded progress and file identity receipts; it writes no proposal file.
+    use std::io::Write;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_gigpies"))
+        .arg("gate-prepare-stream")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&evidence).unwrap())
+        .unwrap();
+    let stream = child.wait_with_output().unwrap();
+    assert!(stream.status.success());
+    let messages: Vec<serde_json::Value> = String::from_utf8(stream.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(messages.first().unwrap()["progress"], 0);
+    assert_eq!(messages[messages.len() - 2]["progress"], 32);
+    let final_message = messages.last().unwrap();
+    assert_eq!(final_message["document"], result);
+    assert_eq!(final_message["files"].as_array().unwrap().len(), 32);
     let mut duplicate = evidence;
     duplicate["evaluation_hits"][0] = duplicate["hits"][0].clone();
     std::fs::write(&source, serde_json::to_vec(&duplicate).unwrap()).unwrap();

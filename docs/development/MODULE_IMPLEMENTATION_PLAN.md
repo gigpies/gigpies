@@ -84,7 +84,7 @@ as `ecd471e`; this maintenance does not authorize T3 or physical activation.
 
 | Task | Owner / contributors | State and next action |
 |---|---|---|
-| [GP-GATE](#gp-gate--lightweight-channel-gates-and-tom-decay-control) | GigPies channel DSP; Desk presentation | IN PROGRESS: core, live strip, v5 contract and preparation API; workflow acceptance remains |
+| [GP-GATE](#gp-gate--lightweight-channel-gates-and-tom-decay-control) | GigPies channel DSP; Desk presentation | Recorded-evidence operator workflow implemented; physical/listening qualification remains |
 | [GP-PANEL](#gp-panel--shared-physical-instrument-panel) | GigPies shared UI; Desk/Lightdesk consumers | IN PROGRESS: real-terminal proof and initial production adapters; acceptance gates remain |
 | [GP-METER](#gp-meter--measured-audio-on-the-real-desk) | GigPies lead; SHR Desk consumer | IMPLEMENTED / software-validated; owner-artifact P4 BLOCKED: supply reviewed manifest |
 | [GP-FX](#gp-fx--writable-owner-effects-in-the-console) | GigPies lead; SHR FX provider, SHR Desk consumer | SOFTWARE VALIDATED: four Brain auxes and Desk controls; physical acceptance separate |
@@ -3056,10 +3056,11 @@ source acceptance does not deploy services or authorize device activation.
 
 ## GP-GATE — lightweight channel gates and tom decay control
 
-State: **IN PROGRESS**, implementation started 2026-10-30. Owner: GigPies channel
-DSP and soundcheck automation; Desk consumes processing v5. Core, live strip,
-persistence and measured-proposal preparation/import are implemented; software validation and
-remaining workflow integration are tracked below. Accepted V8 settings/audio unchanged.
+State: **SOFTWARE ACCEPTED — recorded-evidence operator workflow**, November 12; implementation started 2026-10-30.
+Owner: GigPies channel DSP and soundcheck automation; Desk consumes processing v5.
+Core, live strip, stable persistence, measured preparation and recorded-evidence
+operator controls are implemented. November 12 validation is below; physical
+acquisition/listening qualification remains separate. Accepted V8 settings/audio unchanged.
 
 Outcome: reduce between-hit bleed with a smooth, retriggerable closing fade,
 without losing intended quiet hits or adding material multichannel CPU load.
@@ -3114,7 +3115,7 @@ and closing different thresholds to avoid chatter.
    version/migration policy; reject incompatible writes rather than silently
    dropping fields. Expose gate mode, state, attenuation and detector freshness
    separately from compressor gain reduction. Preserve review/permission guards.
-4. [ ] Add soundcheck preparation and causal block-stream evaluation. Compare
+4. [x] Add soundcheck preparation and causal block-stream evaluation. Compare
    weak/strong hits, ringing tails, cymbal/snare bleed, rolls, retriggers, silent
    inputs, varying noise and insufficient evidence. Measure missed intended hits,
    false openings and tail attenuation; retain original signal as the reference
@@ -3135,6 +3136,81 @@ and closing different thresholds to avoid chatter.
    production suite for the engine/schema integration. Keep long benchmarks and
    listening renderers opt-in with a documented command. Listening/hardware
    acceptance remains distinct; do not regenerate accepted mixes automatically.
+
+### Recorded-evidence operator workflow — November 12
+
+- [x] Select an intended channel and four independently labelled pre-gate WAV cue
+  groups in Desk, using individual paths/directories and cue inspection/removal.
+  O in Channel / F10 Gate recorded soundcheck; no handwritten JSON required.
+- [x] Bounded GigPies-owned preparation process, progress, cancellation and errors;
+  one active process, finite request/output/memory/time bounds, no callback work.
+- [x] Inspect measured separation, detector, proposed settings, confidence,
+  held-out summary/causal preservation and explicit bypass/refusal reasons.
+- [x] Frozen local draft, current-versus-proposed/evidence review, explicit existing
+  authority transaction, correlated final and settled authoritative readback.
+- [x] File receipts checked after preparation, at review and confirmation, including
+  the command worker before submission. Duplicate decoded PCM, stale input/show/
+  epoch/revision/generation, cancellation, provider failure and reconnect cannot
+  automatically apply settings.
+- [x] Complete final normal production suites and prepared-gate audio setup
+  save/restart/recall episode; results recorded below.
+- [ ] Separately authorized physical cue acquisition, representative instrument/
+  bleed/room listening, mapping, live multichannel deadline and rehearsal acceptance.
+  These do not block the bounded recorded-evidence software package.
+
+`gate-prepare-stream` calls the existing capture/preparation/causal core. No new DSP,
+evaluation-driven retuning, automatic mixing, continuous learning or accepted-mix
+rendering is introduced. Manual/Tom and both CLI/import versions remain compatible.
+Stable settings use GP-SHOW Audio setup; jobs, grants, cue paths and execution state
+are never saved intent. See [operator controls](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#prepare-from-recorded-soundcheck-cues)
+and [protocol reference](../reference/CHANNEL_PROCESSING.md#gate-extension-v5).
+
+Focused actual-provider software episode: GigPies `spectrum-source` with 16 inputs,
+Desk `gate_v5_actual_producer_review_import_and_reconnect`, and the actual GigPies
+analysis executable. Cancellation, changed-file rejection, independent held-out
+refusal, recovery, full review/application, settled readback, unchanged other inputs
+and read-only reconnect are covered. PCM16 fixture quantization initially produced
+duplicate bleed PCM and correctly refused; distinguishable PCM24 cues correct the
+fixture without weakening duplicate rejection. No physical audio was opened.
+
+The actual-library prepared-gate setup episode also passes: altered evidence is
+refused independently by the command worker, a fresh preparation is explicitly
+applied with correlated settled readback, then Audio setup saves/restarts/recalls
+all eight stable scopes. Saved intent contains no cue paths, preparation job,
+grant or execution state. The two setup runs witnessed 2,632,320 silent output
+samples. These synthetic witnesses establish software behavior, not physical
+mapping or listening qualification.
+
+Reproduce under the parent build lock with `CARGO_INCREMENTAL=0`, Rust 1.97.1,
+`--locked -j1`: build GigPies `--bin gigpies --example spectrum-source`, then set
+`GP_GATE_SOURCE` to that example and `GP_GATE_PREPARE` to that GigPies binary for
+Desk `cargo test --test gp07_frontend gate_v5_actual -- --ignored --nocapture`.
+The prepared-gate stable-setup episode is Desk `--lib actual_setup_prepared_gate
+-- --ignored --nocapture --test-threads=1`, using the existing GP-SHOW actual-library
+provider environment above plus `GP_GATE_PREPARE`. Synthetic media is temporary.
+
+### November 12 production validation
+
+| Repository / configuration | Normal tests passed | Opt-in tests skipped |
+|---|---:|---:|
+| GigPies default | 563 | 22 |
+| GigPies hardware-host | 698 | 90 |
+| SHR Desk default | 405 | 36 |
+| SHR Desk native, explicit CPU Vulkan | 408 | 36 |
+
+Run normal suites with `cargo test --locked -j1 --all-targets -- --test-threads=1`,
+adding `--features hardware-host` or `--features native` for the second configuration.
+Use the shared build lock, normal targets, `CARGO_INCREMENTAL=0` and Rust 1.97.1.
+Native validation selects `/usr/share/vulkan/icd.d/lvp_icd.json` through
+`VK_DRIVER_FILES`, with display and conflicting driver variables unset.
+The two actual-provider episodes above are separately selected opt-ins and passed.
+Both repositories pass formatting, both warnings-denied Clippy configurations and
+both optimized release builds; Desk also passes both explicit all-target checks.
+Python suites pass: GigPies 67, Desk 12. Complete-index publication guards, staged
+whitespace checks and changed-document local links pass. Software completion is
+provisional pending the separately authorized physical/listening acceptance below.
+Historical auditions, exhaustive matrices and long benchmarks remain opt-in and
+were not rerun: the gate DSP, parameter-selection rule and accepted mixes are unchanged.
 
 ### Current implementation and remaining acceptance
 

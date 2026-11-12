@@ -98,6 +98,30 @@ includes `causal_evaluation` counts and worst hit energy change; Desk checks the
 on import. The second read must match the captured PCM hash. This bounds software
 acceptance; it does not establish separation in arbitrary performances.
 
+Desk also offers a recorded-evidence preparation panel (O in Channel / Gate recorded
+soundcheck). It selects labelled local WAV cues and invokes the installed GigPies
+`gate-prepare-stream` control process; Desk contains no analysis or gate DSP.
+The process reads one bounded version-2 request from stdin (512 KiB maximum),
+emits newline-delimited JSON progress (`progress`, `total`) and one completion
+(`document`, `files`), or an `error`. The document is the unchanged import format.
+The file receipt records original absolute path, device/inode, byte length and
+nanosecond modification/change times. All files must remain regular and unchanged
+between initial inspection and final analysis. Existing decoded-PCM uniqueness
+and causal second-read hashes still protect calibration/evaluation independence.
+Desk rechecks file receipts before review and confirmation, and fences the result
+against channel/show/epoch/revision and connection generation. Parameters stay
+frozen; cancellation or reconnect never applies them. One read-only child is
+admitted at a time, with bounded request/output storage and a 120-second wall-time
+limit. Cancellation terminates/reaps that child; Linux parent-death signalling
+prevents an orphan analysis process. Work never enters the audio callback.
+
+The panel displays measurements, detector/settings, confidence, causal preservation
+and refusal reasons, then uses the existing GP07 review/authority transaction.
+Correlated final completion and settled authoritative readback remain separate.
+Stable gate settings use the existing audio setup save/restore workflow; evidence
+selections, processes and grants are not saved intent. Manual, Tom, summary CLI,
+raw-WAV CLI and proposal-import compatibility remain available.
+
 `Gate::process_block` is an offline adapter over the exact live sample core.
 It does not add gating to historical automix settings or regenerate mixes.
 No audition songs, post-render tuning or reference-song targets are used.
