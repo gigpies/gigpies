@@ -94,14 +94,15 @@ as `ecd471e`; this maintenance does not authorize T3 or physical activation.
 | [GP-AUTO-LUFS](#gp-auto-lufs--offline-kick-led-source-hierarchy) | GigPies | IMPLEMENTED / software-validated: optional legacy hierarchy; superseded for current auditions |
 | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | GigPies lead; SHR Desk consumer | PLANNED: needs trustworthy measurements and an explicit musical objective |
 | [GP-REC](#gp-rec--complete-integrated-recording-workflow) | GigPies lead; SHR REC provider, SHR Desk consumer | SOFTWARE VALIDATED: reviewed recording workflow, exact 8/16-track acceptance |
-| [GP-PA-MEASURE](#gp-pa-measure--physical-measurement-workflow) | GigPies capture/workflow; SHR PA analysis; Desk review | PLANNED: extend existing software measurement into synchronized physical acquisition and verification |
+| [GP-PA-MEASURE](#gp-pa-measure--physical-measurement-workflow) | GigPies capture/workflow; SHR PA analysis; Desk review | IN PROGRESS: bounded independent-clock bench accepted; synchronized acquisition and representative-position qualification remain |
+| [GP-MUSIC-2](#gp-music-2--seven-feed-musical-context-for-lightdesk) | GigPies source contract; Lux analysis; Lightdesk presentation | SOFTWARE VALIDATED: seven feeds and richer musical context; rehearsal accuracy and combined-host qualification remain |
 | [GP-H1](#gp-h1--physical-audio-qualification) | GigPies lead; PA/REC/FX owners as needed | PLANNED: separate physical session and observed rig required |
 | [GP-H2](#gp-h2--physical-dual-console-operation) | GigPies lead; Desk/Lightdesk contributors | Physical input/profile integration and actual display/controller acceptance; see card |
 | [GP-H3](#gp-h3--whole-show-qualification) | GigPies lead; all runtime owners | PLANNED: follows audio/console qualification and Lux LX-06 output |
 
 ## GP-PA-MEASURE — physical measurement workflow
 
-State: **PLANNED**. Owner: GigPies. Contributors: SHR PA analysis/proposals and
+State: **IN PROGRESS — independent-clock auto-EQ/live remeasurement and Brain relative timing accepted on the bounded USB bench; synchronized workflow open**. Owner: GigPies. Contributors: SHR PA analysis/proposals and
 SHR Desk operator workflow. This card owns new cross-module work; the completed
 [GP-PA-SETUP](../archive/pa-setup-2026-10-29.md) stays archived.
 The distinct PA alignment algorithm is owned by
@@ -148,10 +149,312 @@ Acceptance:
 - [ ] Independent acoustic before/after acceptance at representative positions.
 
 Evidence: existing software integration is documented in the provider contract and
-archived GP-PA-SETUP; none of the new physical gates is claimed complete.
-Next action: specify step 1 against current source ownership after the PA-ALIGN
-low-frequency increment. Current authorization covers planning and bounded PA
-software development/documentation, not physical excitation or host-audio changes.
+archived GP-PA-SETUP. The synchronized/multi-position gates above remain open;
+the separately bounded USB acceptance is recorded in the November 14 section below.
+2026-11-12 preparation: read-only inventory confirms E205U stereo USB capture
+on Pi5 at maximum declared +34 dB gain and USB HIFI AUDIO on Pi4. The
+[attended acoustic bench](ACOUSTIC_BENCH.md) owns the November 13 procedure,
+response-curve sources, gain/channel checks, low-volume trials and clock limits.
+Bounded WAV preparation/acquisition and offline SoX spectra are implemented;
+software-only checks cover output isolation, level/format limits, channel/clip
+inspection and explicit hardware invocation. No physical capture/playback or gain
+change occurred. Validation: all 74 normal Python tests passed, including seven
+bench regressions; real SoX generation/spectrum and EQ/echo file simulations passed
+format, peak and channel-isolation checks. The complete proposed index passed the
+publication guard. Rust, historical and hardware/load suites were intentionally
+skipped because production engine behavior is unchanged. This is exploratory
+acquisition, not completed steps 1–4 above.
+
+Next action: continue the synchronized acquisition contract and representative-position
+workflow; reuse the accepted independent-clock bench evidence below. Independent USB clocks and absent calibrated
+reference prevent absolute latency/GP20 timing acceptance with the current wiring.
+November 13 clarification: same-recording dry reference plus actual Brain wet
+return can establish relative added FX-path delay despite independent mic clocks.
+The [real Brain FX experiment](ACOUSTIC_BENCH.md#real-brain-fx-experiment-dry-acoustic-reference-plus-wet-return)
+specifies source-synchronous probes; the bounded runner/estimator acceptance is
+recorded below.
+FX pre/post-fader send selection is implemented under GP-FX below. Use pre-fader
+B with its fader at minimum (-60 dB; measure residual leakage), not channel mute.
+Existing dry+wet routing can also support a first separated-repeat cross-check.
+Continue step 1 for production source-clock acquisition; use actual owner paths
+before claiming SHR PA correction or SHR FX/transport latency acceptance.
+
+### November 14 quiet-rig acceptance attempt
+
+The operator authorized bounded tests while away, with E205U on Pi5 and the
+Pi4 USB amp left at its existing quiet setting. This superseded the older
+attended-only preparation instruction for this session. No physical placement,
+amp control or input selection could be independently confirmed.
+
+- **Acquisition tested:** 12 stereo PCM16/48 kHz captures, 129 seconds total;
+  all exact requested lengths, zero full-scale samples and no reported ALSA
+  xruns. Both advertised E205U channels contain data but are not bit-identical;
+  retain stereo and analyze channel 1 without summing. These checks do not
+  detect every possible unreported USB discontinuity.
+- **Gain tested:** raw 0 and 20, with amp unchanged. Background channel-1 RMS
+  was approximately −80.1 dBFS at 0 and −58.0 dBFS at 20; room conditions were
+  not controlled enough to infer analog gain or improved SNR. Gain at the end of this initial attempt was
+  **0,0** (superseded by **20,20** in the follow-up below); direct mic monitoring
+  remains off; original gain was 34,34.
+- **Route inconclusive:** first right-channel −42 dBFS/1 kHz pilot produced a
+  roughly −76.4 dBFS carrier, against −95.6 dBFS maximum background carrier
+  in 100 ms windows. The left pilot was not clearly detected. Subsequent right
+  and left pilots did not reproduce it. A single explicit −30 dBFS right pilot
+  also remained at background (about −98.1 dBFS carrier). No further level
+  escalation. This does not establish a faulty amp or a verified socket map.
+- **Response/EQ refused:** −42 dBFS right pink and 80 Hz–12 kHz sweep trials
+  lacked a clear repeatable stimulus response. No automatic correction, EQ
+  application, absolute latency, acoustic aux-delay or alignment acceptance.
+  The nominal E205U curve is on page 3 of the linked manufacturer manual;
+  it remains context, not individual calibration.
+- **Playback format checked:** Pi4 accepted a separate two-second silence-only
+  PCM16/48 kHz stereo run requesting 48-frame periods and a 960-frame buffer,
+  without reported xrun. This is not a loaded-engine timing qualification.
+
+Private evidence is in `user/node-lab/acoustic-bench/current/`; the compact
+`acquisition-summary.json` records levels, channel correlation and carrier
+observations. The same directory retains selected captures, consolidated session provenance,
+original mixer controls and the manufacturer's manual. Task-created duplicate
+captures/signals/spectra were removed (21,543,636 bytes); about 15 MiB remains. No recordings are published.
+
+Bench software validation: the optimized actual Brain/PA acoustic-runner test now
+passes, alongside the adapter isolation/deadline/allocation test, PCM24 probe
+regression and actual four-aux authenticated TLS test (**4 passed**; the latter
+made 69,408 Main sample comparisons). Fixed the prototype's top-level GP-FX-aux
+reply correlation, fresh structural read/final completion handling before rearm,
+and probe quantization to the production raw PCM24 input contract. The earlier
+source refusal at the first nonzero burst was real; its safety check was preserved.
+SHR PA's three focused arrival/reflection/noise/spectrum tests and all 74 GigPies
+Python tests passed. These use software signals and do not close acoustic gates.
+
+The complete normal GigPies `hardware-host` all-target suite passed **704 / 0
+failed / 92 ignored**, serialized with `RUST_MIN_STACK=16777216` and
+`CARGO_INCREMENTAL=0`. SHR PA's five normal Python checks also passed.
+All-target hardware-host Clippy passed with warnings denied; formatting and
+`git diff --check` passed. After the full suite, formatting and a representation-only
+`Option<Box<Config>>` cleanup removed the prototype's large-enum lint without
+changing JSON; the final optimized four-test bench/aux check and Clippy passed.
+Historical/exhaustive research, unrelated owner/Frontend opt-ins, long hardware
+soaks, disconnect/load and multi-position trials were intentionally skipped.
+The acoustic EQ/latency trials were stopped for missing repeatable signal,
+not marked passed. Optimized bench acceptance is the supported test command:
+unoptimized trials had a default-stack overflow and a source-gap refusal;
+neither constitutes timing qualification.
+
+Reproduce the owner-backed opt-in checks with existing trusted owner artifacts:
+
+```sh
+flock -xn /home/shome/p/.gigpies-build.lock env CARGO_INCREMENTAL=0 \
+  GP05_MANIFEST=/absolute/private/modules.json GP_FX_LIBRARY=/absolute/libshr_fx.so \
+  cargo test --release --locked -j1 --features hardware-host --lib -- \
+  acoustic actual_four_aux_tls_brain_controls_and_samples --include-ignored --test-threads=1
+```
+
+Follow-up after the operator clarified that the mic faces the **right** speaker
+and the amp wakes with a delay: the short, separately opened playback trials
+above are not a valid route qualification. A continuous PCM16/48 kHz stereo
+owner reproduced the stereo mapping sequence twice. Right 880 Hz at −24 dBFS
+was recorded near −30 dBFS, including right-only sections after stereo activity.
+However, separate right-only starts after digital silence still failed.
+
+A controlled follow-up kept right 880 Hz constant and changed only left activity:
+exact-zero left failed initially; adding a −80 dBFS 440 Hz left pilot enabled
+right output. An alternating ±1 PCM16 LSB at Nyquist did not work. After reopening
+the device, a four-second −80 dBFS left pilot followed by three six-second right
+tones, separated by two seconds, succeeded: carrier levels **−29.94, −29.95,
+−29.92 dBFS** at the microphone. Amp controls were unchanged; final mic gain is
+**20,20**, monitoring off. This establishes a reproducible bench workaround,
+not the internal cause (USB/device/amp gating has not been isolated). The unused
+channel is not bit-silent when this workaround is enabled; its pilot must be
+explicit in stimulus provenance and isolation claims. Operator listening
+confirmation remains separate from this microphone evidence.
+
+Private evidence and hashes: `current/continuous/routing-followup.json`, with
+stereo routing, failed exact-zero/Nyquist controls and successful low-pilot
+captures. The old standalone `capture --play` command still opens playback for
+each file and does not implement this workaround; do not use its short pilots
+to qualify this amp. Next: carry continuous ownership, warm-up and the explicitly
+recorded low pilot into the reusable acquisition path before further EQ/timing
+trials. Same-recording relative Main/FX timing remains feasible; a common-clock
+reference is still required for absolute latency. Full GP20/Desk measurement,
+multi-position correction and full-interface qualification stay open.
+
+Operator-requested quick continuation: see the
+[exact playback recipe, current adapter incompatibility and time budget](ACOUSTIC_BENCH.md#quick-continuation-handoff-operator-request-november-14).
+Reuse the completed release build and existing software validation. Limit the next
+pass to ten minutes wall time, five minutes exclusive device ownership and ninety
+seconds audible excitation; stop and release audio for music at the limit. Do not
+start a full suite or implementation cycle to turn an unfinished acceptance green.
+The production adapter currently requires inactive-channel zero and therefore
+cannot use the observed left-pilot workaround unchanged. Real FX timing remains
+pending; standalone signal replay does not close that gate. Current private
+continuous-test evidence is about 75 MiB, retained for the unresolved gate and its
+working workaround. This documentation-only handoff ran `git diff --check`,
+confirmed the completed release build, and checked that our playback/capture
+processes and socket were absent; it started no audio or new build/test suite.
+
+
+### November 14 quick physical response / PA comparison
+
+**Passed within the bounded pass:** standalone response repeatability and physical
+replay of an actual SHR PA broad-cut render. Audio ownership **56.63 seconds**,
+right excitation **24 seconds**, left −80 dBFS / 440 Hz pilot **44 seconds**
+(including warm-up/gaps). Audio released at **11:49:33 UTC**; subsequent inspection
+found no PCM owner on either Pi, no player PID and no socket. Mic stayed **20,20**,
+monitoring off; no amp controls, services or production safety checks changed.
+
+- Two four-second, faded, equal-amplitude six-tone trials at 250/500/1000/2000/
+  4000/8000 Hz; composite source peak −24 dBFS. Channel-1 band levels were
+  approximately **−41.3 / −47.8 / −44.6 / −45.1 / −43.3 / −40.2 dBFS**.
+  Repetition differed by at most **0.36 dB**. This is a six-frequency spot
+  response, not a broadband transfer function or calibrated speaker curve.
+- Quiet-window RMS was **−54.77 / −57.78 dBFS** across the two captures.
+  Interpreted response bands exceeded measured background by at least **27.9 dB**.
+  Both stereo captures had exact lengths (21 and 33 seconds), no full-scale
+  samples and no reported ALSA xruns. Peaks were −23.20 and −17.98 dBFS;
+  advertised mic channels were not bit-identical. Analysis used channel 1 only.
+- Existing `shr-pa render` processed the identical source through `six_full_range`,
+  output 2, with baseline versus **1 kHz / Q 0.707 / −3 dB** band EQ. No separate
+  normalization. Physical playback order was baseline/cut/cut/baseline with fixed
+  placement and gain. Mean cut-minus-baseline at the six frequencies was
+  **−0.35 / −1.33 / −3.02 / −1.42 / −0.37 / −0.08 dB**; the corresponding digital
+  render predicted approximately −0.38 / −1.41 / −3.00 / −1.41 / −0.36 / −0.08 dB.
+  At 1 kHz, baseline repeats differed by 0.66 dB and cut repeats by 0.90 dB:
+  the mean supports the intended cut, not hundredth-dB acoustic accuracy.
+  This is actual owner DSP rendered offline and replayed acoustically; it is not
+  integrated live PA acceptance, an automatically chosen EQ, or musical approval.
+
+**Operator clarification:** useful **auto-EQ is wanted despite the uncalibrated
+mic**. Individual calibration is not a blanket prerequisite for exploratory,
+constrained correction; mic coloration and single-position uncertainty must remain
+explicit. Do not invent a calibration file or silently declare existing synchronized
+capture requirements satisfied. There is **no arbitrary 3 ms acceptance target**
+for these cards. Device speed alone does not invalidate same-recording relative
+measurements; report measured delays and suitability separately.
+
+**Pending / next action:** actual aux/Main timing still needs a reviewed production
+acquisition/playback route compatible with the required nonzero left pilot and
+warm-up. The current inactive-channel-zero guard remains intact; no incompatible
+trial or synthetic FX substitute was run. Auto-EQ needs a supported independent-clock
+measurement/proposal path with adequate broadband evidence and a declared target;
+this sparse response check and fixed diagnostic cut do not provide it. Implement
+that in the owning modules in a separate development pass, retaining current safety
+checks or explicitly reviewing their replacement. Full synchronized GP20 acquisition,
+Desk review/apply/remeasure and representative-position acceptance remain open.
+No absolute latency, SPL or automatic correction is claimed.
+
+Private retained evidence: `user/node-lab/acoustic-bench/current/quick/` contains
+two raw stereo captures, the exact source/playback sequences, two PA configurations
+and one `result.json` with commands, temporary runner source, binary/file hashes,
+levels and release evidence. Intermediate six-channel/mono renders, temporary
+runners and remote duplicate WAVs were removed: **18,439,059 bytes reclaimed**
+across both nodes. Existing earlier evidence and unrelated work were preserved.
+Validation was limited to these short physical checks, offline owner renders,
+format/level/length checks and documentation whitespace. No build, full suite,
+historical experiment, load test or long test was run.
+
+### November 14 independent-clock auto-EQ and live qualification
+
+**ACCEPTED for this bounded, single-position USB bench:** automatic conservative
+EQ selection, actual live PA apply/remeasure, and actual Brain FX relative timing.
+This is separate from synchronized GP20, individual mic calibration, multiple
+positions, absolute latency, full speaker protection and sustained live-show
+qualification. Those broader gates remain open.
+
+**Implemented:** explicit `pilot_bench` preserves ordinary isolation and level
+checks while permitting only the fixed −80 dBFS / 440 Hz left pilot after graph
+rendering. The graph's inactive output remains zero. Physical use requires
+operator output-map confirmation; warm-up is at least four seconds, PCM16 stereo
+48 kHz, with bounded preloaded broadband excitation and a 100 ms playback buffer.
+Pilot phase continues through prefill, mutes and gaps. References distinguish
+actual pilot PCM from graph output. Cancellation/fault/finish drops PCM; after a
+successful finite source stop, existing Brain connections may finish within a
+bounded two-second grace with devices already closed. The `live` acquisition
+command checks ownership, captures both mic channels, checks clipping/xrun logs,
+and records release. Analysis selects channel 1 without summing. No device gain,
+amp setting, placement or service was changed; gain stayed **20,20**, monitoring off.
+
+SHR PA owns `--acoustic-eq`, using its existing spectral and production EQ
+response algorithms. Three to eight repeats, >=15 dB SNR, <=1.5 dB repeat spread,
+and at least 12 reliable third-octave bands across three octaves are required.
+The selected target is `damped_high_frequency`: flat through 2 kHz, then
+−1.5 dB/octave, relative to the measured median. At most two broad bell cuts
+(Q 0.5/0.707, <=3 dB each, <=6 dB aggregate) may fill unused EQ slots; no boosts,
+narrow-null correction, fabricated calibration or unrelated settings changes.
+The controller reviews the exact PA basis and candidate, then uses production
+mute, `pa_set`, muted readback and separate rearm. No automatic retry/rearm occurs.
+
+**Physical EQ evidence:** the original three broadband repeats qualified all
+19 bands from 125 Hz to 8 kHz: minimum SNR **15.15 dB**, maximum repeat range
+**0.21 dB**. The owner automatically selected **−2 dB at 5039.68 Hz, Q 0.707**.
+Its phase shift raised the fixed source peak from −24.01 to −23.989 dBFS in the
+actual offline PA render, so the software preflight correctly refused the
+−24 dBFS output ceiling. The ceiling was preserved. A fixed 1 dB lower source
+was used for a fresh matched baseline and corrected replay, with no per-capture
+normalization. All 19 comparison bands qualified. Actual acoustic change near
+5.04 kHz was **−1.969 dB**; maximum repeat range across both captures was
+**0.172 dB**. Error against one fixed baseline target fell **3.572 → 3.187 dB RMS**.
+The exact automatic candidate matched live PA readback; production mute/apply/
+rearm completions preceded excitation. Final shutdown was safely quiesced.
+
+**Physical FX evidence:** actual Pi4 source → Pi5 SHR FX → admitted wet return →
+Main → corrected SHR PA → right speaker. The same 1 kHz probe supplied dry A
+and pre-fader B; B's dry fader stayed at −60 dB, not an assertion of exact silence.
+Actual owner bypass kept sends active and produced zero admitted wet samples;
+no qualified delayed acoustic arrival was found in its expected return windows.
+Both active cases admitted 6,888 nonzero wet samples and passed the owner's
+correlation/SNR/ambiguity checks for three dry/wet pairs in each mic recording.
+
+| Intentional FX delay | Scheduled return | Mean measured wet-minus-dry | Maximum deviation from mean | Conservative observation bound |
+|---|---|---|---|---|
+| 200 ms | 24 ms | **223.830 ms** | **0.187 ms** | **2.285 ms** |
+| 400 ms | 24 ms | **424.031 ms** | **0.132 ms** | **2.201 ms** |
+
+These short runs support deliberate delay FX with stable relative spacing. They
+do not qualify absolute latency, clock lock, low-latency monitoring or sustained
+load. Estimated drift is an envelope-fit observation, not proven synchronization.
+No 3 ms acceptance threshold was imposed. Optional different-carrier/leakage
+qualification was omitted to preserve the aggregate excitation allowance.
+
+**Runtime and budget:** all six successful physical runs had no provider/Brain/
+control fault, no measurement loss/egress drops, no reported xruns or clipping,
+and confirmed device release. Total recorded ownership was **98.65 s / 300 s**.
+Playback/pilot was bounded by **68.6 s**; even adding all **18.9 s** of overlapping
+Main excitation gives **87.5 s / 90 s**. Two early refusals opened only the mic
+for about 0.91 s each, with no playback; both are included in ownership. No
+zero-left/Nyquist experiment or prescribed-cut physical replay was repeated.
+
+**Software validation:** SHR PA's complete normal suite **127 passed**, Clippy
+with warnings denied, five Python checks and documentation checks passed.
+GigPies **75 Python tests**, five optimized focused integration checks, and the
+complete normal suite **705 passed / zero failed / 92 ignored** passed. Final
+prefill and finite-shutdown corrections also passed Clippy, focused checks and
+the deployed release executable's two-Pi software/physical checks. The exact-final normal suite also completed **705 passed / zero failed /
+92 ignored** at closeout, with devices closed. Historical auditions,
+exhaustive research and long hardware/load tests were intentionally skipped.
+
+**Remaining:** synchronized source/reference acquisition and actual Desk workflow,
+representative positions and individual mic calibration, absolute timing and
+sustained hardware qualification. A 32 ms return setting at the exact 32-slot
+jitter horizon lost two packets in a software run without late packets or Brain
+processing drops; 24 ms leaves eight slots of headroom and passed this physical
+pass. Investigate that boundary before advertising a wider return scheduling
+range. Media used existing private Ethernet addresses; SSH stayed on
+`gigpies-pi4` because the unchanged endpoint guard excludes Tailscale's CGN range.
+
+Private reproducible requests, exact stimuli, proposal/configurations, transaction
+readbacks, stereo captures, source-frame references, hashes and concise results:
+`user/node-lab/acoustic-bench/current/auto-eq/result.json`. Original `quick/`
+evidence is preserved. Uncalibrated mic coloration and single-position room
+uncertainty remain part of every interpretation; no calibration curve was invented.
+
+Closeout removed duplicate remote reports/references, the one-use software runner
+and disposable outputs, and verified lossless compression of all retained source
+references: **542,877,254 bytes** reclaimed, including temporary validation logs. Private evidence is about
+**29 MiB**; the current executable/module deployment on Pi4 is **8.2 MiB**.
+The normal shared build directories (GigPies **19 GiB**, SHR PA **1.3 GiB**) were
+reviewed and retained for current validation/development; free space is **26 GiB**.
+No unrelated build output, source, user media or prior quick evidence was removed.
 
 ## GP-METER — measured audio on the real Desk
 
@@ -549,8 +852,72 @@ when needed and run /home/shome/Documents/knowledge/.zk/validate.sh.
 
 ## GP-FX — writable owner effects in the console
 
+November 13 pre/post-fader increment (software validated): GigPies owns the
+per-input/per-aux tap, ramped source publication, capability/readback and versioned
+saved intent; SHR Desk owns the selector/review and persistence consumer. Base
+revisions: GigPies `4b8db671d49e993030ac1cbb22ad4298c39b5d49`, Desk
+`e56a0837989f2fe5747676b5da242048cb2fe26e`. Single local worker; shared build lock;
+no peer delegation or physical audio actions. Contract freeze is
+[send-tap extension 1](../reference/REMOTE_FX_CONTROL.md#per-input-prepost-fader-sends-send-tap-extension-1).
+Acceptance: pre survives fader reduction, post follows it, mute/safety close both;
+no callback allocations; smooth changes and recovery; exact owner/source readback;
+actual Desk review; v1/v2 save/restore and unchanged neighboring routes. Required
+validation is both repositories' normal default/feature suites and relevant actual
+owner/Frontend software opt-ins. Physical FX measurement remains GP-PA-MEASURE.
+
+Validation evidence (Pi5, Rust 1.97.1, locked, one build job, incremental off,
+shared build lock; synthetic software only):
+
+- GigPies normal `cargo test --all-targets`: 567 passed, 22 ignored;
+  `--features hardware-host`: 702 passed, 91 ignored. Ignored tests are
+  historical/actual-artifact opt-ins. Five relevant actual
+  source/Brain owner tests passed, including pre-fader samples and an autonomous
+  source during controller stall; no callback allocations.
+- Desk normal `cargo test --all-targets`: 408 passed, 36 ignored;
+  `--features native`: 411 passed, 36 ignored. Native validation used headless
+  lavapipe, not a physical window/GPU. Both warnings-denied Clippy variants passed.
+- Actual Desk/provider review/readback passed with pre-fader selection and all four
+  bus configurations preserved across reconnect. The harness now navigates by one
+  semantic field delta instead of flooding the bounded request queue.
+- Actual local saved-intent restore passed after changing all four buses to pre
+  and restoring saved post taps. The debug authenticated remote saved-intent run
+  refused a stale/busy basis during 1 ms source-clock gaps/Brain generation resets;
+  no deadlines or production refusal checks were relaxed. The documented release
+  profile rerun passed (actual authenticated Desk → source → Brain restore and
+  reconnect, 4.36 s), with all four pre taps restored to the saved post values.
+  Reproduce with `GP_FX_LIBRARY`, `GP_FX_DESK_TEST_EXE` and
+  `cargo test --release --features hardware-host --lib -- --ignored
+  --test-threads=1 actual_saved_fx_tls_frontend_and_silence`.
+- Both GigPies warnings-denied Clippy configurations passed; both repositories'
+  formatting checks passed. Desk default/native release builds passed. Complete
+  proposed-index publication guards passed without changing actual staging;
+  documentation links and whitespace checks passed. No commits, publication,
+  cross-node deployment or physical audio activation is claimed.
+- Python: GigPies 74 and Desk 12 passed. Historical auditions, exhaustive matrices
+  and physical hardware/load tests were intentionally skipped.
+- Actual native owner artifact: SHR FX SHA256
+  `9173dd76294ce50cefeaf0d1d4ce633ba424745cf7d4f2a0c181f6c878af90c1`.
+  Reproduce relevant owner opt-ins with `GP_FX_LIBRARY` set to that artifact and
+  `cargo test --features hardware-host --lib -- --ignored --test-threads=1
+  actual_pre_fader_aux actual_clocked_remote_aux actual_four_aux_source
+  actual_four_aux_tls actual_aux_authority`. Desk actual driver command is
+  `cargo test --test fx_aux_actual -- --ignored --exact
+  actual_four_aux_frontend_review_and_readback`, with `GP_FX_PROVIDER_EXE` and
+  `GP_FX_LIBRARY` pointing to the matching local provider/library.
+
+Closeout: removed only completed task integration-test executables after checking
+process/open-file references under the shared build lock: 23,336,976,384 bytes
+(21.7 GiB) reclaimed. Retained the normal dependency caches, application binaries
+and actual-owner driver; target directories remain about 11 GiB (GigPies) and
+16 GiB (Desk), so no blanket cache cleanup was performed. Quiet bench signals
+remain ignored (4.7 MiB); concise evidence and reproduction commands are here.
+The bounded physical runner/estimator acceptance is now owned by
+[GP-PA-MEASURE](#gp-pa-measure--physical-measurement-workflow); sustained FX
+qualification remains separate from that single-speaker observation.
+
+
 State: SOFTWARE VALIDATED (2026-11-06). Owner clarification: four stereo FX auxes,
-each with per-input post-fader/post-mute sends, one selected wet effect and a
+each with per-input selectable pre/post-fader, post-mute sends, one selected wet effect and a
 return to Main. The backend extension below adds independent wet sends to the
 existing configurable monitor buses, which still have no return to Main. This does not expose SHR FX's standalone A/B slot rack.
 
@@ -721,7 +1088,7 @@ Aux configuration is runtime state, not yet part of saved shows. Source recovery
 retains sends but keeps outputs disarmed; Desk reconnect retains sound read-only.
 
 Consumer wiring order is now implemented: hash-pinned owner admission → four
-post-fader sends and wet returns → scoped boundary publication/readback → Desk
+pre/post-fader sends and wet returns → scoped boundary publication/readback → Desk
 palette/parameter/tempo review → actual producer/sample checks. To use it later:
 configure the exact library/hash in the Brain four-aux runner, attach Desk and explicitly
 probe/grant FX control, then review an effect/send/return change. No automatic
@@ -5215,3 +5582,95 @@ scope; publication and physical activation remain outside this invocation.
 
 
 [GP-CAL-REVIEW — calibrated offline Desk review](../archive/pa-cal-review-2026-10-29.md) has software acceptance; physical qualification remains separate.
+
+## GP-MUSIC-2 — seven-feed musical context for Lightdesk
+
+State: IMPLEMENTED / SOFTWARE-VALIDATED — seven-feed subscription and richer musical
+context accepted in synthetic software checks. Live recognition and whole-show
+headroom remain unqualified. Owner: GigPies integration;
+contributors: SHR Lux analysis/contract and SHR Lightdesk validation/presentation.
+User-selected feeds: kick, bass, guitar 1, guitar 2, lead vocal, synth, backing vocals.
+No hardware, service activation, publication or peer work is part of this task.
+
+Scope and implementation:
+
+- Replace the accidental four-feed local subscription ceiling with explicit
+  C-ANALYSIS:3 configured 4–8-feed admission; preserve v1/v2 legacy bytes.
+  Eight follows the existing GPA1 packet-byte bound, not product capacity.
+  Lux's independently reusable bounded core supports 1–16 sources with explicit
+  harmonic weights; current transport retains four legacy role slots.
+- Keep circle-of-fifths/Camelot and key/chord ambiguity gates. Add independent
+  spectral-register and energy direction, fast brief-gap/pause/silence/resumption
+  cues, observed chord-transition predictions and tentative bridge candidates
+  alongside recurring verse/chorus candidates. Never claim melody direction,
+  formal song semantics, event timing or calibrated probabilities from these cues.
+- Version richer provider snapshots and strictly consume them in Lightdesk;
+  preserve old consumer corpora and manual/Hold/grant boundaries. Fast expression
+  carries its own source-end timestamp; spectra retain their slower hop timestamp.
+- Keep callback publication allocation-free, worker state finite, and source loss
+  unavailable rather than silence. The existing intensity director remains based
+  on its four established roles; new observations do not invent automatic authority.
+
+Acceptance:
+
+- [x] Seven-channel exact PCM, mapping/refusal, real local socket publication and
+  provider-generated Lux inventory/Lightdesk consumption have scoped regressions.
+- [x] Musical discrimination, recurrence/prediction, independent direction and
+  pause/resume/gap-reset tests implemented.
+- [x] Complete normal suites/style gates and seven-source allocation checks pass.
+- [x] Bounded optimized offline cost measured and limitations recorded.
+- [x] Final documentation/cleanup review complete.
+
+Owning references: [configured analysis](../reference/CONFIGURED_ANALYSIS.md),
+[Lux algorithms](../../../shr-lux/docs/notes/0034-musical-analysis.md), and
+[Lightdesk music consumption](../../../shr-lightdesk/docs/USING.md).
+Next action: representative rehearsal evaluation of direction, pauses and section
+candidates; future beat/downbeat and melody-contour work must retain uncertainty
+and measured resource bounds.
+Physical musical accuracy, fixture timing, combined-host headroom and grouped
+subscriptions beyond eight feeds remain separate acceptance or future work.
+
+GP-MUSIC-2 validation evidence (2026-11-15, rpi5, Rust 1.97.1):
+
+- GigPies: `CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 cargo test --locked
+  --all-targets --features hardware-host`: 706 passed, 0 failed, 92 opt-in ignored.
+  Matching all-target hardware-host Clippy with `-D warnings` and formatting pass.
+  The local publisher test now checks both four and seven feeds through real
+  private software sockets, including physical-slot permutation and map closure;
+  the seven-feed saturated-queue allocation guard passes.
+- Lux: `sh scripts/check.sh`: 166 passed, 0 failed, 2 opt-in ignored;
+  warnings-denied all-target Clippy, formatting, six simulation preparation checks,
+  release build and eight PTY checks pass. The expanded analyzer's service storage
+  was moved to a Box after the full suite exposed stack overflow in nested service
+  clones; the recovery regression and complete rerun pass without stack-limit changes.
+- Optimized isolated worker: `cargo test --locked --release --test expression
+  seven_feed_worker_cost -- --ignored --nocapture`: seven feeds, 48 kHz, thirty
+  simulated seconds in 529.158 ms wall time (1.76% of one-core wall-time budget),
+  10 ms processing block p99 560.681 us, maximum 572.163 us. Synthetic continuous
+  tonal inputs, constructor/sample generation excluded; no devices or combined
+  live workload. This is a bounded observation, not a hard deadline or thermal/
+  whole-show qualification. The normal allocation regression also exercises seven
+  sources and reset.
+- Historical auditions, exhaustive matrices, old corpus rendering and physical/
+  combined-load tests were intentionally skipped. The directly relevant bounded
+  offline worker measurement was explicitly run. Only one new producer-generated
+  seven-feed consumer fixture is retained; no recordings or rendered audio.
+
+- Lightdesk: `cargo test --locked --all-targets`: 140 passed, 0 failed, 6 opt-in
+  ignored; formatting, warnings-denied all-target Clippy and release build pass.
+  Current seven-feed active/stale data was generated by the actual Lux service
+  test and consumed alongside all unchanged legacy corpora. Count/role/mapping/
+  source-time drift and missing rich fields are refused without replacing trust.
+  Fixture refresh command, from SHR Lux:
+  `LUX_SEVEN_FEED_CORPUS=../shr-lightdesk/tests/fixtures/musical/seven-feeds.json
+  cargo test --locked musical_opt_in_schema_source_frames_and_stale_reset --lib`.
+- All 1,012 normal tests passed. The explicit worker-cost check also passed.
+  No hardware, service activation, peer delegation, dependency upgrade or
+  publication occurred. Existing unrelated working-tree changes were preserved.
+
+Cleanup: removed 123,036 bytes of temporary task logs after recording results.
+Retained authored code/docs and one approximately 15 KiB current consumer fixture.
+Normal build directories are retained for current validation/development: GigPies
+approximately 19 GiB (already above the review threshold before this task), Lux
+1.8 GiB and Lightdesk 3.1 GiB. No blanket cache cleanup or unrelated output deletion;
+25 GiB remained free. No task scratch directories or intermediate media remain.

@@ -1045,3 +1045,48 @@ fn actual_runner_source_lifecycle(legacy_remote: bool) {
     assert!(replacement.energy.iter().any(|energy| *energy > 0.));
     assert!(replacement.blocks + report.blocks <= 2500);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "GP05_MANIFEST and GP_FX_LIBRARY: actual Brain/PA acoustic runner, no PCM"]
+async fn actual_acoustic_runner_uses_network_brain_and_pa_without_pcm() {
+    tokio::task::LocalSet::new().run_until(async {
+        let path=std::env::temp_dir().join(format!("gp-acoustic-tls-{}",std::process::id()));
+        std::fs::create_dir(&path).unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o700)).unwrap();
+        let directory=Directory(path.clone());
+        let (server,client)=crate::remote::tests::credentials();
+        for (name,bytes) in [("server.der",server.certificate_chain[0].as_ref()),("client.der",client.certificate_chain[0].as_ref()),("server.key",server.private_key.secret_der()),("client.key",client.private_key.secret_der()),("ca.der",server.trust_roots[0].as_ref())] {
+            std::fs::write(path.join(name),bytes).unwrap();std::fs::set_permissions(path.join(name),std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let library=PathBuf::from(std::env::var_os("GP_FX_LIBRARY").unwrap());let hash=crate::hash::hex(Sha256::digest(std::fs::read(&library).unwrap()));
+        let policies=json!([{"id":"bench","certificate_sha256":fingerprint(client.certificate_chain[0].as_ref()),"permissions":["fx","fx_configuration","foh","pa_configuration","analysis"]}]);
+        let reverse=json!([{"id":"source","certificate_sha256":fingerprint(server.certificate_chain[0].as_ref()),"permissions":[]}]);
+        let pa=path.join("pa.json");
+        let mut config:Value=serde_json::from_slice(&std::fs::read("../shr-pa/tests/fixtures/cpa/v2/stereo3way.json").unwrap()).unwrap();
+        config["outputs"].as_array_mut().unwrap().truncate(2);for output in config["outputs"].as_array_mut().unwrap() {output["splits_hz"]=json!([]);output["band"]=json!(0);}
+        std::fs::write(&pa,config.to_string()).unwrap();
+        let mut candidate=config.clone();
+        candidate["outputs"][0]["processing"]["eq"][0]["db"]=json!(-3.);
+        let proposal=path.join("proposal.json");
+        std::fs::write(&proposal,json!({"contract":"SHR-PA-INDEPENDENT-CLOCK-EQ","version":1,"status":"proposed","verification_required":true,"output_index":0,"bands":[candidate["outputs"][0]["processing"]["eq"][0]],"basis_configuration":config,"candidate_configuration":candidate}).to_string()).unwrap();
+        let ready=path.join("ready.json");
+        let provider=json!({"mode":"provider","bind":"127.0.0.1:0","certificate":path.join("server.der"),"key":path.join("server.key"),"ca":path.join("ca.der"),"peers":policies,"private_directory":path,"manifest":std::env::var("GP05_MANIFEST").unwrap(),"pa_configuration":pa,"show_id":SHOW,"source_epoch":9,"inputs":2,"monitors":0,"pa_outputs":2,"reference_16_18":false,"duration_ms":12000,"period_ms":1,"report":path.join("provider.json"),"ready":ready,"acoustic_bench":{"device":"hw:AUDIO,0","software_only":true,"expected_usb_id":"0d8c:4147","channel":1,"pilot_bench":true,"probe":{"first_frame":288000,"spacing_frames":96000,"repeats":3,"same_carrier":false,"peak_dbfs":-42.},"references":path.join("references.wav"),"epoch_file":path.join("epoch")}});
+        let task=tokio::task::spawn_local(run_config_authorized(serde_json::from_value(provider).unwrap(),false));
+        let start=Instant::now();while !ready.exists(){assert!(start.elapsed()<Duration::from_secs(5),"provider readiness");tokio::time::sleep(Duration::from_millis(10)).await;}
+        let ready:Value=serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
+        let address=ready["bind"].as_str().or_else(||ready["address"].as_str()).expect("ready address");
+        let brain=json!({"mode":"brain","bind":"127.0.0.1:0","peer":address,"server_name":"stagebox.test","certificate":path.join("client.der"),"key":path.join("client.key"),"ca":path.join("ca.der"),"peers":reverse,"show_id":SHOW,"fx_library":library,"fx_aux_sha256":hash,"verify_synthetic_source":false,"duration_ms":12000,"return_delay_frames":1536,"report":path.join("brain.json")});
+        let brain=tokio::task::spawn_local(run_config_authorized(serde_json::from_value(brain).unwrap(),false));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let control=json!({"mode":"acoustic_control","config":{"bind":"127.0.0.1:0","peer":address,"server_name":"stagebox.test","certificate":path.join("client.der"),"key":path.join("client.key"),"ca":path.join("ca.der"),"peers":reverse,"show_id":SHOW,"delay_ms":200,"wet_enabled":true,"pa_proposal":proposal,"report":path.join("control.json")}});
+        let result=run_config_authorized(serde_json::from_value(control).unwrap(),true).await;
+        eprintln!("acoustic control fault: {:?}",result.as_ref().map(|r| &r["fault"]));
+        let provider=task.await.unwrap().unwrap();let brain=brain.await.unwrap().unwrap();
+        assert!(result.as_ref().unwrap()["fault"].is_null(),"{}",result.as_ref().unwrap()["fault"]);
+        assert!(provider["fault"].is_null(),"{provider}");assert!(brain["fault"].is_null(),"{brain}");
+        let mut reader=hound::WavReader::open(path.join("references.wav")).unwrap();let samples:Vec<f32>=reader.samples().collect::<std::result::Result<_,_>>().unwrap();
+        let mut wet=0.;let mut output=0.;let mut dry=0.;let mut send=0.;
+        for row in samples.chunks_exact(20) {assert!(row[18].abs()<=4./32768.);wet+=f64::from(row[10]).powi(2);output+=f64::from(row[19]).powi(2);dry+=f64::from(row[1]).powi(2);send+=f64::from(row[4]).powi(2)+f64::from(row[2]).powi(2);}
+        assert!(wet>0.&&output>0.&&dry>0.&&send>0.,"{wet} {output} {dry} {send}");
+        assert_eq!(provider["software_only"],true);drop(directory);
+    }).await;
+}

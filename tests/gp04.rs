@@ -65,7 +65,9 @@ fn staging_drops_whole_windows_and_never_waits() {
 #[test]
 fn explicit_alternate_mapping() {
     let mut d = Descriptor::new(9, 0);
-    d.inputs = ["input-08", "input-06", "input-04", "input-02"].map(String::from);
+    d.inputs = ["input-08", "input-06", "input-04", "input-02"]
+        .map(String::from)
+        .to_vec();
     let (mut tap, mut input) = Tap::new(&d).unwrap();
     for i in 0..10 {
         tap.offer(i * 48, &synthetic_inputs(i * 48), 0).unwrap();
@@ -89,7 +91,7 @@ fn attachment_rejects_changes_gaps_and_stale_buffered_audio() {
     cursor.accept(&b, 550).unwrap();
     assert!(cursor.accept(&a, 550).is_err());
     for field in [12, 20, 28, 36] {
-        let mut bad = a;
+        let mut bad = a.clone();
         bad[field] ^= 1;
         assert!(
             WindowCursor::new(d.clone())
@@ -112,7 +114,7 @@ fn attachment_rejects_changes_gaps_and_stale_buffered_audio() {
     );
     let mut cursor = WindowCursor::new(d).unwrap();
     cursor.accept(&a, 500).unwrap();
-    let mut lost = b;
+    let mut lost = b.clone();
     lost[11] = 1;
     assert!(cursor.accept(&lost, 500).is_err());
     assert!(cursor.accept(&b, 500).is_err());

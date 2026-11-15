@@ -780,6 +780,23 @@ impl OfflineEngine {
                 .set(self.source_topology.inputs.len(), bus, levels)
         }
     }
+    pub fn set_fx_taps(&mut self, bus: usize, taps: &[crate::fx_aux_wire::SendTap]) -> Result<()> {
+        if let Some(source) = &mut self.source {
+            source.mixer.set_fx_taps(bus, taps)
+        } else {
+            self.enable_fx_aux()?;
+            self.pending_fx_sends
+                .set_taps(self.source_topology.inputs.len(), bus, taps)
+        }
+    }
+    pub fn fx_taps(&self, bus: usize) -> Option<Vec<crate::fx_aux_wire::SendTap>> {
+        if let Some(source) = &self.source {
+            source.mixer.fx_taps(bus)
+        } else {
+            (bus < 4 && self.observed.fx_aux_enabled)
+                .then(|| self.observed.fx_taps.iter().map(|r| r[bus]).collect())
+        }
+    }
     pub fn set_fx_returns(
         &mut self,
         bus: usize,
@@ -3080,6 +3097,9 @@ mod render_boundary_tests {
         engine.set_operator_tap(crate::brain_control::MonitorSource::Pfl { input: 0 });
         engine.enable_fx_aux().unwrap();
         engine.set_fx_sends(2, &[0.5; 8]).unwrap();
+        engine
+            .set_fx_taps(2, &[crate::fx_aux_wire::SendTap::PreFader; 8])
+            .unwrap();
         engine.prepare_render(48, 1).unwrap();
         let mut command = engine.take_source_command().unwrap();
         let mut output = [0.; 48 * 4];
@@ -3092,6 +3112,10 @@ mod render_boundary_tests {
         assert_eq!(source.mixer.fx_sends(2).unwrap(), vec![0.5; 8]);
         engine.finish_source_completion(&mut completion).unwrap();
         assert!(engine.observed.fx_aux_enabled);
+        assert_eq!(
+            engine.fx_taps(2).unwrap(),
+            vec![crate::fx_aux_wire::SendTap::PreFader; 8]
+        );
         drop(command); // allocating payloads are retired only on the controller.
         engine.set_fx_sends(2, &[0.25; 8]).unwrap();
         engine.prepare_render(48, 2).unwrap();

@@ -542,6 +542,7 @@ mod bundle_tests {
             crate::fx_aux_wire::Configuration {
                 settings,
                 sends: vec![0.; 4],
+                send_taps: None,
                 returns: Some(crate::fx_aux_wire::Returns::silent_monitors(2)),
                 tempo: None,
             }

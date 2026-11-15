@@ -94,7 +94,16 @@ impl Mutation {
                     map_revision: self.map_revision,
                     library_sha256: self.library_sha256.clone(),
                     expected_generation: r.expected_generations[bus],
-                    configuration_json: Some(r.saved.configurations[bus].clone()),
+                    configuration_json: Some(if r.saved.version == 1 {
+                        let mut c: serde_json::Value =
+                            serde_json::from_str(&r.saved.configurations[bus])
+                                .expect("validated saved FX");
+                        c["send_taps"] =
+                            serde_json::json!(vec![SendTap::PostFader; r.saved.inputs.len()]);
+                        serde_json::to_string(&c).expect("valid configuration")
+                    } else {
+                        r.saved.configurations[bus].clone()
+                    }),
                     panic: false,
                     owner_binding: self.owner_binding.clone(),
                 })
@@ -132,10 +141,15 @@ pub fn request(
     }
     let read = o.get("kind").and_then(|v| v.as_str()) == Some("fx_aux_snapshot");
     let mutation = if read {
-        if o.get("body") != Some(&serde_json::json!({}))
-            && o.get("body") != Some(&serde_json::json!({"return_routing":true}))
-            && o.get("body")
-                != Some(&serde_json::json!({"return_routing":true,"saved_intent":true}))
+        let mut body = o.get("body").cloned().ok_or("FX aux read body")?;
+        if let Some(taps) = body.as_object_mut().and_then(|b| b.remove("send_taps"))
+            && taps != true
+        {
+            return Err("FX aux send_taps probe".into());
+        }
+        if body != serde_json::json!({})
+            && body != serde_json::json!({"return_routing":true})
+            && body != serde_json::json!({"return_routing":true,"saved_intent":true})
         {
             return Err("FX aux read body".into());
         }
@@ -199,6 +213,34 @@ pub(crate) fn snapshot_compatibility(
             0
         });
     }
+    if request["body"]["send_taps"] != true {
+        if let Some(o) = snapshot.as_object_mut() {
+            o.remove("send_taps_version");
+        }
+        if let Some(buses) = snapshot["buses"].as_array_mut() {
+            for bus in buses {
+                if let Some(text) = bus["configuration_json"].as_str() {
+                    let mut c: serde_json::Value =
+                        serde_json::from_str(text).map_err(|e| e.to_string())?;
+                    if c["send_taps"]
+                        .as_array()
+                        .is_some_and(|t| t.iter().any(|t| t != "post_fader"))
+                    {
+                        return Err("FX pre-fader sends require send_taps readback".into());
+                    }
+                    if c.as_object_mut()
+                        .ok_or("FX config")?
+                        .remove("send_taps")
+                        .is_some()
+                    {
+                        bus["configuration_json"] = serde_json::json!(
+                            serde_json::to_string(&c).map_err(|e| e.to_string())?
+                        );
+                    }
+                }
+            }
+        }
+    }
     if request["body"]["return_routing"] == true {
         return Ok(snapshot);
     }
@@ -245,6 +287,16 @@ mod tests {
         assert!(config.get("returns").is_none());
     }
     #[test]
+    fn pre_fader_readback_cannot_be_silently_hidden_from_legacy_clients() {
+        let s = json!({"available":true,"send_taps_version":1,"buses":[{"configuration_json":r#"{"settings":{},"sends":[1],"tempo":null,"send_taps":["pre_fader"]}"#}]});
+        assert!(snapshot_compatibility(&json!({"body":{}}), s.clone()).is_err());
+        let v = snapshot_compatibility(&json!({"body":{"send_taps":true}}), s).unwrap();
+        assert_eq!(v["send_taps_version"], 1);
+        let c: serde_json::Value =
+            serde_json::from_str(v["buses"][0]["configuration_json"].as_str().unwrap()).unwrap();
+        assert_eq!(c["send_taps"][0], "pre_fader");
+    }
+    #[test]
     fn exact_aux_envelope_and_four_bus_boundary() {
         let mut v = json!({"contract":CONTRACT,"version":1,"show_id":"11111111-1111-4111-8111-111111111111","module":"audio","epoch":"1","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{}});
         assert!(request(&v, 2).unwrap().1.is_none());
@@ -260,11 +312,26 @@ mod tests {
     }
 }
 
+/// Both choices follow processing, shared mute and pan; only fader participation differs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendTap {
+    PreFader,
+    #[default]
+    PostFader,
+}
+impl SendTap {
+    pub(crate) fn pre_fraction(self) -> f64 {
+        if self == Self::PreFader { 1. } else { 0. }
+    }
+}
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
     pub settings: Settings,
     pub sends: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_taps: Option<Vec<SendTap>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub returns: Option<crate::fx_aux_wire::Returns>,
     #[serde(default)]
@@ -279,7 +346,15 @@ pub struct Tempo {
 }
 
 impl Configuration {
+    pub fn validate_taps(&self, inputs: usize) -> Result<(), String> {
+        if self.send_taps.as_ref().is_some_and(|v| v.len() != inputs) {
+            return Err("FX send tap dimensions".into());
+        }
+        Ok(())
+    }
+
     pub fn validate_saved(&self, inputs: usize, monitors: usize) -> Result<(), String> {
+        self.validate_taps(inputs)?;
         let s = &self.settings;
         if s.version != 2
             || s.size != 64

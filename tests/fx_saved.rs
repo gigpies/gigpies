@@ -19,6 +19,7 @@ fn saved(n: usize, m: usize) -> Saved {
             reserved: 0,
         },
         sends: vec![0.; n],
+        send_taps: None,
         returns: Some(Returns::silent_monitors(m)),
         tempo: None,
     };
@@ -125,5 +126,34 @@ fn complete_configuration_no_defaults_no_runtime_fields() {
     let mut c: serde_json::Value = serde_json::from_str(&s.configurations[1]).unwrap();
     c["lease"] = "1".into();
     s.configurations[1] = c.to_string();
+    assert!(s.validate().is_err());
+}
+
+#[test]
+fn saved_pre_post_taps_are_complete_and_old_scenes_restore_post_fader() {
+    use gigpies::fx_aux_wire::SendTap;
+    let mut s = saved(4, 2);
+    assert!(
+        s.validate()
+            .unwrap()
+            .iter()
+            .all(|c| c.send_taps == Some(vec![SendTap::PostFader; 4]))
+    );
+    s.version = 2;
+    assert!(s.validate().is_err());
+    for text in &mut s.configurations {
+        let mut c: Configuration = serde_json::from_str(text).unwrap();
+        c.send_taps = Some(vec![
+            SendTap::PreFader,
+            SendTap::PostFader,
+            SendTap::PostFader,
+            SendTap::PreFader,
+        ]);
+        *text = serde_json::to_string(&c).unwrap();
+    }
+    assert_eq!(Saved::decode(&serde_json::to_vec(&s).unwrap()).unwrap(), s);
+    let mut c: Configuration = serde_json::from_str(&s.configurations[0]).unwrap();
+    c.send_taps.as_mut().unwrap().pop();
+    s.configurations[0] = serde_json::to_string(&c).unwrap();
     assert!(s.validate().is_err());
 }

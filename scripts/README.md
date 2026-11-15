@@ -13,6 +13,7 @@ Put one-off session/render runners and generated results under ignored `artifact
 | `spectral_balance.py` | Explicit formula-driven spectral proposals from saved production observations; no reference recordings or playback; [contract](../docs/guides/BALANCE_PASS.md) |
 | `preset_experiment.py` | Explicit historical preset experiments; no automatic media downloads |
 | `snare_bleed_evidence.py`, `snare_temporal_evidence.py` | Opt-in saved-evidence audits; no processing selection or playback |
+| `acoustic_bench.py` | Bounded two-Pi single-speaker acquisition, production provider/Brain mode and offline SoX spectra; [procedure and limits](../docs/development/ACOUSTIC_BENCH.md); EQ/arrival analysis stays in SHR PA, with no synchronized-clock claim |
 | `play_pair.py` | Explicit two-clip playback with preflight; never run by normal tests with a real player |
 | `check_scene_director.py` | Opt-in finite synthetic scene/recurrence/authority/recovery episode; explicit executable paths and actual Lightdesk presentation, null/disarmed |
 | `check_music_analysis.py` | Opt-in real synthetic Tap → Lux → Lightdesk music/source-loss integration; explicit executable/helper paths, null output and no hardware |

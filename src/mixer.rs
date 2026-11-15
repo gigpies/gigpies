@@ -265,6 +265,8 @@ impl PreparedOutputPatch {
 #[derive(Debug, Default)]
 pub(crate) struct PreparedFxSends {
     storage: Option<Vec<[Ramp; 4]>>,
+    tap_storage: Option<Vec<[Ramp; 4]>>,
+    taps: [Option<Vec<crate::fx_aux_wire::SendTap>>; 4],
     levels: [Option<Vec<f64>>; 4],
     returns: [Option<crate::fx_aux_wire::Returns>; 4],
     return_storage: Option<Vec<[Ramp; 4]>>,
@@ -281,7 +283,7 @@ impl PreparedFxSends {
             .inputs
             .len()
             .checked_add(topology.monitors)
-            .and_then(|n| n.checked_mul(128))
+            .and_then(|n| n.checked_mul(256))
             .and_then(|n| n.checked_add(map_bytes + 32768))
             .is_none_or(|n| n > crate::local_audio::MAX_FRAME)
         {
@@ -292,7 +294,7 @@ impl PreparedFxSends {
         let bytes = topology
             .inputs
             .len()
-            .checked_mul(4 * size_of::<Ramp>())
+            .checked_mul(8 * size_of::<Ramp>())
             .and_then(|n| {
                 n.checked_add((topology.monitors + 1) * 4 * size_of::<Ramp>() * 4 + 384 * 8 * 4)
             })
@@ -302,7 +304,7 @@ impl PreparedFxSends {
         let work = topology
             .inputs
             .len()
-            .checked_mul(8)
+            .checked_mul(24)
             .and_then(|n| n.checked_add((topology.monitors + 1) * 16))
             .and_then(|n| n.checked_mul(topology.max_block_frames))
             .and_then(|n| n.checked_add(core.sample_operations))
@@ -311,9 +313,22 @@ impl PreparedFxSends {
             return Err("FX aux resource admission".into());
         }
         self.storage = Some(vec![[Ramp::fixed(0.); 4]; topology.inputs.len()]);
+        self.tap_storage = Some(vec![[Ramp::fixed(0.); 4]; topology.inputs.len()]);
         let mut returns = vec![[Ramp::fixed(0.); 4]; topology.monitors + 1];
         returns[0] = [Ramp::fixed(1.); 4];
         self.return_storage = Some(returns);
+        Ok(())
+    }
+    pub(crate) fn set_taps(
+        &mut self,
+        inputs: usize,
+        bus: usize,
+        taps: &[crate::fx_aux_wire::SendTap],
+    ) -> Result<()> {
+        if bus >= 4 || taps.len() != inputs {
+            return Err("FX send tap dimensions".into());
+        }
+        self.taps[bus] = Some(taps.to_vec());
         Ok(())
     }
     pub(crate) fn set_returns(
@@ -371,6 +386,7 @@ pub struct Mixer {
     ramps: Vec<Vec<Ramp>>,
     sends: Vec<Vec<TapTransition>>,
     fx_sends: Vec<[Ramp; 4]>,
+    fx_taps: Vec<[Ramp; 4]>,
     fx_returns: Vec<[Ramp; 4]>,
     fx_samples: [[f64; 96]; 4],
     pending: Option<Pending>,
@@ -394,6 +410,7 @@ pub(crate) struct SourceObservation {
     pub output: OutputObservation,
     pub fx_aux_enabled: bool,
     pub fx_sends: Vec<[f64; 4]>,
+    pub fx_taps: Vec<[crate::fx_aux_wire::SendTap; 4]>,
     pub fx_returns: Vec<[f64; 4]>,
     pub current: Vec<Vec<f64>>,
     pub targets: Vec<Vec<f64>>,
@@ -416,6 +433,7 @@ impl SourceObservation {
             output: mixer.output_observation(),
             fx_aux_enabled: !mixer.fx_sends.is_empty(),
             fx_sends: vec![[0.; 4]; mixer.input_count()],
+            fx_taps: vec![[crate::fx_aux_wire::SendTap::PostFader; 4]; mixer.input_count()],
             fx_returns: vec![[0.; 4]; mixer.monitor_count() + 1],
             current: mixer.coefficients(),
             targets: mixer.targets(),
@@ -465,6 +483,7 @@ impl Mixer {
             ramps: vec![row; inputs],
             sends: vec![vec![TapTransition::default(); monitors]; inputs],
             fx_sends: Vec::new(),
+            fx_taps: Vec::new(),
             fx_returns: Vec::new(),
             fx_samples: [[0.; 96]; 4],
             pending: None,
@@ -487,12 +506,14 @@ impl Mixer {
         let mut prepared = PreparedFxSends::default();
         prepared.enable(&self.topology)?;
         self.fx_sends = prepared.storage.take().unwrap();
+        self.fx_taps = prepared.tap_storage.take().unwrap();
         self.fx_returns = prepared.return_storage.take().unwrap();
         Ok(())
     }
     pub(crate) fn accepts_fx_sends(&self, prepared: &PreparedFxSends) -> bool {
         if prepared.storage.is_none()
             && prepared.levels.iter().all(Option::is_none)
+            && prepared.taps.iter().all(Option::is_none)
             && prepared.returns.iter().all(Option::is_none)
         {
             return true;
@@ -501,6 +522,11 @@ impl Mixer {
         self.clock.checked_add(RAMP_FRAMES).is_some()
             && prepared.storage.as_ref().is_none_or(|v| v.len() == inputs)
             && prepared.levels.iter().flatten().all(|v| v.len() == inputs)
+            && prepared.taps.iter().flatten().all(|v| v.len() == inputs)
+            && prepared
+                .tap_storage
+                .as_ref()
+                .is_none_or(|v| v.len() == inputs)
             && prepared
                 .returns
                 .iter()
@@ -521,6 +547,9 @@ impl Mixer {
             && let Some(storage) = &mut prepared.storage
         {
             std::mem::swap(&mut self.fx_sends, storage);
+            if let Some(taps) = &mut prepared.tap_storage {
+                std::mem::swap(&mut self.fx_taps, taps);
+            }
             if let Some(returns) = &mut prepared.return_storage {
                 std::mem::swap(&mut self.fx_returns, returns);
             }
@@ -531,6 +560,18 @@ impl Mixer {
                     row[bus] = Ramp {
                         start: row[bus].at(self.clock),
                         target,
+                        begin: self.clock,
+                        end: self.clock + RAMP_FRAMES,
+                    };
+                }
+            }
+        }
+        for (bus, taps) in prepared.taps.iter().enumerate() {
+            if let Some(taps) = taps {
+                for (row, target) in self.fx_taps.iter_mut().zip(taps) {
+                    row[bus] = Ramp {
+                        start: row[bus].at(self.clock),
+                        target: target.pre_fraction(),
                         begin: self.clock,
                         end: self.clock + RAMP_FRAMES,
                     };
@@ -569,6 +610,9 @@ impl Mixer {
         for (new, old) in self.fx_returns.iter_mut().zip(&previous.fx_returns) {
             *new = old.map(|r| Ramp::fixed(r.target));
         }
+        for (new, old) in self.fx_taps.iter_mut().zip(&previous.fx_taps) {
+            *new = old.map(|r| Ramp::fixed(r.target));
+        }
         for (new, old) in self.fx_sends.iter_mut().zip(&previous.fx_sends) {
             for (new, old) in new.iter_mut().zip(old) {
                 *new = Ramp::fixed(old.target);
@@ -597,6 +641,28 @@ impl Mixer {
             };
         }
         Ok(())
+    }
+    pub fn set_fx_taps(&mut self, bus: usize, taps: &[crate::fx_aux_wire::SendTap]) -> Result<()> {
+        let mut p = PreparedFxSends::default();
+        p.set_taps(self.input_count(), bus, taps)?;
+        if !self.apply_fx_sends(&mut p) {
+            return Err("FX taps application refused".into());
+        }
+        Ok(())
+    }
+    pub fn fx_taps(&self, bus: usize) -> Option<Vec<crate::fx_aux_wire::SendTap>> {
+        (bus < 4 && !self.fx_taps.is_empty()).then(|| {
+            self.fx_taps
+                .iter()
+                .map(|r| {
+                    if r[bus].target == 1. {
+                        crate::fx_aux_wire::SendTap::PreFader
+                    } else {
+                        crate::fx_aux_wire::SendTap::PostFader
+                    }
+                })
+                .collect()
+        })
     }
     pub fn fx_sends(&self, bus: usize) -> Option<Vec<f64>> {
         (bus < 4 && !self.fx_sends.is_empty())
@@ -989,6 +1055,18 @@ impl Mixer {
                 .map_or([0.; 4], |r| r.map(|v| v.target));
         }
         for (i, row) in self.ramps.iter().enumerate() {
+            observation.fx_taps[i] =
+                self.fx_taps
+                    .get(i)
+                    .map_or([crate::fx_aux_wire::SendTap::PostFader; 4], |row| {
+                        row.map(|r| {
+                            if r.target == 1. {
+                                crate::fx_aux_wire::SendTap::PreFader
+                            } else {
+                                crate::fx_aux_wire::SendTap::PostFader
+                            }
+                        })
+                    });
             observation.fx_sends[i] = self
                 .fx_sends
                 .get(i)
@@ -1174,8 +1252,11 @@ impl Mixer {
                     out[0] += foh * row[0].at(self.clock) * row[1].at(self.clock);
                     out[1] += foh * row[0].at(self.clock) * row[2].at(self.clock);
                     if let Some(sends) = self.fx_sends.get(channel) {
-                        for (aux, send) in self.fx_samples.iter_mut().zip(sends) {
-                            let sent = foh * row[0].at(self.clock) * send.at(self.clock);
+                        for (bus, (aux, send)) in self.fx_samples.iter_mut().zip(sends).enumerate()
+                        {
+                            let pre = self.fx_taps[channel][bus].at(self.clock);
+                            let fader = row[0].at(self.clock);
+                            let sent = foh * (fader + pre * (1. - fader)) * send.at(self.clock);
                             aux[tap] += sent * row[1].at(self.clock);
                             aux[tap + 1] += sent * row[2].at(self.clock);
                         }
@@ -1278,6 +1359,66 @@ mod tests {
         prepared.returns[3].as_mut().unwrap().main = f64::NAN;
         crate::remote::assert_no_allocations(|| assert!(!mixer.apply_fx_sends(&mut prepared)));
         assert_eq!(mixer.fx_returns(3).unwrap(), returns);
+    }
+    #[test]
+    fn fx_pre_fader_keeps_processed_aux_with_fader_down_and_obeys_mute_and_safety() {
+        use crate::fx_aux_wire::SendTap::{PostFader, PreFader};
+        let mut m = Mixer::default();
+        m.enable_fx_aux().unwrap();
+        let mut levels = [0.; INPUTS];
+        levels[0] = 1.;
+        m.set_fx_sends(0, &levels).unwrap();
+        m.set_fx_sends(1, &levels).unwrap();
+        m.set_fx_taps(0, &[PreFader; INPUTS]).unwrap();
+        m.ramps[0][0] = Ramp::fixed(0.001); // actual -60 dB fader floor
+        let mut source = [[0.; INPUTS]; 48];
+        for f in &mut source {
+            f[0] = 0.25;
+        }
+        let mut out = [[0.; 4]; 48];
+        let mut obs = SourceObservation::new(&m);
+        crate::remote::assert_no_allocations(|| {
+            for _ in 0..6 {
+                m.process(&source, &mut out).unwrap();
+            }
+            m.observe_into(&mut obs);
+        });
+        let pre = 0.25 * std::f64::consts::FRAC_1_SQRT_2;
+        for (f, frame) in out.iter().enumerate() {
+            assert!((m.fx_samples[0][f * 2] - pre).abs() < 1e-12);
+            assert!((m.fx_samples[1][f * 2] - pre * 0.001).abs() < 1e-12);
+            assert!((frame[0] - pre * 0.001).abs() < 1e-12);
+        }
+        assert!(m.fx_samples[2..].iter().flatten().all(|x| *x == 0.));
+        assert_eq!(obs.fx_taps[0], [PreFader, PostFader, PostFader, PostFader]);
+        let mut recovered = Mixer::default();
+        recovered.inherit_fx_send_intent(&m).unwrap();
+        assert_eq!(recovered.fx_taps(0), m.fx_taps(0));
+        m.ramps[0][3] = Ramp::fixed(0.); // shared channel mute
+        m.process(&source, &mut out).unwrap();
+        assert!(m.fx_samples.iter().flatten().all(|x| *x == 0.));
+        m.ramps[0][3] = Ramp::fixed(1.);
+        m.mute_outputs().unwrap();
+        for _ in 0..6 {
+            m.process(&source, &mut out).unwrap();
+        }
+        assert!(m.fx_samples.iter().flatten().all(|x| *x == 0.));
+    }
+    #[test]
+    fn fx_tap_switch_crossfades_and_reversal_is_continuous() {
+        use crate::fx_aux_wire::SendTap::{PostFader, PreFader};
+        let mut m = Mixer::default();
+        m.enable_fx_aux().unwrap();
+        m.set_fx_taps(0, &[PreFader; INPUTS]).unwrap();
+        let mut out = [[0.; 4]; 48];
+        m.process(&[[0.; INPUTS]; 48], &mut out).unwrap();
+        let fraction = m.fx_taps[0][0].at(m.clock);
+        assert!((fraction - 0.2).abs() < 1e-12);
+        m.set_fx_taps(0, &[PostFader; INPUTS]).unwrap();
+        assert_eq!(m.fx_taps[0][0].at(m.clock), fraction);
+        let before = m.fx_taps(0);
+        assert!(m.set_fx_taps(0, &[PreFader]).is_err());
+        assert_eq!(m.fx_taps(0), before);
     }
     #[test]
     fn corrupted_coefficient_latches_finite_zero_output() {

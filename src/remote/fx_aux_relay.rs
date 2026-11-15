@@ -97,6 +97,7 @@ impl HostAuthority {
             && now.saturating_sub(self.aux.observed_at) <= 1000
         {
             v["return_routing_version"] = json!(1);
+            v["send_taps_version"] = json!(1);
             v["monitors"] = json!(
                 (0..self.provider.topology().monitors)
                     .map(|i| format!("monitor-{}", i + 1))
@@ -116,6 +117,12 @@ impl HostAuthority {
             for bus in 0..4 {
                 let mut config: Value = serde_json::from_str(&o.buses[bus].configuration_json)
                     .map_err(|e| e.to_string())?;
+                config["send_taps"] = json!(
+                    self.provider
+                        .engine()
+                        .fx_taps(bus)
+                        .ok_or("FX send taps unavailable")?
+                );
                 config["returns"] = json!(
                     self.provider
                         .engine()
@@ -316,6 +323,12 @@ impl HostAuthority {
                     {
                         return Err("FX return source readback mismatch".into());
                     }
+                    if !mutation.panic
+                        && let Some(taps) = &actual.send_taps
+                        && self.provider.engine().fx_taps(mutation.bus).as_ref() != Some(taps)
+                    {
+                        return Err("FX source tap readback mismatch".into());
+                    }
                     settled &= b.generation == b.applied_generation;
                 }
                 self.aux.observation = Some(observation);
@@ -403,6 +416,7 @@ impl HostAuthority {
                 if let Some(c) = &m.configuration_json {
                     let c: owner::Configuration =
                         serde_json::from_str(c).map_err(|e| e.to_string())?;
+                    c.validate_taps(self.provider.topology().inputs.len())?;
                     if let Some(r) = &c.returns {
                         r.validate(self.provider.topology().monitors)?;
                     }
@@ -560,6 +574,14 @@ impl HostAuthority {
                     if let Some(c) = &mutation.configuration_json {
                         let c: owner::Configuration =
                             serde_json::from_str(c).map_err(|e| e.to_string())?;
+                        if let Some(taps) = &c.send_taps {
+                            sends.set_taps(
+                                self.provider.topology().inputs.len(),
+                                mutation.bus,
+                                taps,
+                            )?;
+                        }
+                        c.validate_taps(self.provider.topology().inputs.len())?;
                         if let Some(r) = &c.returns {
                             sends.set_returns(
                                 self.provider.topology().monitors,
@@ -652,12 +674,16 @@ impl HostAuthority {
                 if let Some(c) = &mutation.configuration_json {
                     let c: owner::Configuration =
                         serde_json::from_str(c).map_err(|e| e.to_string())?;
+                    c.validate_taps(self.provider.topology().inputs.len())?;
                     if let Some(r) = &c.returns {
                         self.provider.engine_mut().set_fx_returns(mutation.bus, r)?;
                     }
                     self.provider
                         .engine_mut()
                         .set_fx_sends(mutation.bus, &c.sends)?;
+                    if let Some(taps) = &c.send_taps {
+                        self.provider.engine_mut().set_fx_taps(mutation.bus, taps)?;
+                    }
                 }
             }
             p.source_applied = true;
@@ -897,7 +923,7 @@ mod tests {
             }
         }
         fn snapshot(&mut self) -> Value {
-            self.host.dispatch_aux(&self.writer,json!({"contract":wire::CONTRACT,"version":1,"show_id":SHOW,"module":"audio","epoch":"9","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{"return_routing":true}}),self.now).unwrap()
+            self.host.dispatch_aux(&self.writer,json!({"contract":wire::CONTRACT,"version":1,"show_id":SHOW,"module":"audio","epoch":"9","writer":null,"lease":null,"request_id":null,"expected_revision":null,"kind":"fx_aux_snapshot","body":{"return_routing":true,"send_taps":true}}),self.now).unwrap()
         }
         fn edit(&mut self, bus: usize, id: u64) -> Value {
             let s = self.snapshot();
@@ -917,6 +943,61 @@ mod tests {
         }
     }
     #[test]
+    #[ignore = "GP_FX_LIBRARY actual Brain owner; synthetic source frames only"]
+    fn actual_pre_fader_aux_uses_brain_without_resetting_effect() {
+        let mut h = Harness::new();
+        for _ in 0..10 {
+            h.block();
+        }
+        let request = h.edit(0, 2);
+        assert_eq!(
+            h.host.dispatch_aux(&h.writer, request, h.now).unwrap()["state"],
+            "preparing"
+        );
+        for _ in 0..160 {
+            h.block();
+            while h.host.poll_aux(&h.writer).is_some() {}
+        }
+        let before = h.snapshot();
+        let dry = h.host.provider.brain_fx_send()[0];
+        let post_wet = h.last[0] - dry;
+        assert!(post_wet > 0.);
+        let status: Value =
+            serde_json::from_str(before["buses"][0]["owner_json"].as_str().unwrap()).unwrap();
+        let mut request = h.edit(0, 3);
+        let mut c: owner::Configuration =
+            serde_json::from_str(request["body"]["configuration_json"].as_str().unwrap()).unwrap();
+        c.send_taps.as_mut().unwrap()[0] = wire::SendTap::PreFader;
+        request["body"]["configuration_json"] = json!(serde_json::to_string(&c).unwrap());
+        assert_eq!(
+            h.host.dispatch_aux(&h.writer, request, h.now).unwrap()["state"],
+            "preparing"
+        );
+        let mut accepted = false;
+        for _ in 0..160 {
+            h.block();
+            while let Some(v) = h.host.poll_aux(&h.writer) {
+                accepted |= v["state"] == "accepted";
+            }
+        }
+        assert!(accepted);
+        let after = h.snapshot();
+        let actual: owner::Configuration =
+            serde_json::from_str(after["buses"][0]["configuration_json"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(actual.send_taps.unwrap()[0], wire::SendTap::PreFader);
+        let new_status: Value =
+            serde_json::from_str(after["buses"][0]["owner_json"].as_str().unwrap()).unwrap();
+        assert_eq!(status["accepted_request"], new_status["accepted_request"]);
+        assert!(((h.last[0] - dry) / post_wet - 10_f64.powf(6. / 20.)).abs() < 1e-6);
+        for i in 1..4 {
+            assert_eq!(
+                before["buses"][i]["configuration_json"],
+                after["buses"][i]["configuration_json"]
+            );
+        }
+    }
+    #[test]
     #[ignore = "GP_FX_LIBRARY actual palette and autonomous source/remote preparation"]
     fn actual_clocked_remote_aux_applies_during_controller_stall() {
         let mut h = Harness::new_mode(true);
@@ -926,7 +1007,11 @@ mod tests {
         h.brain.process(0, &[0.; 384], &mut [0.; 384]).unwrap();
         let observation = h.brain.observation().unwrap();
         h.message(owner::Message::Observe { observation });
-        let request = h.edit(0, 2);
+        let mut request = h.edit(0, 2);
+        let mut c: owner::Configuration =
+            serde_json::from_str(request["body"]["configuration_json"].as_str().unwrap()).unwrap();
+        c.send_taps = Some(vec![wire::SendTap::PreFader; 4]);
+        request["body"]["configuration_json"] = json!(serde_json::to_string(&c).unwrap());
         assert_eq!(
             h.host.dispatch_aux(&h.writer, request, 0).unwrap()["state"],
             "preparing"
@@ -966,6 +1051,10 @@ mod tests {
         assert_eq!(
             h.host.provider.engine().fx_returns(0).unwrap().monitors,
             vec![0.25, 0.]
+        );
+        assert_eq!(
+            h.host.provider.engine().fx_taps(0).unwrap(),
+            vec![wire::SendTap::PreFader; 4]
         );
         // Exercise actual native preparation/permit/application with contiguous
         // source identities. This is control/source integration, not network timing.

@@ -60,7 +60,9 @@
     "scripts/preview_panel_providers.py",
     "scripts/probe_panel_cleanup.py",
     "scripts/spectral_balance.py",
-    "scripts/test_spectral_balance.py"
+    "scripts/test_spectral_balance.py",
+    "scripts/acoustic_bench.py",
+    "scripts/test_acoustic_bench.py"
   ],
   "binary_artwork": [
     "docs/assets/gigpies-concept.png",

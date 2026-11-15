@@ -138,7 +138,7 @@ impl LocalAudio {
             .topology()
             .inputs
             .len()
-            .checked_mul(128)
+            .checked_mul(256)
             .and_then(|n| n.checked_add(map_bytes + 32768))
             .is_none_or(|n| n > MAX_FRAME)
         {
@@ -156,6 +156,7 @@ impl LocalAudio {
             let config = Configuration {
                 settings: owner.defaults(1)?,
                 sends: vec![0.; self.topology().inputs.len()],
+                send_taps: None,
                 returns: None,
                 tempo: None,
             };
@@ -263,6 +264,7 @@ impl LocalAudio {
                         .transpose()?;
                     let mut token = None;
                     if let Some(c) = &config {
+                        c.validate_taps(bus.config.sends.len())?;
                         if let Some(r) = &c.returns {
                             r.validate(self.engine.topology().monitors)?;
                         }
@@ -362,6 +364,7 @@ impl LocalAudio {
                 let status = bus.status;
                 let mut config = bus.config.clone();
                 config.returns = self.engine.fx_returns(i);
+                config.send_taps = self.engine.fx_taps(i);
                 buses.push(json!({"id":format!("fx-{}",i+1),"generation":bus.generation.to_string(),
                     "applied_generation":bus.applied.to_string(),"configuration_json":serde_json::to_string(&config).map_err(|e|e.to_string())?,
                     "owner_json":serde_json::to_string(&status).map_err(|e|e.to_string())?}));
@@ -374,6 +377,7 @@ impl LocalAudio {
                 }
             }
             value["return_routing_version"] = json!(1);
+            value["send_taps_version"] = json!(1);
             value["monitors"] = json!(
                 (0..self.engine.topology().monitors)
                     .map(|i| format!("monitor-{}", i + 1))
@@ -445,6 +449,9 @@ impl LocalAudio {
             let b = &control.buses[mutation.bus];
             let mut sends = crate::mixer::PreparedFxSends::default();
             if let Some(config) = config {
+                if let Some(taps) = &config.send_taps {
+                    sends.set_taps(self.engine.topology().inputs.len(), mutation.bus, taps)?;
+                }
                 if let Some(r) = &config.returns {
                     sends.set_returns(self.engine.topology().monitors, mutation.bus, r)?;
                 }

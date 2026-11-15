@@ -163,6 +163,7 @@ pub struct SourceClockReport {
     pub fault: Option<&'static str>,
     pub peaks: Vec<f64>,
     pub energy: Vec<f64>,
+    pub acoustic_loss_packets: u64,
     pub monitor_drops: u64,
     pub egress_drops: u64,
     pub nonzero_wet_samples: u64,
@@ -227,6 +228,8 @@ pub(super) struct SourceClock {
     pub status: SourceClockStatus,
     pub report: SourceClockReport,
     device: Option<crate::host::duplex::Duplex>,
+    pub(super) acoustic: Option<crate::host::acoustic_playback::Playback>,
+    acoustic_loss_baseline: Option<u64>,
     playback_pending: bool,
     device_started: bool,
     capture: Vec<f64>,
@@ -278,6 +281,7 @@ impl SourceClock {
                 fault: None,
                 peaks: vec![0.; topology.playback_channels],
                 energy: vec![0.; topology.playback_channels],
+                acoustic_loss_packets: 0,
                 monitor_drops: 0,
                 egress_drops: 0,
                 nonzero_wet_samples: 0,
@@ -293,6 +297,8 @@ impl SourceClock {
                 output_windows_used: 0,
             },
             device: None,
+            acoustic: None,
+            acoustic_loss_baseline: None,
             playback_pending: false,
             device_started: false,
             capture: vec![0.; 48 * topology.capture_channels],
@@ -333,6 +339,20 @@ impl SourceClock {
         state.status.recovery = None;
         Ok(state)
     }
+    pub fn prepare_acoustic(
+        provider: &LocalAudio,
+        now_ms: u64,
+        limit: u64,
+        playback: crate::host::acoustic_playback::Playback,
+    ) -> Result<Self, String> {
+        let mut state = Self::prepare(provider, now_ms, Duration::from_millis(1), limit)?;
+        if !playback.map_valid(provider.topology()) {
+            return Err("acoustic topology mismatch".into());
+        }
+        state.acoustic = Some(playback);
+        state.status.recovery = None;
+        Ok(state)
+    }
     pub(super) fn retain_run_deadline(&mut self, deadline: Instant) {
         self.status.recovery = Some((self.period, deadline));
         self.status.recovery_deadline = Some(deadline);
@@ -348,6 +368,9 @@ impl SourceClock {
         graph.close_numeric();
         if let Some(device) = &mut self.device {
             device.stop_source_clock();
+        }
+        if let Some(device) = &mut self.acoustic {
+            device.stop();
         }
         self.report.fault = fault;
         self.status.stopped.store(true, Ordering::Release);
@@ -386,6 +409,23 @@ impl SourceClock {
             }
             state.device_started = true;
         }
+        if !state.device_started
+            && let Some(device) = &mut state.acoustic
+        {
+            if let Err(fault) = device.start() {
+                return state.close(graph, Some(fault));
+            }
+            state.device_started = true;
+        }
+        if state.playback_pending
+            && let Some(device) = &mut state.acoustic
+        {
+            match device.flush(now) {
+                Ok(true) => state.playback_pending = false,
+                Ok(false) => return Duration::from_micros(50),
+                Err(fault) => return state.close(graph, Some(fault)),
+            }
+        }
         if state.playback_pending {
             match state.device.as_mut().unwrap().poll_source_playback(now) {
                 Ok(true) => state.playback_pending = false,
@@ -398,10 +438,11 @@ impl SourceClock {
         }
         let started = *state.started.get_or_insert(now);
         let next = *state.next.get_or_insert(now);
-        if state.device.is_none() && now < next {
+        if state.device.is_none() && state.acoustic.is_none() && now < next {
             return next.duration_since(now).min(Duration::from_millis(1));
         }
         if state.device.is_none()
+            && state.acoustic.is_none()
             && now.saturating_duration_since(next) > Duration::from_millis(100)
         {
             return state.close(graph, Some("source scheduling debt exceeded100ms"));
@@ -421,6 +462,15 @@ impl SourceClock {
             }
             match device.poll_source_capture(now) {
                 Ok(true) => state.capture.copy_from_slice(device.last_capture()),
+                Ok(false) => return Duration::from_micros(50),
+                Err(fault) => return state.close(graph, Some(fault)),
+            }
+        } else if let Some(device) = &mut state.acoustic {
+            if !device.map_valid(topology) {
+                return state.close(graph, Some("acoustic map changed"));
+            }
+            match device.ready(now) {
+                Ok(true) => device.fill(frame, &mut state.capture),
                 Ok(false) => return Duration::from_micros(50),
                 Err(fault) => return state.close(graph, Some(fault)),
             }
@@ -473,6 +523,31 @@ impl SourceClock {
         if media.render_wet(frame, &safety).is_err() {
             return state.close(graph, Some("source wet timeline"));
         }
+        if let Some(device) = &state.acoustic
+            && device.measuring(frame)
+        {
+            let loss = media
+                .wet_groups
+                .iter()
+                .map(|g| {
+                    let s = g.buffer.stats();
+                    s.missing + s.late + s.rejected
+                })
+                .sum::<u64>()
+                + state.report.egress_drops;
+            if media.wet_channels != 8
+                || media.egress.is_none()
+                || media.ingress_stopped
+                || media.wet_fence.as_ref().is_none_or(|f| !f.valid())
+            {
+                return state.close(graph, Some("acoustic real Brain route unavailable"));
+            }
+            state.report.acoustic_loss_packets = loss;
+            let baseline = *state.acoustic_loss_baseline.get_or_insert(loss);
+            if loss != baseline {
+                return state.close(graph, Some("acoustic transport loss/late return"));
+            }
+        }
         let Some(routing) = graph.clock_routing.take() else {
             return state.close(graph, Some("source clock routing unavailable"));
         };
@@ -520,6 +595,19 @@ impl SourceClock {
                 return state.close(graph, Some("device/provider physical map mismatch"));
             }
             if let Err(fault) = device.queue_source_playback(&state.playback) {
+                return state.close(graph, Some(fault));
+            }
+            state.playback_pending = true;
+        }
+        if let Some(device) = &mut state.acoustic {
+            if let Err(fault) = device.queue(&state.playback).and_then(|()| {
+                device.observe(
+                    &state.capture,
+                    graph.mixer.mixer.fx_aux_samples(),
+                    &media.aux_wet,
+                    &state.playback,
+                )
+            }) {
                 return state.close(graph, Some(fault));
             }
             state.playback_pending = true;

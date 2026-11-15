@@ -43,8 +43,17 @@ fn raw_tap_full_queue_and_errors_do_not_allocate_or_retire() {
 fn configured_tap_retains_allocation_free_bounded_publication() {
     let topology = gigpies::topology::EngineTopology::software(17, 3, 0).unwrap();
     let mapping = gigpies::analysis_stream::Mapping {
-        version: 1,
-        inputs: ["input-17", "input-03", "input-09", "input-01"].map(String::from),
+        version: 2,
+        sources: [
+            "kick", "bass", "guitar-1", "guitar-2", "vocal", "synth", "backs",
+        ]
+        .map(String::from)
+        .to_vec(),
+        inputs: [
+            "input-17", "input-03", "input-09", "input-01", "input-02", "input-04", "input-05",
+        ]
+        .map(String::from)
+        .to_vec(),
     };
     let descriptor = mapping.descriptor(&topology, 9, 0).unwrap();
     let (mut tap, _q) = Tap::new(&descriptor).unwrap();

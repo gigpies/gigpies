@@ -918,6 +918,19 @@ impl HostAuthority {
             source_clock::SourceClock::prepare_device(&self.provider, now_ms, blocks, device)?;
         self.install_source_clock(state)
     }
+    pub(crate) fn start_acoustic_source_clock(
+        &mut self,
+        now_ms: u64,
+        blocks: u64,
+        playback: crate::host::acoustic_playback::Playback,
+    ) -> Result<SourceClockStatus> {
+        if self.source_clock_status.is_some() {
+            return Err("source clock already active".into());
+        }
+        let state =
+            source_clock::SourceClock::prepare_acoustic(&self.provider, now_ms, blocks, playback)?;
+        self.install_source_clock(state)
+    }
     fn install_source_clock(
         &mut self,
         state: source_clock::SourceClock,
@@ -992,6 +1005,11 @@ impl HostAuthority {
         status.close();
         let mut state: source_clock::SourceClock = self.provider.stop_source_progress()?;
         state.report.finish_observations();
+        let acoustic_evidence = state
+            .acoustic
+            .as_mut()
+            .map(|device| device.finish())
+            .transpose();
         self.source_clock_status = None;
         status.mark_stopped();
         self.provider
@@ -1006,6 +1024,7 @@ impl HostAuthority {
         self.source_media.clear_brain();
         self.refresh_clock_media()?;
         self.finish_media_ingress();
+        acoustic_evidence?;
         Ok(state.report)
     }
     /// Both server read gates commit only after the whole paired envelope exists.
@@ -2792,6 +2811,11 @@ impl AuthorityEndpoint for HostAuthority {
             let zeros = vec![0.; self.provider.topology().inputs.len()];
             for bus in 0..4 {
                 sends.set(zeros.len(), bus, &zeros)?;
+                sends.set_taps(
+                    zeros.len(),
+                    bus,
+                    &vec![crate::fx_aux_wire::SendTap::PostFader; zeros.len()],
+                )?;
                 sends.set_returns(
                     self.provider.topology().monitors,
                     bus,

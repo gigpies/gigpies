@@ -7,7 +7,10 @@ use gigpies::{
 fn mapping() -> Mapping {
     Mapping {
         version: 1,
-        inputs: ["input-17", "input-03", "input-09", "input-01"].map(String::from),
+        sources: vec![],
+        inputs: ["input-17", "input-03", "input-09", "input-01"]
+            .map(String::from)
+            .to_vec(),
     }
 }
 
@@ -92,4 +95,48 @@ fn configured_tap_proves_every_selected_raw_sample_across_supported_sizes() {
             }
         }
     }
+}
+
+#[test]
+fn seven_named_feeds_preserve_exact_pcm_and_reject_over_budget_or_duplicate_maps() {
+    let topology = EngineTopology::software(16, 3, 0).unwrap();
+    let mut mapping = Mapping {
+        version: 2,
+        inputs: (1..=7).map(|n| format!("input-{n:02}")).collect(),
+        sources: [
+            "kick", "bass", "guitar-1", "guitar-2", "vocal", "synth", "backs",
+        ]
+        .map(String::from)
+        .to_vec(),
+    };
+    let d = mapping.descriptor(&topology, 9, 0).unwrap();
+    assert_eq!(d.version, 3);
+    let (mut tap, mut queue) = Tap::new(&d).unwrap();
+    for frame in (0..480).step_by(48) {
+        let raw: Vec<_> = (0..48)
+            .flat_map(|f| (0..16).map(move |c| (frame + f) * 100 + c))
+            .collect();
+        tap.offer_interleaved(frame as u64, &raw, 16, 1000).unwrap();
+    }
+    let w = queue.pop().unwrap();
+    w.validate(&d, 0, 0).unwrap();
+    let wire = w.wire(0, d.map_revision.0, d.calibration_revision.0);
+    let mut cursor = gigpies::analysis_stream::WindowCursor::new(d.clone()).unwrap();
+    cursor.accept(&wire, 1000).unwrap();
+    for (n, bytes) in w.packets.chunks_exact(d.spec().packet_bytes()).enumerate() {
+        let packet = Packet::parse(bytes).unwrap();
+        for frame in 0..48 {
+            for c in 0..7 {
+                assert_eq!(
+                    packet.pcm(frame * 7 + c).unwrap(),
+                    ((n * 48 + frame) * 100 + c) as i32
+                );
+            }
+        }
+    }
+    mapping.inputs[6] = mapping.inputs[0].clone();
+    assert!(mapping.descriptor(&topology, 9, 0).is_err());
+    mapping.inputs = (1..=9).map(|n| format!("input-{n:02}")).collect();
+    mapping.sources.extend(["extra-8".into(), "extra-9".into()]);
+    assert!(mapping.descriptor(&topology, 9, 0).is_err());
 }

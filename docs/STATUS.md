@@ -12,7 +12,7 @@
 | Recording | Reviewed Desk Start/Stop, aligned raw tracks, readiness/progress/fault/final outcome readback; standalone SHR REC capture, durable take handoff and playback software acceptance | Physical capture/playback, storage/load and power-loss durability |
 | Talkback and listening | Brain audio routing and software recovery | Physical duplex device setup, delay and feedback checks |
 | Lighting | Manual looks, cues, scene editing and optional music-following estimates | Physical DMX output and rehearsal accuracy of musical estimates |
-| Measurement | Software reference/mic analysis, delay/polarity and crossover-sum proposals, reviewed output EQ and imported calibrated repeated-sweep evidence | Physical synchronized microphone acquisition, automated excitation/capture and measured acoustic verification |
+| Measurement | Reference/mic analysis, delay/polarity and crossover-sum proposals, reviewed output EQ, imported calibrated sweeps, and bounded independent-clock USB auto-EQ with live remeasurement | Synchronized physical acquisition, representative-position workflow and full acoustic qualification |
 | Offline mixing | Multitrack inspection, prepared renders, optional balance/tone/FX changes and export checks | Musical judgement remains with the listener |
 | Performer stations | Design proposal | Not implemented |
 
@@ -30,9 +30,13 @@ software measurement results and imported sweep EQ evidence through explicit
 muted configuration transactions. Analysis does not automatically apply a change
 or enable outputs.
 
-The missing step is a complete physical measurement session: synchronized
-reference/microphone acquisition, controlled excitation and fresh combined-response
-verification. Feedback suppression and subharmonic synthesis are also unimplemented.
+The E205U/Pi4 bench supports bounded independent-clock broadband acquisition,
+conservative automatic cut proposals and production PA apply/remeasure. Continuous
+playback uses an explicit very-low-level left pilot. Actual Brain FX wet/dry
+relative timing has also been observed through the speaker. This uncalibrated,
+single-position path is distinct from the unfinished synchronized reference/mic
+workflow and representative-position combined-response qualification. Feedback
+suppression and subharmonic synthesis are also unimplemented.
 See [PA capabilities](https://github.com/gigpies/shr-pa/blob/main/docs/STATUS.md),
 [standalone operation and signals](https://github.com/gigpies/shr-pa/blob/main/docs/RUNNING.md),
 and [Desk setup review](https://github.com/gigpies/shr-desk/blob/main/docs/PA_MEASUREMENT.md).
@@ -46,7 +50,7 @@ Larger software configurations have been tested; those are not hardware capacity
 promises. Full UMC1820/ADA8200 mapping, clock lock and sustained operation still
 need qualification.
 
-A limited stereo USB bench has run PA, FX and recording. Its right return and
+An earlier AudioBox stereo bench ran PA, FX and recording. Its right return and
 small timing discontinuities remain unresolved, so it does not establish full
 stereo or multichannel acceptance. Details stay in the
 [hardware evidence](acceptance/AUDIO_HARDWARE.md).

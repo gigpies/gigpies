@@ -9,6 +9,7 @@
 - [Authenticated node connections](../reference/REMOTE_PROCESSING.md)
 - [Brain talkback and operator listening](../reference/BRAIN_AUDIO.md)
 - [Console terminal and rendering setup](../reference/INSTRUMENT_PANEL.md)
+- [Attended single-speaker acoustic bench](ACOUSTIC_BENCH.md)
 - [Lab configuration](NODE_LAB.md) and [shared build coordination](PARALLEL_WORK_PLAN.md)
 
 ## Design and interfaces

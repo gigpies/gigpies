@@ -5,6 +5,7 @@ use crate::transport::{
 pub const PACKET_FRAMES: usize = 48;
 pub const MAX_BLOCK: usize = 384;
 pub const RETURN_DELAY: u32 = 384;
+pub mod acoustic_probe;
 pub mod transfer;
 
 /// Explicit bounded device buffering, independent of the wet-return deadline.
@@ -296,3 +297,6 @@ pub mod brain_fx;
 pub mod fx_palette;
 #[cfg(feature = "hardware-host")]
 pub mod fx_v2;
+
+#[cfg(all(feature = "hardware-host", target_os = "linux"))]
+pub mod acoustic_playback;

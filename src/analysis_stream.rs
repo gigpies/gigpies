@@ -6,13 +6,19 @@ pub const PACKET_BYTES: usize = 624;
 pub const WINDOW_BYTES: usize = PACKET_BYTES * 10;
 pub const MAX_SUBSCRIBERS: usize = 8;
 pub const WIRE_BYTES: usize = WINDOW_BYTES + 40;
-/// Explicit startup binding for the four existing semantic analysis sources.
+/// Eight PCM24 feeds fit the existing 1200-byte GPA1 packet budget.
+pub const MAX_SOURCES: usize = 8;
+pub const MAX_WINDOW_BYTES: usize = (48 + MAX_SOURCES * 144) * 10;
+pub const MAX_WIRE_BYTES: usize = MAX_WINDOW_BYTES + 40;
+/// Explicit startup binding for legacy four-role or extended named analysis.
 /// Input IDs identify raw logical strips, never capture slots or screen banks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mapping {
     pub version: u32,
-    pub inputs: [String; 4],
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
+    pub inputs: Vec<String>,
 }
 impl Mapping {
     pub fn descriptor(
@@ -22,13 +28,20 @@ impl Mapping {
         frame: u64,
     ) -> Result<Descriptor, String> {
         topology.validate(crate::topology::ResourceBudget::default())?;
-        if self.version != 1 {
+        if !matches!(self.version, 1 | 2) {
             return Err("analysis mapping version".into());
         }
         let mut d = Descriptor::new(epoch, frame);
         d.version = 2;
         d.subscription = "lux.aux.v2".into();
         d.inputs = self.inputs.clone();
+        if self.version == 2 {
+            d.version = 3;
+            d.subscription = "lux.aux.v3".into();
+            d.sources = self.sources.clone();
+        } else if !self.sources.is_empty() {
+            return Err("legacy mapping sources".into());
+        }
         d.map_revision = crate::show::Counter(topology.map_revision);
         d.calibration_revision = crate::show::Counter(1);
         d.validate().map_err(String::from)?;
@@ -51,8 +64,8 @@ pub struct Descriptor {
     pub stream: u32,
     pub sample_rate: u32,
     pub first_frame: crate::show::Counter,
-    pub sources: [String; 4],
-    pub inputs: [String; 4],
+    pub sources: Vec<String>,
+    pub inputs: Vec<String>,
     pub tap: String,
     pub clock: String,
     pub map_revision: crate::show::Counter,
@@ -68,8 +81,12 @@ impl Descriptor {
             stream: 3,
             sample_rate: 48000,
             first_frame: crate::show::Counter(frame),
-            sources: ["kick", "bass", "guitar-1", "guitar-2"].map(String::from),
-            inputs: ["input-01", "input-02", "input-03", "input-04"].map(String::from),
+            sources: ["kick", "bass", "guitar-1", "guitar-2"]
+                .map(String::from)
+                .to_vec(),
+            inputs: ["input-01", "input-02", "input-03", "input-04"]
+                .map(String::from)
+                .to_vec(),
             tap: "raw-pre-fader".into(),
             clock: "linux-clock-monotonic-ms".into(),
             map_revision: crate::show::Counter(1),
@@ -80,13 +97,22 @@ impl Descriptor {
         if self.contract != "C-ANALYSIS"
             || !matches!(
                 (self.version, self.subscription.as_str()),
-                (1, "lux.aux.v1") | (2, "lux.aux.v2")
+                (1, "lux.aux.v1") | (2, "lux.aux.v2") | (3, "lux.aux.v3")
             )
             || self.source_epoch.0 == 0
             || self.stream != 3
             || self.sample_rate != 48000
             || !self.first_frame.0.is_multiple_of(48)
-            || self.sources != ["kick", "bass", "guitar-1", "guitar-2"]
+            || self.sources.len() != self.inputs.len()
+            || !(4..=MAX_SOURCES).contains(&self.inputs.len())
+            || (self.version < 3 && self.inputs.len() != 4)
+            || self.sources[..4] != ["kick", "bass", "guitar-1", "guitar-2"]
+            || self.sources.iter().enumerate().any(|(i, s)| {
+                s.is_empty()
+                    || s.len() > 32
+                    || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    || self.sources[..i].contains(s)
+            })
             || self.clock != "linux-clock-monotonic-ms"
             || self.tap != "raw-pre-fader"
             || self.map_revision.0 == 0
@@ -99,7 +125,7 @@ impl Descriptor {
                 .strip_prefix("input-")
                 .and_then(|n| n.parse::<u16>().ok());
             if !index.is_some_and(|n| {
-                n > 0 && (self.version == 2 || n <= 8) && input == &format!("input-{n:02}")
+                n > 0 && (self.version >= 2 || n <= 8) && input == &format!("input-{n:02}")
             }) || self.inputs[..i].contains(input)
             {
                 return Err("explicit input mapping");
@@ -108,7 +134,9 @@ impl Descriptor {
         Ok(())
     }
     pub fn attach_request(&self) -> &'static [u8] {
-        if self.version == 2 {
+        if self.version == 3 {
+            br#"{"subscription":"lux.aux.v3","version":3}"#
+        } else if self.version == 2 {
             br#"{"subscription":"lux.aux.v2","version":2}"#
         } else {
             br#"{"subscription":"lux.aux.v1","version":1}"#
@@ -119,7 +147,7 @@ impl Descriptor {
             session: self.source_epoch.0,
             stream: 3,
             first_channel: 0,
-            channels: 4,
+            channels: self.inputs.len() as u16,
             frames: 48,
             encoding: Encoding::Pcm24,
             role: Role::Analysis,
@@ -128,8 +156,32 @@ impl Descriptor {
     }
 }
 #[derive(Clone, Copy)]
+pub struct PacketBuffer {
+    bytes: [u8; MAX_WINDOW_BYTES],
+    length: usize,
+}
+impl PacketBuffer {
+    fn new(length: usize) -> Self {
+        Self {
+            bytes: [0; MAX_WINDOW_BYTES],
+            length,
+        }
+    }
+}
+impl std::ops::Deref for PacketBuffer {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+}
+impl std::ops::DerefMut for PacketBuffer {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.bytes[..self.length]
+    }
+}
+#[derive(Clone, Copy)]
 pub struct Window {
-    pub packets: [u8; WINDOW_BYTES],
+    pub packets: PacketBuffer,
     pub produced_mono_ms: u64,
 }
 impl Window {
@@ -140,7 +192,14 @@ impl Window {
         expected_sequence: u32,
     ) -> Result<(), &'static str> {
         descriptor.validate()?;
-        for (i, bytes) in self.packets.chunks_exact(PACKET_BYTES).enumerate() {
+        if self.packets.len() != descriptor.spec().packet_bytes() * 10 {
+            return Err("window packet shape");
+        }
+        for (i, bytes) in self
+            .packets
+            .chunks_exact(descriptor.spec().packet_bytes())
+            .enumerate()
+        {
             let p = Packet::parse(bytes).map_err(|_| "packet")?;
             if p.spec() != descriptor.spec()
                 || p.source_frame()
@@ -157,8 +216,8 @@ impl Window {
         }
         Ok(())
     }
-    pub fn wire(&self, losses: u64, map: u64, calibration: u64) -> [u8; WIRE_BYTES] {
-        let mut out = [0; WIRE_BYTES];
+    pub fn wire(&self, losses: u64, map: u64, calibration: u64) -> Vec<u8> {
+        let mut out = vec![0; self.packets.len() + 40];
         out[..4].copy_from_slice(b"GAW1");
         out[4..12].copy_from_slice(&losses.to_be_bytes());
         out[12..20].copy_from_slice(&map.to_be_bytes());
@@ -171,7 +230,7 @@ impl Window {
 /// Fixed-storage raw tap; offer does no allocation, locks, I/O or retries.
 pub struct Tap {
     spec: StreamSpec,
-    mapping: [usize; 4],
+    mapping: Vec<usize>,
     frame: u64,
     sequence: u32,
     count: usize,
@@ -183,7 +242,11 @@ pub struct Tap {
 impl Tap {
     pub fn new(d: &Descriptor) -> Result<(Self, Consumer<Window>), &'static str> {
         d.validate()?;
-        let mapping = std::array::from_fn(|i| d.inputs[i][6..].parse::<usize>().unwrap() - 1);
+        let mapping = d
+            .inputs
+            .iter()
+            .map(|id| id[6..].parse::<usize>().unwrap() - 1)
+            .collect();
         let (output, consumer) = RingBuffer::new(2);
         Ok((
             Self {
@@ -194,7 +257,7 @@ impl Tap {
                 count: 0,
                 last_mono_ms: None,
                 window: Window {
-                    packets: [0; WINDOW_BYTES],
+                    packets: PacketBuffer::new(d.spec().packet_bytes() * 10),
                     produced_mono_ms: 0,
                 },
                 output,
@@ -234,19 +297,19 @@ impl Tap {
         }
         let next_frame = frame.checked_add(48).ok_or("frame exhausted")?;
         let next_sequence = self.sequence.checked_add(1).ok_or("sequence exhausted")?;
-        let mut samples = [0; 192];
+        let mut samples = [0; MAX_SOURCES * 48];
         for (f, inputs) in raw.chunks_exact(inputs).enumerate() {
             for (c, &input) in self.mapping.iter().enumerate() {
-                samples[f * 4 + c] = inputs[input];
+                samples[f * self.mapping.len() + c] = inputs[input];
             }
         }
         self.spec
             .encode_pcm(
                 frame,
                 self.sequence,
-                &samples,
-                &mut self.window.packets
-                    [self.count * PACKET_BYTES..(self.count + 1) * PACKET_BYTES],
+                &samples[..self.mapping.len() * 48],
+                &mut self.window.packets[self.count * self.spec.packet_bytes()
+                    ..(self.count + 1) * self.spec.packet_bytes()],
             )
             .map_err(|_| "PCM24")?;
         if self.count == 0 {
@@ -308,7 +371,7 @@ impl WindowCursor {
     }
     fn check(&mut self, bytes: &[u8], now: u64) -> Result<Window, &'static str> {
         if self.invalid
-            || bytes.len() != WIRE_BYTES
+            || bytes.len() != self.descriptor.spec().packet_bytes() * 10 + 40
             || &bytes[..4] != b"GAW1"
             || bytes[36..40] != [0; 4]
         {
@@ -335,11 +398,12 @@ impl WindowCursor {
             return Err("window map/calibration/age/loss");
         }
         let mut w = Window {
-            packets: [0; WINDOW_BYTES],
+            packets: PacketBuffer::new(self.descriptor.spec().packet_bytes() * 10),
             produced_mono_ms: produced,
         };
         w.packets.copy_from_slice(&bytes[40..]);
-        let first = Packet::parse(&w.packets[..PACKET_BYTES]).map_err(|_| "packet")?;
+        let first = Packet::parse(&w.packets[..self.descriptor.spec().packet_bytes()])
+            .map_err(|_| "packet")?;
         let frame = first.source_frame();
         let sequence = first.sequence();
         let offset = frame

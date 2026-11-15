@@ -1,6 +1,7 @@
 //! Explicit bounded authenticated synthetic or separately authorized physical runs.
 //! Configuration, credentials and reports remain task-private. This is not a
 //! service installer, load benchmark or hardware qualification.
+mod acoustic_control;
 pub(crate) mod analysis;
 use super::*;
 use crate::{
@@ -145,6 +146,9 @@ pub struct FxAuxConfig {
 #[derive(Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunConfig {
+    AcousticControl {
+        config: acoustic_control::Config,
+    },
     Provider {
         bind: SocketAddr,
         certificate: PathBuf,
@@ -167,6 +171,8 @@ pub enum RunConfig {
         ready: Option<PathBuf>,
         #[serde(default)]
         physical_device: Option<Box<PhysicalProviderConfig>>,
+        #[serde(default)]
+        acoustic_bench: Option<Box<crate::host::acoustic_playback::Config>>,
         #[serde(default)]
         provider_timing: bool,
         #[serde(default)]
@@ -251,6 +257,9 @@ pub async fn run_config(config: RunConfig) -> Result<Value> {
 }
 pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool) -> Result<Value> {
     match config {
+        RunConfig::AcousticControl { config } => {
+            acoustic_control::run(config, physical_authorized).await
+        }
         RunConfig::Provider {
             bind,
             certificate,
@@ -272,11 +281,29 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             report,
             ready,
             physical_device,
+            acoustic_bench,
             provider_timing,
             media_timing,
             fx_aux,
             analysis_mapping,
         } => {
+            if let Some(bench) = &acoustic_bench {
+                if !physical_authorized && !bench.software_only {
+                    return Err("acoustic bench requires explicit --activate-physical".into());
+                }
+                bench.validate(duration_ms)?;
+                if physical_device.is_some()
+                    || reference_16_18
+                    || inputs != 2
+                    || monitors != 0
+                    || pa_outputs != 2
+                    || period_ms != 1
+                    || analysis_mapping.is_some()
+                    || fx_aux.is_some()
+                {
+                    return Err("acoustic bench requires two generated inputs, two PA outputs, remote FX and 1ms blocks".into());
+                }
+            }
             validate_provider_run(
                 physical_device.as_deref(),
                 physical_authorized,
@@ -299,17 +326,27 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             } else {
                 provider_timing.then(super::diagnostics::Trace::new)
             };
-            let physical = physical_device.is_some();
+            let physical = physical_device.is_some()
+                || acoustic_bench.as_ref().is_some_and(|b| !b.software_only);
             let physical_epoch = physical_device
                 .as_ref()
                 .map(|p| crate::device_epoch::Epoch::open_at_least(&p.epoch_file, source_epoch))
                 .transpose()?;
-            let source_epoch = physical_epoch.as_ref().map_or(source_epoch, |e| e.value);
+            let acoustic_epoch = acoustic_bench
+                .as_ref()
+                .map(|b| crate::device_epoch::Epoch::open_at_least(&b.epoch_file, source_epoch))
+                .transpose()?;
+            let source_epoch = acoustic_epoch
+                .as_ref()
+                .or(physical_epoch.as_ref())
+                .map_or(source_epoch, |e| e.value);
             let credentials = Credentials::load_der(&certificate, &key, &ca)?;
             let policy = PolicyStore::new(peers)?;
             let server = RemoteServer::bind(bind, &credentials, policy)?;
             let address = server.local_addr()?;
-            let topology = if let Some(p) = &physical_device {
+            let topology = if let Some(bench) = &acoustic_bench {
+                bench.topology()?
+            } else if let Some(p) = &physical_device {
                 p.topology.clone()
             } else if reference_16_18 {
                 if inputs != 16 {
@@ -391,8 +428,18 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             let deadline = tokio::time::sleep(Duration::from_millis(duration_ms));
             tokio::pin!(deadline);
             let started = Instant::now();
-            let source =
-                ProviderSource::start(&mut host, monotonic_ms(), period_ms, duration_ms, duplex)?;
+            let source = if let Some(bench) = acoustic_bench.clone() {
+                let playback = crate::host::acoustic_playback::Playback::open(*bench, duration_ms)?;
+                ProviderSource {
+                    status: host.start_acoustic_source_clock(
+                        monotonic_ms(),
+                        duration_ms,
+                        playback,
+                    )?,
+                }
+            } else {
+                ProviderSource::start(&mut host, monotonic_ms(), period_ms, duration_ms, duplex)?
+            };
             let resources_ready = crate::brain_runtime::process_resources().ok();
             let mut sessions = 0u64;
             let mut control_faults = 0u64;
@@ -437,6 +484,16 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             let blocks = source_report.blocks;
             acceptor.abort();
             let _ = acceptor.await;
+            if acoustic_bench.is_some() && fault.is_none() {
+                // The finite source starts before the independently launched Brain.
+                // PCM is already closed by finish(); retain existing connections
+                // briefly so Brain can reach its own deadline without a false EOF
+                // fault. No new sessions, rendering, rearm or device ownership.
+                let grace = Instant::now() + Duration::from_secs(2);
+                while networks.iter().any(|task| !task.is_finished()) && Instant::now() < grace {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
             for network in &networks {
                 network.abort();
             }
@@ -476,7 +533,7 @@ pub async fn run_config_authorized(config: RunConfig, physical_authorized: bool)
             host.finish_source_egress();
             let snapshot = host.provider_mut().snapshot()?;
             let structure = host.provider_mut().structural_snapshot()?;
-            let mut evidence = json!({"mode":"provider","software_only":!physical,"physical_qualified":false,"real_time_qualified":false,"inputs":inputs,"capture_channels":capture_channels,"playback_channels":playback_channels,"source_epoch":source_epoch,"processed_frames":blocks*48,"blocks":blocks,"elapsed_ms":started.elapsed().as_millis(),"synthetic_period_ms":(!physical).then_some(period_ms),"source_execution":"dedicated_worker_autonomous","resource_observation":"controller_service_only","clock_driver":if physical {"physical_capture"}else{"synthetic_elapsed_clock"},"sessions":sessions,"control_faults":control_faults,"media_queue_drops":media_queue_drops.snapshot(),"source_report":source_report,"sample_window_schema":"source_clock_v2","revision_windows":null,"brain_windows":null,"media":host.media_stats(),"source_egress":host.source_egress_report(),"accepted_wet_arrival_sha256":host.accepted_wet_sha256(),"fault":fault,"peak_per_playback_slot":source_report.peaks,"energy_per_playback_slot":source_report.energy,"final_snapshot":snapshot,"final_structure":structure,"modules":modules,"record_take":record_take,"recording_root":private_directory.join("takes")});
+            let mut evidence = json!({"mode":"provider","software_only":!physical,"physical_qualified":false,"real_time_qualified":false,"inputs":inputs,"capture_channels":capture_channels,"playback_channels":playback_channels,"source_epoch":source_epoch,"processed_frames":blocks*48,"blocks":blocks,"elapsed_ms":started.elapsed().as_millis(),"synthetic_period_ms":(!physical).then_some(period_ms),"source_execution":"dedicated_worker_autonomous","resource_observation":"controller_service_only","acoustic_bench":acoustic_bench,"acoustic_pcm_policy":acoustic_bench.as_ref().map(|b|json!({"period_frames":48,"buffer_frames":b.buffer_frames(),"pilot_injected_after_graph":b.pilot_bench,"pilot_channel":b.pilot_bench.then_some(0),"pilot_dbfs":b.pilot_bench.then_some(-80),"pilot_hz":b.pilot_bench.then_some(440),"warmup_frames":b.probe.first_frame,"reported_slot_peaks":"graph output before fixed pilot injection; actual pilot is in reference WAV channel 19 (one-based)","pcm16":true,"common_microphone_clock":false})),"clock_driver":if acoustic_bench.as_ref().is_some_and(|b| b.software_only) {"software_acoustic_probe"}else if acoustic_bench.is_some() {"physical_playback"}else if physical {"physical_capture"}else{"synthetic_elapsed_clock"},"sessions":sessions,"control_faults":control_faults,"media_queue_drops":media_queue_drops.snapshot(),"source_report":source_report,"sample_window_schema":"source_clock_v2","revision_windows":null,"brain_windows":null,"media":host.media_stats(),"source_egress":host.source_egress_report(),"accepted_wet_arrival_sha256":host.accepted_wet_sha256(),"fault":fault,"peak_per_playback_slot":source_report.peaks,"energy_per_playback_slot":source_report.energy,"final_snapshot":snapshot,"final_structure":structure,"modules":modules,"record_take":record_take,"recording_root":private_directory.join("takes")});
             evidence["prepared_media_storage"] = prepared_media_storage;
             evidence["process_resources_ready"] = json!(resources_ready);
             evidence["process_resources_before_stop"] = json!(resources_before_stop);
@@ -1126,6 +1183,7 @@ mod provider_admission_tests {
             legacy,
             RunConfig::Provider {
                 physical_device: None,
+                acoustic_bench: None,
                 ..
             }
         ));

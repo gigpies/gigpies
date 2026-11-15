@@ -43,8 +43,8 @@ required. Distinguish proven physical synchronization from software timing tests
 
 ## Implementation and publication
 
-Use Rust 1.97.1, edition 2024, and committed Cargo.lock. Keep sibling repositories
-read-only unless the user explicitly authorizes changes there. Avoid path dependencies.
+Use Rust 1.97.1, edition 2024, and committed Cargo.lock. Work across the GigPies module repositories as needed for the authorized feature,
+keeping each implementation in its owning module and preserving unrelated work. Avoid path dependencies.
 Distinguish planned, implemented, offline-validated and hardware-verified behavior.
 Update focused documentation alongside behavior. Preserve original drafts in docs/archive.
 

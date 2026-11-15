@@ -150,6 +150,7 @@ impl BrainAux {
             let config = Configuration {
                 settings: owner.defaults(1)?,
                 sends: vec![0.; inputs],
+                send_taps: None,
                 returns: None,
                 tempo: None,
             };
@@ -283,6 +284,7 @@ impl BrainAux {
                         .map(|s| serde_json::from_str(s).map_err(|e| e.to_string()))
                         .transpose()?;
                     if let Some(c) = &config {
+                        c.validate_taps(b.config.sends.len())?;
                         if let Some(r) = &c.returns {
                             r.validate(r.monitors.len())?;
                         }

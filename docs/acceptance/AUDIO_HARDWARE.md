@@ -29,9 +29,12 @@ upper-24-bit extraction. This does not establish a 32-bit converter. The host no
 explicitly extracts the upper 24 bits and hashes those bytes independently of
 floating-point conversion. No resampling or host clock change occurs.
 
-No Superlux microphone or other USB audio interface is connected to either Pi.
-The amplifier is disconnected. All soak/fault trials initially had no established
-physical return. Afterward the user connected both outputs to inputs; the separate
+At the time of this earlier AudioBox bench, no Superlux microphone or other USB
+audio interface was connected to either Pi, and the amplifier was disconnected.
+For the different November 12 E205U/USB amp inventory and next-session procedure,
+see the [acoustic bench](../development/ACOUSTIC_BENCH.md).
+
+All earlier soak/fault trials initially had no established physical return. Afterward the user connected both outputs to inputs; the separate
 physical checks below verified the left route and found a severely attenuated
 right return. Converter clock lock and calibrated capture-to-output latency remain
 unverified. No independent-device drift or ASRC experiment is possible or needed

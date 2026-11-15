@@ -22,7 +22,7 @@ impl Saved {
         Ok(saved)
     }
     pub fn validate(&self) -> Result<[Configuration; 4]> {
-        if self.format != "gigpies-fx-intent" || self.version != 1 {
+        if self.format != "gigpies-fx-intent" || !matches!(self.version, 1 | 2) {
             return Err(
                 "unsupported FX intent; legacy core/composed files contain no saved FX".into(),
             );
@@ -73,18 +73,27 @@ impl Saved {
             if text.len() > 32768 {
                 return Err("FX configuration capacity".to_owned());
             }
-            let c: Configuration = serde_json::from_str(text).map_err(|e| e.to_string())?;
+            let mut c: Configuration = serde_json::from_str(text).map_err(|e| e.to_string())?;
             let fields: serde_json::Value =
                 serde_json::from_str(text).map_err(|e| e.to_string())?;
             if fields.as_object().is_none_or(|o| {
-                o.len() != 4
+                o.len() != if self.version == 2 { 5 } else { 4 }
                     || !["settings", "sends", "returns", "tempo"]
                         .iter()
                         .all(|k| o.contains_key(*k))
             }) {
                 return Err("saved FX requires complete settings, sends, returns and tempo".into());
             }
+            if self.version == 2 && c.send_taps.is_none() {
+                return Err("saved FX v2 requires send_taps".into());
+            }
             c.validate_saved(self.inputs.len(), self.monitors.len())?;
+            if self.version == 1 {
+                c.send_taps = Some(vec![
+                    crate::fx_aux_wire::SendTap::PostFader;
+                    self.inputs.len()
+                ]);
+            }
             Ok(c)
         });
         let [a, b, c, d] = configs;

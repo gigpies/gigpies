@@ -4,7 +4,9 @@
 
 The four-aux path provides **four stereo FX buses**, separate from configured
 monitor buses. Every logical input has a 0..1 send to each aux, initially zero.
-Sends follow channel processing, fader, mute and pan, with 240-frame level ramps.
+Sends default to post-fader, following channel processing, mute and pan, with
+240-frame level ramps. An explicit per-input/per-aux pre-fader choice bypasses
+only the channel fader; processing, shared mute, pan and output safety remain.
 Stagebox sends eight explicitly ordered channels (`fx-1-left`, `fx-1-right`,
 through `fx-4-right`) to Brain. Brain owns four native-f64 SHR FX instances and
 returns eight wet channels on the same source-frame timeline. Stagebox admits
@@ -289,9 +291,52 @@ Actual artifact tests require `GP21_FX_LIBRARY` and their documented `--ignored`
 selection; corpus generation requires explicit `GP21_FIXTURE_OUTPUT` as well.
 These tests are synthetic and never open a physical device.
 
+## Per-input pre/post-fader sends (send-tap extension 1)
+
+Probe with `{"return_routing":true,"send_taps":true}` (optionally also
+`"saved_intent":true`). A capable available snapshot adds `send_taps_version:1`;
+each bus configuration contains `send_taps`, exactly one `pre_fader` or
+`post_fader` entry per advertised input, in the same order as `sends`.
+The choice is independent for each input/aux, not a global aux mode.
+
+Configurations may include this array in the existing opaque `configuration_json`.
+Missing tap arrays in ordinary legacy edits preserve source tap intent; initial
+state is all post-fader. Unknown modes, null/non-array values with an explicit
+readback capability, and wrong dimensions are not usable readback. Mutations use
+the existing authority, map/generation/epoch, future source boundary and native
+owner completion checks; there is no new authority bypass. Both source and Brain
+software must understand the extension. No SHR FX DSP ABI change is required.
+
+The pre-fader signal is after gate/EQ/compression and shared channel mute,
+before fader, still stereo-panned. Lowering the channel fader leaves the pre send
+unchanged; channel mute silences excitation for both choices, with ordinary FX
+tails remaining. Output disarm/fault closure applies to all aux samples. Pan and
+send gain remain active. The current fader floor is -60 dB, not digital zero.
+Main-only wet return gain remains independent of the source channel fader.
+
+A tap edit crossfades the fader contribution over 240 source frames (5 ms at
+48 kHz), starting from the current fraction even if reversed mid-transition.
+Storage is prepared off-source, resource admission includes the extra ramps and
+work, and source observation/recovery preserves target taps. A routing-only edit
+does not publish a replacement DSP state, so it does not clear effect tails.
+Correlated completion and settled readback retain the existing 240-frame gate.
+
+Without opt-in, all-post configurations retain the legacy read shape. If any send
+is pre-fader, a legacy snapshot refuses rather than falsely display post-fader or
+allow an old client to save incomplete intent. Old clients must update or use a
+separate current client to restore post-fader intent; no automatic routing reset.
+
+`gigpies-fx-intent:2` adds required `send_taps` arrays to all four complete saved
+configurations. Version 1 is still accepted and explicitly restores all sends
+post-fader, matching its original semantics. Current Desk migrates a v1 restore
+to explicit v2 taps when the provider supports them; v2 restore refuses on older
+providers. The existing atomic muted restore protocol and explicit rearm stay
+unchanged. Saved payload version and restore envelope version are distinct.
+
 ## Saved four-aux intent and reviewed restore
 
-`gigpies-fx-intent:1` is a separately owned portable file, bounded to 256 KiB.
+`gigpies-fx-intent` versions 1 and 2 are separately owned portable files, bounded
+to 256 KiB. Version 2 includes the explicit send taps described above.
 It contains `format`, `version`, `show_id`, `library_sha256`, ordered `inputs`
 (the existing exact ID/capture-slot/physical-port identity tuples), logical
 `monitors` and exactly four `configurations` strings. Each string requires exact

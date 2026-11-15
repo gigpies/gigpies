@@ -65,3 +65,40 @@ physical-slot permutation, exact raw PCM, wrong-version refusal, topology change
 invalid mapping/sample input, source progression and allocation-free tap work.
 The fixtures under `tests/fixtures/gp04/v2` are producer-checked. They do not prove
 physical I/O, microphone mapping, lighting output or whole-host deadlines.
+
+## Seven-feed configuration (C-ANALYSIS:3)
+
+The local named subscription now accepts **4–8 feeds**, including the requested
+kick, bass, two guitars, lead vocal, synth and backing vocals. Eight is the current
+1200-byte GPA1 packet budget (48-byte header plus 48 PCM24 frames), not an engine
+or product channel limit. Larger subscriptions need grouped packets; the separate
+raw transport already supports grouping. The Lux analysis core separately admits
+up to sixteen configured feeds. Neither bound establishes hardware capacity.
+
+Use this version-2 provider mapping with `--analysis-map` (or `analysis_mapping`):
+
+```json
+{"version":2,"inputs":["input-01","input-02","input-03","input-04","input-05","input-06","input-07"],"sources":["kick","bass","guitar-1","guitar-2","vocal","synth","backs"]}
+```
+
+The matching Lux startup `analysis` binding uses the same arrays and **version 3**.
+The first four roles retain their existing ordering; additional names are distinct
+ASCII letters/digits/hyphens, 1–32 bytes. Every input is distinct and must exist in
+the admitted topology. This is explicit source assignment, not source separation.
+Calibration must observe every selected feed. Reconnection validates both ordered
+arrays. Version-1 mappings and version-2 descriptors remain byte-compatible.
+
+The version-3 descriptor uses `lux.aux.v3`; its exact attachment request is
+`{"subscription":"lux.aux.v3","version":3}`. GAW1 retains its 40-byte header and
+ten source-clock packets. Each packet is `48 + 144 * channels` bytes; the entire
+window is `40 + 10 * (48 + 144 * channels)` bytes (10,600 for seven feeds).
+Queue lengths, whole-window loss, map/epoch invalidation and 100 ms acquisition
+freshness limits remain unchanged. Packet encoding and source publication retain
+preallocated storage and no allocation, locks or I/O in `Tap::offer_interleaved`.
+Wire framing allocates on the separate transport worker.
+
+All selected feeds contribute to Lux's fast activity/pause cues and, except kick,
+harmonic/register/arrangement analysis. Lightdesk validates and displays owner
+estimates. The existing four-role lighting intensity director remains unchanged;
+new predictions are observations, not automatic cue or output authority.
+Physical capture admission restrictions above still apply.
