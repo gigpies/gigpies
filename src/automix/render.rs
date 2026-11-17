@@ -369,6 +369,8 @@ fn run_inner(
         .collect();
     let master = gain(session.master_db);
     let neutral = gain(session.calibration.initial_trim_db);
+    let final_tail_frames = u64::from(session.sample_rate).div_ceil(100).min(total);
+    let mut final_tail_peak = 0_f64;
     let mut start = 0;
     while start < total {
         let mut end = (start + session.block_frames as u64).min(total);
@@ -457,6 +459,9 @@ fn run_inner(
             }
             if a.iter().chain(b.iter()).any(|v| !v.is_finite()) {
                 return Err("nonfinite DSP output".into());
+            }
+            if t >= total - final_tail_frames {
+                final_tail_peak = final_tail_peak.max(b[0].abs()).max(b[1].abs());
             }
             if let Some(o) = &mut observer {
                 o.neutral(a)?;
@@ -630,6 +635,8 @@ fn run_inner(
         "master_max_reduction_db":limiter.max_reduction,"master_affected_frames":limiter.affected_frames,"true_peak":false,"effects":fx_report,
         "calibration_active_seconds":calibrators.iter().map(|c|c.active_seconds).collect::<Vec<_>>()});
     if policy.is_some() || observe_until.is_some() {
+        report["final_tail_peak"] = serde_json::json!(final_tail_peak);
+        report["final_tail_frames"] = serde_json::json!(final_tail_frames);
         report["effective_final_sample_limiter"] = serde_json::to_value(&effective_limiter)?;
         report["render_contract"] = serde_json::json!(if policy.is_some() {
             "delivery-policy-v1"

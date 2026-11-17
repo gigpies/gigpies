@@ -1470,3 +1470,789 @@ fn composition_observation_uses_the_export_limiter_policy_exactly() {
     assert_ne!(read("legacy")["stages"][3], read("observed")["stages"][3]);
     assert!(!dir.0.join("observed/processed.wav").exists());
 }
+
+#[test]
+fn measurement_only_groups_allow_mixed_families_and_preserve_coherent_power() {
+    use ensemble::ObservationGroup;
+    let dir = Scratch::new("observation-partition");
+    let mut s = fixture(&dir, 3);
+    s.channels[0].role = config::Role::LeadVocal;
+    s.channels[1].role = config::Role::BassDi;
+    s.channels[2].role = config::Role::RhythmGuitar;
+    // Identical strips/waveforms but distinct musical identities.
+    let mut r = Request::default();
+    let legacy = serde_json::to_value(&r).unwrap();
+    assert!(legacy.get("observation_groups").is_none());
+    r.observation_groups.push(ObservationGroup {
+        name: "accompaniment".into(),
+        channels: vec![1, 2],
+    });
+    let f = ensemble::freeze(&s, &dir.0, &r).unwrap();
+    let m = ensemble::measure::measure(&s, &dir.0, &r, &f).unwrap();
+    assert_eq!(m.observation_groups, vec![("accompaniment".into(), 3)]);
+    assert!(m.profile_groups.is_empty());
+    let group = m.windows.iter().find(|w| w.channel == 3).unwrap();
+    let one = m.windows.iter().find(|w| w.channel == 1).unwrap();
+    let lead = m.windows.iter().find(|w| w.channel == 0).unwrap();
+    for stage in 0..5 {
+        assert!((group.stages[stage].mean_power - 4. * one.stages[stage].mean_power).abs() < 1e-12);
+    }
+    for (rest, voice) in group
+        .competition
+        .rest_band_power
+        .iter()
+        .zip(&lead.stages[4].band_power)
+    {
+        assert!((rest.unwrap() - voice.unwrap()).abs() < 1e-12);
+    }
+    let original = r.clone();
+    r.observation_groups[0].channels.push(1);
+    assert!(ensemble::freeze(&s, &dir.0, &r).is_err());
+    r = original.clone();
+    r.observation_groups[0].channels.push(3);
+    assert!(ensemble::freeze(&s, &dir.0, &r).is_err());
+    r = original.clone();
+    r.observation_groups.push(ObservationGroup {
+        name: "overlap".into(),
+        channels: vec![0, 1],
+    });
+    assert!(ensemble::freeze(&s, &dir.0, &r).is_err());
+    r = original;
+    r.budget.max_feature_records = 7 * 3; // channels alone fit; extra group must count.
+    assert!(ensemble::freeze(&s, &dir.0, &r).is_err());
+}
+
+#[test]
+fn vocal_decision_cli_consumes_production_measurement_groups() {
+    vocal_production_case(false, false, 0);
+}
+
+#[test]
+fn vocal_fx_decision_cli_replays_excitation_shared_returns_and_tails() {
+    vocal_production_case(true, false, 0);
+}
+
+#[test]
+fn vocal_isolated_activity_replays_production_fx_without_reviewed_spans() {
+    vocal_production_case(true, true, 0);
+}
+
+#[test]
+fn vocal_spectral_contrast_replays_production_fx_with_frozen_templates() {
+    vocal_production_case(true, false, 1);
+}
+
+#[test]
+fn vocal_spectral_states_replays_production_fx_with_multiple_bleed_states() {
+    vocal_production_case(true, false, 2);
+}
+
+#[test]
+fn vocal_spectral_states_refuses_direct_spectrum_reproduced_by_bleed_mixture() {
+    vocal_production_case(true, false, 3);
+}
+
+#[test]
+fn vocal_direct_state_protection_replays_two_supported_timbres_with_fx() {
+    vocal_production_case(true, false, 4);
+}
+
+fn vocal_production_case(with_fx: bool, isolated: bool, contrast_mode: u8) {
+    use ensemble::ObservationGroup;
+    let window = ensemble::measure::FFT_FRAMES;
+    let states = contrast_mode >= 2;
+    let mixture = contrast_mode == 3;
+    let direct_states = contrast_mode == 4;
+    let contrast = contrast_mode != 0;
+    let calibration_windows = if direct_states {
+        20
+    } else if states {
+        15
+    } else {
+        10
+    };
+    let direct_windows = if direct_states { 10 } else { 5 };
+    let split_windows = calibration_windows + 5;
+    let source_frames = if contrast {
+        (2 * calibration_windows + 6) * window
+    } else {
+        192000
+    };
+    let split = if contrast {
+        split_windows * window
+    } else {
+        98304
+    };
+    let dir = Scratch::new("vocal-cli-production");
+    let mut s = fixture(&dir, 4);
+    for (channel, c) in s.channels.iter().enumerate() {
+        let mut w = hound::WavWriter::create(
+            dir.0.join(&c.file),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        let mut noise = 42_u64;
+        for frame in 0..source_frames {
+            noise = noise.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let sample = if contrast
+                && channel == 0
+                && ((direct_windows * window..calibration_windows * window).contains(&frame)
+                    || (split..(split_windows + calibration_windows - direct_windows) * window)
+                        .contains(&frame))
+            {
+                // Distinct synthetic bleed class; no claim that a tone is real bleed.
+                let second = states
+                    && (((direct_windows + 5) * window..calibration_windows * window)
+                        .contains(&frame)
+                        || ((split_windows + 5) * window..(split_windows + 10) * window)
+                            .contains(&frame));
+                let hz = if second { 700. } else { 250. };
+                (0.01 * (std::f64::consts::TAU * hz * frame as f64 / 48000.).sin()) as f32
+            } else if mixture && channel == 0 {
+                // The sum has the same raw spectrum whether called direct or
+                // two bleed sources. Pairwise separation cannot establish origin.
+                let phase = std::f64::consts::TAU * frame as f64 / 48000.;
+                (0.01 * ((250. * phase).sin() + (700. * phase).sin()) / std::f64::consts::SQRT_2)
+                    as f32
+            } else if isolated && channel == 0 && frame % 98304 < 16384 {
+                0. // Solo backing entries in both splits; FX history stays continuous.
+            } else {
+                let broadband = ((noise >> 32) as u32 as f64 / u32::MAX as f64 - 0.5) * 0.1;
+                // A second reviewed raw shape, with energy outside the objective
+                // ranges. Both still go through the complete production DSP/FX.
+                let second_direct = direct_states
+                    && channel == 0
+                    && ((5 * window..10 * window).contains(&frame)
+                        || (22 * window..25 * window).contains(&frame)
+                        || (40 * window..45 * window).contains(&frame));
+                (broadband
+                    + if second_direct {
+                        0.02 * (std::f64::consts::TAU * 8000. * frame as f64 / 48000.).sin()
+                    } else {
+                        0.
+                    }) as f32
+            };
+            w.write_sample(sample).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    s.channels[0].role = config::Role::LeadVocal;
+    s.channels[1].role = config::Role::BackingVocal;
+    s.channels[2].role = config::Role::BassDi;
+    s.channels[3].role = config::Role::RhythmGuitar;
+    for (c, gain) in s
+        .channels
+        .iter_mut()
+        .zip([-8., -3., -6.020599913, -6.020599913])
+    {
+        c.fader_db = gain;
+    }
+    // Identical nonlinear upstream compression is replayed with continuous history.
+    for c in &mut s.channels {
+        c.compressor.threshold_db = -40.;
+        c.compressor.ratio = 4.;
+    }
+    let mut r = Request::default();
+    r.observation_groups.push(ObservationGroup {
+        name: "band".into(),
+        channels: vec![2, 3],
+    });
+    if with_fx {
+        gigpies::automix::effects::add_pass(&mut s).unwrap();
+        let fx = s.effects.as_mut().unwrap();
+        // One shared bus per distinct production engine; duplicate presets add
+        // no coverage to this normal-suite regression.
+        fx.buses.retain(|b| {
+            matches!(
+                b.name.as_str(),
+                "vocal_hall" | "vocal_chorus" | "vocal_delay"
+            )
+        });
+        // Shared buses: all four sources feed each existing production engine.
+        for bus in &mut fx.buses {
+            bus.sends = (0..4)
+                .map(|channel| gigpies::automix::effects::Send { channel, db: -18. })
+                .collect();
+            if let gigpies::automix::effects::Effect::Reverb(ref mut rv) = bus.effect {
+                rv.predelay_ms = 40.;
+            }
+        }
+        r.vocal_fx_attribution = true;
+    }
+    let analysis = dir.0.join("analysis");
+    ensemble::workflow::analyze(s, &dir.0, &analysis, r).unwrap();
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(analysis.join("state.json")).unwrap()).unwrap();
+    let mut capture = serde_json::json!({
+        "frozen_id": state["frozen"]["id"], "training_end_frame": split,
+        "provenance": ["inherited", "inherited", "preset", "preset"],
+        "groups": {
+            "lead": {"channels":[0],"observation":0,"performances":[{"singer":"lead", "channels":[0], "capture":"direct", "confidence":0.9,"spans":[[0,source_frames]]}]},
+            "backing": {"channels":[1],"observation":1,"performances":[{"singer":"back", "channels":[1], "capture":"direct", "confidence":0.9,"spans":[[0,source_frames]]}]},
+            "accompaniment": {"channels":[2,3],"observation":"band"}
+        }
+    });
+    if isolated {
+        for name in ["lead", "backing"] {
+            let p = capture["groups"][name]["performances"][0]
+                .as_object_mut()
+                .unwrap();
+            p.remove("spans");
+            p.insert("activity".into(), serde_json::json!({
+                "mode": "isolated_voice", "attestation": "voice_only_no_bleed",
+                "review_basis": "Controlled synthetic isolated input; energy eligibility, not voice classification"
+            }));
+        }
+    }
+    if contrast {
+        let p = capture["groups"]["lead"]["performances"][0]
+            .as_object_mut()
+            .unwrap();
+        p.remove("spans");
+        p.insert(
+            "activity".into(),
+            serde_json::json!({
+                "mode": "spectral_contrast", "calibration_end_frame": 10 * window,
+                "assumption": "stable_capture_spectral_separation",
+                "review_basis": "Generated broadband direct class and tonal negative class",
+                "examples": [
+                    {"span": [0,5 * window], "label": "direct"},
+                    {"span": [5 * window,10 * window], "label": "bleed"},
+                    {"span": [15 * window,20 * window], "label": "bleed"},
+                    {"span": [20 * window,25 * window], "label": "direct"}
+                ]
+            }),
+        );
+    }
+    if states {
+        let direct_state = if mixture { "two-tone" } else { "broadband" };
+        capture["groups"]["lead"]["performances"][0]["activity"] = serde_json::json!({
+            "mode": "spectral_states", "calibration_end_frame": calibration_windows * window,
+            "assumption": "stable_capture_spectral_states",
+            "review_basis": if mixture {
+                "Generated positive sum of two tonal negative states; indistinguishable-origin refusal mechanics only"
+            } else {
+                "Generated broadband direct and two distinct tonal negative states; mechanics only"
+            },
+            "examples": [
+                {"span": [0,5 * window], "label": "direct", "state": direct_state},
+                {"span": [5 * window,10 * window], "label": "bleed", "state": "low"},
+                {"span": [10 * window,15 * window], "label": "bleed", "state": "mid"},
+                {"span": [20 * window,25 * window], "label": "bleed", "state": "low"},
+                {"span": [25 * window,30 * window], "label": "bleed", "state": "mid"},
+                {"span": [30 * window,35 * window], "label": "direct", "state": direct_state}
+            ]
+        });
+    }
+    if direct_states {
+        capture["groups"]["lead"]["performances"][0]["activity"]["examples"] = serde_json::json!([
+            {"span": [0,5 * window], "label": "direct", "state": "broadband"},
+            {"span": [5 * window,10 * window], "label": "direct", "state": "upper-tone"},
+            {"span": [10 * window,15 * window], "label": "bleed", "state": "low"},
+            {"span": [15 * window,20 * window], "label": "bleed", "state": "mid"},
+            {"span": [25 * window,30 * window], "label": "bleed", "state": "low"},
+            {"span": [30 * window,35 * window], "label": "bleed", "state": "mid"},
+            {"span": [35 * window,40 * window], "label": "direct", "state": "broadband"},
+            {"span": [40 * window,45 * window], "label": "direct", "state": "upper-tone"}
+        ]);
+    }
+    let path = dir.0.join("capture.json");
+    std::fs::write(&path, serde_json::to_vec(&capture).unwrap()).unwrap();
+    let output = dir.0.join("candidate");
+    let status = std::process::Command::new("python3")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/vocal_balance.py"
+        ))
+        .arg(&analysis)
+        .arg(&path)
+        .arg(&output)
+        .arg("--source")
+        .arg(&dir.0)
+        .arg("--analyzer")
+        .arg(env!("CARGO_BIN_EXE_gigpies"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let decision: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output.join("decision.json")).unwrap()).unwrap();
+    if mixture {
+        assert_eq!(decision["status"], "refused", "{decision}");
+        assert_eq!(decision["accepted"], false);
+        assert!(decision["reasons"].as_array().unwrap().iter().any(|r| {
+            r.as_str()
+                .unwrap()
+                .contains("bleed-power mixture enclosure")
+        }));
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(output.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(settings, state["baseline"]);
+        return;
+    }
+    assert_eq!(decision["status"], "accepted", "{decision}");
+    assert!(decision["decisions"][0]["delta_db"].as_f64().unwrap() > 0.);
+    assert!(!decision["metrics_resulting"].is_null());
+    assert_eq!(
+        decision["context_policy"]["version"],
+        "vocal-lineup-protection-v1"
+    );
+    for split in ["training", "held_out"] {
+        assert!(
+            !decision["metrics_resulting"][split]["context_losses"]
+                .as_object()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert!(decision["prediction_error_db"].as_f64().unwrap() < 0.01);
+    if direct_states {
+        assert_eq!(
+            decision["state_context_policy"]["version"],
+            "vocal-state-protection-v1"
+        );
+        for split in ["training", "held_out"] {
+            let losses = decision["metrics_resulting"][split]["state_losses"]
+                .as_object()
+                .unwrap();
+            assert_eq!(losses.len(), 2);
+            for (key, actual) in losses {
+                let predicted = &decision["remeasured_prediction"][split]["state_losses"][key];
+                assert_eq!(actual["frames"], predicted["frames"]);
+                assert!(
+                    (actual["loss"].as_f64().unwrap() - predicted["loss"].as_f64().unwrap()).abs()
+                        < 1e-6
+                );
+            }
+        }
+    }
+    if contrast {
+        let classifier = &decision["activity_evidence"][0]["spectral_contrast"];
+        if states {
+            assert_eq!(
+                classifier["bleed_mixture_exclusion"]["policy"]["version"],
+                "bleed-power-mixture-exclusion-v1"
+            );
+        }
+        assert_eq!(
+            classifier["policy"]["version"],
+            if states {
+                "capture-spectral-states-v1"
+            } else {
+                "capture-spectral-contrast-v1"
+            }
+        );
+        for coverage in classifier["held_out"].as_object().unwrap().values() {
+            assert_eq!(coverage["errors"], 0);
+            assert!(coverage["windows"].as_u64().unwrap() >= 5);
+        }
+        assert_eq!(
+            classifier["templates"].as_object().unwrap().len(),
+            if direct_states {
+                4
+            } else if states {
+                3
+            } else {
+                2
+            }
+        );
+        assert!(
+            decision["activity_evidence"][0]["counts"]["contrast_direct"]
+                .as_u64()
+                .unwrap()
+                > 5
+        );
+    }
+    if isolated {
+        for split in ["training", "held_out"] {
+            assert_eq!(
+                decision["metrics_resulting"][split]["context_losses"]
+                    .as_object()
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
+        assert_eq!(
+            decision["activity_policy"]["version"],
+            "vocal-eligibility-v1"
+        );
+        assert!(
+            decision["activity_evidence"][0]["counts"]["isolated_energy"]
+                .as_u64()
+                .unwrap()
+                > 5
+        );
+        assert!(decision["evidence"]["groups"]["lead"]["performances"][0]["spans"].is_null());
+    }
+    if with_fx {
+        assert_eq!(decision["resulting_attribution"]["tail_complete"], true);
+        assert_eq!(
+            decision["resulting_attribution"]["checked_frames"],
+            source_frames + 192000
+        );
+        assert_eq!(decision["composition"]["fixed_fx_unchanged"], true);
+        let settings: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(output.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(settings["effects"], state["baseline"]["effects"]);
+    }
+}
+
+#[test]
+fn vocal_remeasurement_rejects_unrelated_controls_and_stale_sources() {
+    let dir = Scratch::new("vocal-replay-bindings");
+    let s = fixture(&dir, 3);
+    let request = Request::default();
+    let state = ensemble::workflow::State {
+        frozen: ensemble::freeze(&s, &dir.0, &request).unwrap(),
+        baseline: s.clone(),
+        request,
+    };
+    let out = dir.0.join("replay");
+    let mut candidate = s.clone();
+    candidate.channels[0].pan = 0.5;
+    assert!(ensemble::workflow::remeasure(state.clone(), candidate, &dir.0, &out).is_err());
+    assert!(!out.exists());
+    let mut bytes = std::fs::read(dir.0.join("0.wav")).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    std::fs::write(dir.0.join("0.wav"), bytes).unwrap();
+    assert!(ensemble::workflow::remeasure(state, s, &dir.0, &out).is_err());
+    assert!(!out.exists());
+}
+
+#[test]
+fn vocal_fx_attribution_bounds_tail_and_preserves_dry_stages() {
+    let dir = Scratch::new("vocal-fx-contract");
+    let mut s = fixture(&dir, 3);
+    let dry = Request::default();
+    let f = ensemble::freeze(&s, &dir.0, &dry).unwrap();
+    let a = ensemble::measure::measure(&s, &dir.0, &dry, &f).unwrap();
+    let mut request = Request {
+        vocal_fx_attribution: true,
+        ..Default::default()
+    };
+    let f = ensemble::freeze(&s, &dir.0, &request).unwrap();
+    let b = ensemble::measure::measure(&s, &dir.0, &request, &f).unwrap();
+    assert_eq!(
+        serde_json::to_value(&a.windows).unwrap(),
+        serde_json::to_value(&b.windows).unwrap()
+    );
+    gigpies::automix::effects::add_pass(&mut s).unwrap();
+    s.effects.as_mut().unwrap().tail_seconds = 0.;
+    let f = ensemble::freeze(&s, &dir.0, &request).unwrap();
+    let m = ensemble::measure::measure(&s, &dir.0, &request, &f).unwrap();
+    assert!(!m.attribution.unwrap().tail_complete);
+    request.budget.max_sample_visits = f.sample_visits;
+    assert!(
+        ensemble::freeze(&s, &dir.0, &request)
+            .unwrap_err()
+            .to_string()
+            .contains("FX attribution")
+    );
+}
+
+#[test]
+fn vocal_fx_sum_matches_full_context_production_bus_with_cancellation() {
+    use gigpies::automix::{effects, observe};
+    let dir = Scratch::new("vocal-fx-full-context");
+    let mut s = fixture(&dir, 3);
+    // Opposite inputs plus a distinct third source exercise cancellation, not
+    // just positive coherent copies. Excitation has even-order harmonics.
+    for (i, c) in s.channels.iter_mut().enumerate() {
+        let mut w = hound::WavWriter::create(
+            dir.0.join(&c.file),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        for frame in 0..9600 {
+            let hz = if i == 2 { 2300. } else { 997. };
+            let sign = if i == 1 { -1. } else { 1. };
+            w.write_sample((sign * 0.4 * (TAU * hz * frame as f64 / 48000.).sin()) as f32)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+        c.fader_db = 0.;
+        c.pan = 0.;
+        c.compressor.ratio = 1.;
+    }
+    effects::add_pass(&mut s).unwrap();
+    let fx = s.effects.as_mut().unwrap();
+    fx.buses.retain(|b| {
+        matches!(
+            b.name.as_str(),
+            "vocal_hall" | "vocal_chorus" | "vocal_delay"
+        )
+    });
+    fx.exciter_amount = 1.;
+    fx.exciter.drive = 0.5;
+    fx.exciter.tune_hz = 600.;
+    for b in &mut fx.buses {
+        b.sends = (0..3)
+            .map(|channel| effects::Send { channel, db: -6. })
+            .collect();
+    }
+    let request = Request {
+        vocal_fx_attribution: true,
+        observation_groups: vec![ensemble::ObservationGroup {
+            name: "all".into(),
+            channels: vec![0, 1, 2],
+        }],
+        ..Default::default()
+    };
+    let f = ensemble::freeze(&s, &dir.0, &request).unwrap();
+    let m = ensemble::measure::measure(&s, &dir.0, &request, &f).unwrap();
+    let a = m.attribution.as_ref().unwrap();
+    assert!(a.tail_complete, "{a:?}");
+    assert!(a.max_tolerance_fraction <= 1.);
+    let power = m
+        .windows
+        .iter()
+        .filter(|w| w.channel == 3)
+        .map(|w| w.stages[4].mean_power * w.frames as f64)
+        .sum::<f64>()
+        / f.timeline_frames as f64;
+    let out = dir.0.join("production");
+    observe(s.clone(), &dir.0, &out, f.timeline_frames as f64 / 48000.).unwrap();
+    let stages: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("stages.json")).unwrap()).unwrap();
+    let actual = stages["stages"][1]["rms_dbfs"].as_f64().unwrap();
+    assert!(
+        (10. * power.log10() + s.master_db - actual).abs() < 0.001,
+        "{actual} vs {power}"
+    );
+    // Nonlinear excitation is visible even when the opposite fundamentals cancel.
+    s.effects.as_mut().unwrap().exciter_amount = 0.;
+    let f = ensemble::freeze(&s, &dir.0, &request).unwrap();
+    let dry_exciter = ensemble::measure::measure(&s, &dir.0, &request, &f).unwrap();
+    assert!(
+        m.windows
+            .iter()
+            .zip(&dry_exciter.windows)
+            .any(|(a, b)| a.channel == 3
+                && (a.stages[4].mean_power - b.stages[4].mean_power).abs() > 1e-9)
+    );
+}
+
+#[test]
+fn vocal_fx_final_master_tail_can_veto_unchanged_settings() {
+    let dir = Scratch::new("vocal-master-tail");
+    let mut s = fixture(&dir, 1);
+    s.channels[0].hpf_hz = 0.;
+    s.channels[0].eq.clear();
+    s.channels[0].compressor.ratio = 1.;
+    s.channels[0].compressor.makeup_db = 0.;
+    s.channels[0].fader_db = 0.;
+    s.master_hpf_hz = 20.;
+    gigpies::automix::effects::add_pass(&mut s).unwrap();
+    let fx = s.effects.as_mut().unwrap();
+    fx.buses.clear();
+    fx.exciter_amount = 0.;
+    fx.tail_seconds = 0.01;
+    let request = Request {
+        vocal_fx_attribution: true,
+        ..Default::default()
+    };
+    let state = ensemble::workflow::State {
+        frozen: ensemble::freeze(&s, &dir.0, &request).unwrap(),
+        baseline: s.clone(),
+        request,
+    };
+    let out = dir.0.join("replay");
+    ensemble::workflow::remeasure(state, s, &dir.0, &out).unwrap();
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("composition.json")).unwrap()).unwrap();
+    assert_eq!(report["passed"], false, "{report}");
+    assert!(
+        report["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str().unwrap().contains("master tail"))
+    );
+    assert_eq!(report["final_tails"][0]["frames"], 480);
+    assert!(report["final_tails"][0]["peak"].as_f64().unwrap() > 1e-5);
+}
+
+#[test]
+fn vocal_pair_measurements_preserve_signed_power_and_charge_budget() {
+    let dir = Scratch::new("vocal-pairs");
+    let mut s = fixture(&dir, 3);
+    for c in &mut s.channels {
+        c.hpf_hz = 0.;
+        c.eq.clear();
+        c.compressor.ratio = 1.;
+    }
+    let mut writer = hound::WavWriter::create(
+        dir.0.join("1.wav"),
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: 48000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        },
+    )
+    .unwrap();
+    for i in 0..480 {
+        writer
+            .write_sample((-0.1 * (TAU * 997. * i as f64 / 48000.).sin()) as f32)
+            .unwrap();
+    }
+    writer.finalize().unwrap();
+    let mut request = Request {
+        observation_pairs: vec![[0, 1], [0, 2]],
+        ..Default::default()
+    };
+    let frozen = ensemble::freeze(&s, &dir.0, &request).unwrap();
+    let measured = ensemble::measure::measure(&s, &dir.0, &request, &frozen).unwrap();
+    let pair = &measured.windows[0].pair_sum_band_power;
+    assert_eq!(pair.len(), 2);
+    assert!(pair[0].1.iter().all(|p| p.unwrap().abs() < 1e-20));
+    for (sum, source) in pair[1]
+        .1
+        .iter()
+        .zip(&measured.windows[0].stages[4].band_power)
+    {
+        assert!((sum.unwrap() - 4. * source.unwrap()).abs() < 1e-12);
+    }
+    request.observation_pairs.push([1, 0]);
+    assert!(ensemble::freeze(&s, &dir.0, &request).is_err());
+    request.observation_pairs = vec![[0, 1], [0, 1]];
+    assert!(ensemble::freeze(&s, &dir.0, &request).is_err());
+    request.observation_pairs.clear();
+    // 3 sources * (6 spectral records + one 10ms event) = 21.
+    request.budget.max_feature_records = 21;
+    assert!(ensemble::freeze(&s, &dir.0, &request).is_ok());
+    request.observation_pairs.push([0, 1]);
+    assert!(ensemble::freeze(&s, &dir.0, &request).is_err());
+}
+
+#[test]
+fn vocal_independent_singers_and_linked_captures_replay_with_fx() {
+    let dir = Scratch::new("vocal-singer-replay");
+    let mut s = fixture(&dir, 5);
+    let window = ensemble::measure::FFT_FRAMES;
+    let frames = 30 * window;
+    for (index, c) in s.channels.iter_mut().enumerate() {
+        c.hpf_hz = 0.;
+        c.eq.clear();
+        c.compressor.ratio = 1.;
+        c.compressor.makeup_db = 0.;
+        c.role = if index == 0 {
+            config::Role::LeadVocal
+        } else if index < 4 {
+            config::Role::BackingVocal
+        } else {
+            config::Role::RhythmGuitar
+        };
+        c.fader_db = [-3., -8., -1., -8., 0.][index];
+        let mut w = hound::WavWriter::create(
+            dir.0.join(&c.file),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        let mut noise = if index == 3 { 43 } else { 42 + index as u64 };
+        for frame in 0..frames {
+            noise = noise.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let context = (frame / window % 15) / 5;
+            let active = match index {
+                1 | 3 => context != 1,
+                2 => context != 0,
+                _ => true,
+            };
+            let x = if active {
+                ((noise >> 32) as u32 as f64 / u32::MAX as f64 - 0.5) * 0.02
+            } else {
+                0.
+            };
+            // A second capture with signed cancellation, not a second singer.
+            w.write_sample((x * if index == 3 { -0.25 } else { 1. }) as f32)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+    }
+    gigpies::automix::effects::add_pass(&mut s).unwrap();
+    let fx = s.effects.as_mut().unwrap();
+    fx.buses.retain(|b| b.name == "vocal_delay");
+    for bus in &mut fx.buses {
+        bus.sends = (0..5)
+            .map(|channel| gigpies::automix::effects::Send { channel, db: -24. })
+            .collect();
+    }
+    let mut request = Request {
+        vocal_fx_attribution: true,
+        observation_groups: vec![ensemble::ObservationGroup {
+            name: "backs".into(),
+            channels: vec![1, 2, 3],
+        }],
+        observation_pairs: (0..4)
+            .flat_map(|i| ((i + 1)..4).map(move |j| [i, j]))
+            .collect(),
+        ..Default::default()
+    };
+    // Explicit synthetic composition budget; this test does not relax defaults.
+    request.composition.max_peak_rise_db = 3.;
+    let analysis = dir.0.join("analysis");
+    ensemble::workflow::analyze(s, &dir.0, &analysis, request).unwrap();
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(analysis.join("state.json")).unwrap()).unwrap();
+    let performance = |singer: &str, channels: Vec<usize>, capture: &str| {
+        serde_json::json!({
+            "singer":singer,"channels":channels,"capture":capture,"confidence":0.9,"spans":[[0,frames]]
+        })
+    };
+    let capture = serde_json::json!({"decision_mode":"solo_anchored","frozen_id":state["frozen"]["id"],
+        "training_end_frame":15*window,"provenance":["inherited","preset","preset","inherited","preset"],
+        "groups":{
+            "lead":{"channels":[0],"observation":0,"performances":[performance("lead",vec![0],"direct")]},
+            "backing":{"channels":[1,2,3],"observation":"backs","performances":[
+                performance("a",vec![1],"direct"), performance("b",vec![2],"direct"), performance("a",vec![3],"double")]},
+            "accompaniment":{"channels":[4],"observation":4}}});
+    let path = dir.0.join("capture.json");
+    std::fs::write(&path, serde_json::to_vec(&capture).unwrap()).unwrap();
+    let output = dir.0.join("decision");
+    let status = std::process::Command::new("python3")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/vocal_balance.py"
+        ))
+        .arg(&analysis)
+        .arg(path)
+        .arg(&output)
+        .arg("--source")
+        .arg(&dir.0)
+        .arg("--analyzer")
+        .arg(env!("CARGO_BIN_EXE_gigpies"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(output.join("decision.json")).unwrap()).unwrap();
+    assert_eq!(report["accepted"], true, "{report}");
+    assert!(report["prediction_error_db"].as_f64().unwrap() < 0.01);
+    let changes = report["decisions"].as_array().unwrap();
+    let delta = |channel| {
+        changes.iter().find(|d| d["channel"] == channel).unwrap()["delta_db"]
+            .as_f64()
+            .unwrap()
+    };
+    assert!(delta(1) > 0.);
+    assert!(delta(2) < 0.);
+    assert_eq!(delta(1), delta(3));
+}

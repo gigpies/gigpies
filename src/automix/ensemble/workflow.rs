@@ -177,3 +177,37 @@ pub(super) fn delivery_policy() -> crate::automix::delivery::Policy {
         ..Default::default()
     }
 }
+
+/// Offline fader-only replay. A candidate is never accepted by this measurement API.
+pub fn remeasure(state: State, candidate: Session, root: &Path, out: &Path) -> Result<()> {
+    state.validate()?;
+    state.frozen.verify(&state.baseline, root, &state.request)?;
+    let mut restored = candidate.clone();
+    if restored.channels.len() != state.baseline.channels.len() {
+        return Err("candidate channel count changed".into());
+    }
+    for (c, b) in restored.channels.iter_mut().zip(&state.baseline.channels) {
+        c.fader_db = b.fader_db;
+    }
+    if identity(&restored)? != identity(&state.baseline)? {
+        return Err("remeasurement permits only fader changes".into());
+    }
+    let trial = freeze(&candidate, root, &state.request)?;
+    if trial.inputs != state.frozen.inputs
+        || trial.timeline_frames != state.frozen.timeline_frames
+        || trial.sample_rate != state.frozen.sample_rate
+    {
+        return Err("candidate source timeline changed".into());
+    }
+    if out.exists() {
+        return Err("output already exists".into());
+    }
+    let baseline = measure::measure(&state.baseline, root, &state.request, &state.frozen)?;
+    let actual = measure::measure(&candidate, root, &state.request, &trial)?;
+    fs::create_dir(out)?;
+    let composition = super::composition::verify(&state, &candidate, root, out)?;
+    state.frozen.verify(&state.baseline, root, &state.request)?;
+    write_json(&out.join("baseline-observations.json"), &baseline)?;
+    write_json(&out.join("candidate-observations.json"), &actual)?;
+    write_json(&out.join("composition.json"), &composition)
+}
