@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from vocal_balance import POLICY, calculate, run, accept_remeasurement
+from vocal_balance import POLICY, calculate, run, accept_remeasurement, select_fx_bus
 
 
 def fixture(lead_db=-3, backing_db=-3, coherent=0., singers=1):
@@ -1290,6 +1291,452 @@ class SoloSingerTests(unittest.TestCase):
         self.assertFalse(accept_remeasurement(proposal,baseline,actual,dict(passed=True),72000)['accepted'])
         proposal['singer_policy']['maximum_passes'] += 1
         self.assertFalse(accept_remeasurement(proposal,baseline,baseline,dict(passed=True),72000)['accepted'])
+
+
+def contextual_fixture(levels=(-8., -8., -2.), linked=False):
+    data = singer_fixture(levels, linked)
+    data[3]['decision_mode'] = 'contextual'
+    # Retain only overlap: five windows in each split, no backing solo anchors.
+    data[2][:] = [r for r in data[2] if r['start'] % 72000 >= 48000]
+    return data
+
+
+class ContextualSingerTests(unittest.TestCase):
+    def test_overlap_only_independent_redistribution(self):
+        data = contextual_fixture()
+        result = calculate(*data)
+        self.assertEqual(result['status'], 'candidate', result['reasons'])
+        self.assertGreater(result['proposed_deltas_db'][1], 0)
+        self.assertLess(result['proposed_deltas_db'][2], 0)
+        self.assertEqual(calculate(*data), result)
+        for old,new in zip(result['metrics_before']['singers'], result['metrics_predicted']['singers']):
+            self.assertLessEqual(new['loss'], old['loss']+1e-9)
+        self.assertFalse(any(w['solo'][1] or w['solo'][2] for w in result['windows']))
+
+    def test_contextual_competitor_uses_signed_other_singer_sum(self):
+        from vocal_balance import contextual_metrics
+        data = contextual_fixture()
+        baseline = calculate(*data, measure_only=True)
+        rows = copy.deepcopy(baseline['windows'])
+        # Two cancelling competitors with individually large powers must not
+        # become a fictitious incoherent masker. Powers are analytical evidence.
+        for w in rows:
+            w['singer_power'][1] = w['denominator'][:]
+            w['singer_power'][2] = w['denominator'][:]
+            for pair in w['singer_cross']:
+                pair[2] = [-2*v for v in w['denominator']] if pair[:2] == [1,2] else [0.,0.]
+        m = contextual_metrics((0.,0.,0.), rows, baseline['units'])
+        self.assertAlmostEqual(m['singers'][0]['ratios_db'][0]['p50'], -8.)
+        for w in rows:
+            for pair in w['singer_cross']:
+                if pair[:2] == [1,2]: pair[2] = [2*v for v in w['denominator']]
+        m = contextual_metrics((0.,0.,0.), rows, baseline['units'])
+        self.assertAlmostEqual(m['singers'][0]['ratios_db'][0]['p50'], -14.0205999133)
+
+    def test_balanced_single_singers_preserve_controls(self):
+        result = calculate(*contextual_fixture((-3.,-3.,-3.), linked=True))
+        # Linked captures are one singer, not two targets.
+        self.assertEqual(len(result['units']), 2)
+        self.assertEqual(result['decisions'][1]['delta_db'], result['decisions'][2]['delta_db'])
+        data = singer_fixture((-3.,-3.,-3.))
+        data[3]['decision_mode'] = 'contextual'
+        data[2][:] = [r for r in data[2] if r['start']%72000 < 48000]
+        result = calculate(*data)
+        self.assertEqual(result['status'], 'no_change')
+        self.assertTrue(result['objective_met'])
+
+    def test_held_out_cannot_choose_or_refit_gains(self):
+        data = contextual_fixture()
+        held = contextual_fixture((-2.,-8.,-2.))
+        data[2][:] = [r for r in data[2] if r['start']<72000]+[r for r in held[2] if r['start']>=72000]
+        result = calculate(*data)
+        self.assertEqual(result['status'], 'refused')
+        self.assertTrue(any('held-out veto' in r for r in result['reasons']))
+        self.assertEqual(result['settings'], data[0]['baseline'])
+        self.assertEqual(result['proposed_deltas_db'], calculate(*contextual_fixture())['proposed_deltas_db'])
+
+    def test_unknown_activity_and_missing_pairs_still_refuse(self):
+        data = contextual_fixture()
+        data[3]['groups']['backing']['performances'][0]['capture'] = 'unknown'
+        self.assertEqual(calculate(*data)['status'], 'refused')
+        data = contextual_fixture()
+        data[0]['request']['observation_pairs'].pop()
+        with self.assertRaisesRegex(ValueError, 'every routed vocal'):
+            calculate(*data)
+
+    def test_linked_override_locks_singer_not_other_actions(self):
+        data = contextual_fixture(linked=True)
+        data[3]['provenance'][2] = 'operator_override'
+        result = calculate(*data)
+        self.assertEqual(result['proposed_deltas_db'][1], 0.)
+        self.assertGreater(result['proposed_deltas_db'][0], 0.)
+        self.assertEqual(result['actionability'][1]['reasons'], ['operator override'])
+
+    def test_individual_lineup_regression_cannot_hide_in_aggregate(self):
+        from vocal_balance import singer_regressions
+        baseline = calculate(*contextual_fixture(), measure_only=True)['metrics_before']
+        after = copy.deepcopy(baseline)
+        key = next(iter(after['singer_context_losses']))
+        after['singer_context_losses'][key] += 1
+        self.assertIn('individual singer lineup/state loss regression', singer_regressions(after,baseline,1e-9))
+
+    def test_tone_conflict_freezes_only_unsupported_singer(self):
+        data = contextual_fixture()
+        # Build physically consistent independent spectra with a dark singer:
+        # weak articulation and excessive low-range contribution.
+        for start in sorted({r['start'] for r in data[2]}):
+            rows = {r['channel']:r for r in data[2] if r['start']==start}
+            for b in range(12):
+                if data[1]['band_edges_hz'][b] < 1600:
+                    for stage in rows[2]['stages']: stage['band_power'][b] *= 2
+                else:
+                    for stage in rows[2]['stages']: stage['band_power'][b] *= .01
+            for stage in rows[2]['stages']: stage['mean_power'] = sum(stage['band_power'])
+            powers = [rows[c]['stages'][4]['band_power'] for c in range(4)]
+            group = [a+b for a,b in zip(powers[1],powers[2])]
+            for stage in rows[4]['stages']:
+                stage['band_power'] = group[:]; stage['mean_power'] = sum(group)
+            for c,row in rows.items():
+                own = {0: [0],1:[1,2],2:[1,2],3:[3],4:[1,2]}[c]
+                row['competition']['rest_band_power'] = [sum(powers[j][b] for j in range(4) if j not in own) for b in range(12)]
+                row['pair_sum_band_power'] = [[j,[x+y for x,y in zip(powers[c],powers[j])]] for j in range(c+1,3)] if c < 3 else []
+        result = calculate(*data)
+        self.assertEqual(result['status'], 'candidate', result['reasons'])
+        self.assertEqual(result['proposed_deltas_db'][2], 0.)
+        self.assertIn('singer contribution/articulation conflict', result['actionability'][2]['reasons'])
+        self.assertTrue(any(result['proposed_deltas_db'][:2]))
+        self.assertFalse(result['objective_met'])
+
+    def test_contextual_level_invariance_and_bounds(self):
+        data = contextual_fixture()
+        expected = calculate(*data)['proposed_deltas_db']
+        for row in data[2]:
+            for stage in row['stages']:
+                stage['mean_power'] *= .1
+                stage['band_power'] = [v*.1 for v in stage['band_power']]
+            row['competition']['rest_band_power'] = [v*.1 for v in row['competition']['rest_band_power']]
+            row['pair_sum_band_power'] = [[c,[v*.1 for v in p]] for c,p in row['pair_sum_band_power']]
+        self.assertEqual(calculate(*data)['proposed_deltas_db'], expected)
+        data[0]['baseline']['channels'][1]['fader_db'] = 12.
+        self.assertLessEqual(calculate(*data)['proposed_deltas_db'][1], 0.)
+
+    def test_contextual_state_support_is_protected_individually(self):
+        from vocal_balance import contextual_metrics, singer_regressions
+        result = calculate(*contextual_fixture(), measure_only=True)
+        rows = result['windows']
+        rows[0]['state_support'][1] = [[1,['soft','bright']]]
+        before = contextual_metrics((0.,0.,0.), rows, result['units'])
+        keys = [k for k in before['singer_context_losses'] if 'soft' in k or 'bright' in k]
+        self.assertEqual(len(keys), 2)
+        after = copy.deepcopy(before)
+        after['singer_context_losses'][keys[0]] += .06
+        self.assertIn('individual singer lineup/state loss regression', singer_regressions(after,before,.05))
+
+    def test_production_acceptance_checks_contextual_loss_and_policy(self):
+        from vocal_balance import singer_windows
+        data = contextual_fixture()
+        proposal = calculate(*data)
+        baseline = calculate(*data, measure_only=True)
+        actual = copy.deepcopy(baseline)
+        ds = proposal['proposed_deltas_db']
+        actual['windows'] = copy.deepcopy(singer_windows(baseline['windows'],proposal['units'],ds))
+        for row in actual['windows']:
+            for i,d in enumerate(ds):
+                row['singer_power'][i] = [x*10**(d/10) for x in row['singer_power'][i]]
+            for entry in row['singer_cross']:
+                entry[2] = [x*10**((ds[entry[0]]+ds[entry[1]])/20) for x in entry[2]]
+        accepted = accept_remeasurement(proposal,baseline,actual,dict(passed=True),72000)
+        self.assertTrue(accepted['accepted'], accepted['validation_reasons'])
+        self.assertIn('singers', accepted['metrics_resulting']['held_out'])
+        tampered = copy.deepcopy(actual)
+        # Opposite pair errors preserve both role powers and their combined sum.
+        row = tampered['windows'][0]
+        amount = row['singer_power'][0][0]*.1
+        row['singer_cross'][0][2][0] += amount
+        row['singer_cross'][1][2][0] -= amount
+        checked = accept_remeasurement(proposal,baseline,tampered,dict(passed=True),72000)
+        self.assertFalse(checked['accepted'])
+        self.assertGreater(checked['prediction_error_db'], .01)
+        actual['windows'][0]['singer_power'][1][0] *= 2
+        self.assertFalse(accept_remeasurement(proposal,baseline,actual,dict(passed=True),72000)['accepted'])
+        proposal['singer_policy']['ratio_db'][0] = -10
+        self.assertFalse(accept_remeasurement(proposal,baseline,baseline,dict(passed=True),72000)['accepted'])
+
+
+
+def wet_fixture(wet_db=-4., levels=(0., -3., -3.), linked=False):
+    from vocal_balance import ATTRIBUTION, FX_STAGE
+    data = contextual_fixture(levels, linked)
+    state,meta,rows,capture = data
+    capture['decision_mode'] = 'wetness'
+    capture['wetness_provenance'] = ['inherited']*4
+    state['request']['vocal_fx_attribution'] = True
+    state['baseline']['effects'] = dict(buses=[dict(name='shared', sends=[dict(channel=c,db=-12.) for c in range(4)])])
+    meta['stage_names'][4] = FX_STAGE
+    meta['attribution'] = dict(ATTRIBUTION, checked_frames=meta['frames'], max_tolerance_fraction=0.,
+                               max_absolute_error=0., tail_complete=True, tail_peak=0.)
+    # Synthetic incoherent direct/return components with an exact known ratio.
+    ratio = 10**(wet_db/10)
+    for row in rows:
+        total = row['stages'][4]['band_power']
+        row['vocal_components'] = dict(direct=dict(band_power=[p/(1+ratio) for p in total]),
+                                       wet=dict(band_power=[p*ratio/(1+ratio) for p in total]))
+    by_time = {}
+    for row in rows: by_time.setdefault(row['start'],{})[row['channel']] = row
+    for group in by_time.values():
+        for c,row in group.items():
+            pairs = []
+            for other,total in row['pair_sum_band_power']:
+                cross = [t-a-b for t,a,b in zip(total,row['stages'][4]['band_power'],group[other]['stages'][4]['band_power'])]
+                sums = []
+                for left,right in [('direct','direct'),('direct','wet'),('wet','direct'),('wet','wet')]:
+                    fraction = (1/(1+ratio) if left == 'direct' else ratio/(1+ratio)) if left == right else 0.
+                    sums.append([a+b+x*fraction for a,b,x in zip(row['vocal_components'][left]['band_power'],
+                        group[other]['vocal_components'][right]['band_power'],cross)])
+                pairs.append([other,sums])
+            row['vocal_component_pairs'] = pairs
+    return data
+
+
+def wet_replay(data, proposal):
+    """Independent synthetic sum construction; production Rust test covers DSP."""
+    result = copy.deepcopy(data)
+    factors = [10**(d/10) for d in proposal['wet_deltas_db']]
+    for row in result[2]:
+        c = row['channel']
+        if c == 3:
+            continue
+        i = 0 if c == 0 else 1
+        components = row['vocal_components']
+        components['wet']['band_power'] = [p*factors[i] for p in components['wet']['band_power']]
+        row['stages'][4]['band_power'] = [a+b for a,b in zip(components['direct']['band_power'],components['wet']['band_power'])]
+    by_time = {}
+    old_time = {}
+    for row in result[2]: by_time.setdefault(row['start'], {})[row['channel']] = row
+    for row in data[2]: old_time.setdefault(row['start'], {})[row['channel']] = row
+    for start,group in by_time.items():
+        power = [group[c]['stages'][4]['band_power'] for c in (0,4,3)]
+        for c,row in group.items():
+            g = 0 if c == 0 else 2 if c == 3 else 1
+            row['competition']['rest_band_power'] = [sum(p[b] for j,p in enumerate(power) if j != g) for b in range(len(power[0]))]
+            old = old_time[start][c]
+            pair_sums = []
+            total_pairs = []
+            for other,components in old['vocal_component_pairs']:
+                sums,terms = [],[]
+                for value,(left,right) in zip(components,[('direct','direct'),('direct','wet'),('wet','direct'),('wet','wet')]):
+                    a = old['vocal_components'][left]['band_power']
+                    b = old_time[start][other]['vocal_components'][right]['band_power']
+                    import math
+                    factor = (math.sqrt(factors[0 if c == 0 else 1]) if left == 'wet' else 1.) * (math.sqrt(factors[0 if other == 0 else 1]) if right == 'wet' else 1.)
+                    xy = [(v-x-y)*factor for v,x,y in zip(value,a,b)]
+                    terms.append(xy)
+                    sums.append([a+b+x for a,b,x in zip(row['vocal_components'][left]['band_power'],group[other]['vocal_components'][right]['band_power'],xy)])
+                pair_sums.append([other,sums])
+                total_pairs.append([other,[a+b+sum(t[k] for t in terms) for k,(a,b) in enumerate(zip(row['stages'][4]['band_power'],group[other]['stages'][4]['band_power']))]])
+            row['vocal_component_pairs'] = pair_sums
+            row['pair_sum_band_power'] = total_pairs
+    return calculate(*result, measure_only=True)
+
+
+class WetnessTests(unittest.TestCase):
+    def test_bus_winner_veto_preserves_baseline_without_refit(self):
+        data = wet_fixture()
+        state, meta, _, capture = data
+        capture['decision_mode'] = 'bus_wetness'
+        bus = state['baseline']['effects']['buses'][0]
+        bus['name'] = 'delay'
+        base = calculate(*data)
+        def replay(state, metadata, capture, settings, source, analyzer):
+            delta = settings['effects']['buses'][0]['sends'][0]['db'] - bus['sends'][0]['db']
+            actual = wet_replay(data, {'wet_deltas_db': [delta, delta]})
+            if delta == -6:
+                for row in actual['wet_windows']:
+                    if row['start'] >= capture['training_end_frame']:
+                        row['wet'] = [v*100 for v in row['wet']]
+            return (base, actual), {'passed': True}
+        with patch('vocal_balance.replay_observations', side_effect=replay):
+            result = select_fx_bus(state, meta, capture, base, '.', 'analyzer')
+            self.assertEqual(result['bus_action']['delta_db'], -6.)
+            self.assertFalse(result['accepted'])
+            self.assertIn('role wetness regression', result['reasons'])
+            self.assertEqual(result['settings'], state['baseline'])
+            capture['wetness_provenance'][0] = 'operator_override'
+            result = select_fx_bus(state, meta, capture, calculate(*data), '.', 'analyzer')
+            self.assertEqual(len(result['bus_trials']), 1)
+            self.assertIsNone(result['bus_action'])
+
+    def test_bounded_wet_correction_preserves_faders_and_shared_band_sends(self):
+        data = wet_fixture()
+        p = calculate(*data)
+        self.assertEqual(p['status'], 'candidate', p['reasons'])
+        self.assertEqual(p['wet_deltas_db'], [-6.,-6.])
+        self.assertEqual(p['settings']['channels'], data[0]['baseline']['channels'])
+        self.assertEqual(p['settings']['effects']['buses'][0]['sends'][-1]['db'], -12.)
+        self.assertEqual(calculate(*data),p)
+        baseline = calculate(*data, measure_only=True)
+        actual = wet_replay(data,p)
+        accepted = accept_remeasurement(p,baseline,actual,{'passed':True},72000)
+        self.assertTrue(accepted['accepted'], accepted['validation_reasons'])
+        self.assertTrue(accepted['objective_met'])
+        self.assertLess(accepted['prediction_error_db'], .01)
+
+    def test_no_wet_boost_and_minimal_deadband_step(self):
+        for wet,expected in [(-20.,0.),(-10.,0.),(-9.,-1.)]:
+            data = wet_fixture(wet)
+            p = calculate(*data)
+            self.assertEqual(p['wet_deltas_db'],[expected]*2)
+            self.assertEqual(p['objective_met'],wet <= -4.)
+
+    def test_linked_captures_and_independent_override(self):
+        data = wet_fixture(linked=True)
+        data[3]['wetness_provenance'][1] = 'operator_override'
+        p = calculate(*data)
+        self.assertEqual(p['wet_deltas_db'],[-6.,0.])
+        sends = p['settings']['effects']['buses'][0]['sends']
+        self.assertEqual([s['db'] for s in sends],[-18.,-12.,-12.,-12.])
+        self.assertFalse(p['objective_met'])
+        data[3]['provenance'][0] = 'operator_override'
+        self.assertEqual(calculate(*data)['wet_deltas_db'],[0.,0.])
+
+    def test_independent_send_with_locked_role_peer(self):
+        data = wet_fixture(levels=(0.,-3.,3.))
+        data[3]['wetness_provenance'][:2] = ['operator_override']*2
+        proposal = calculate(*data)
+        self.assertEqual(proposal['wet_individual'], dict(channels=[2], delta=-6.))
+        self.assertEqual([s['db'] for s in proposal['settings']['effects']['buses'][0]['sends']],
+                         [-12.,-12.,-18.,-12.])
+
+    def test_missing_direct_or_legacy_evidence_refuses(self):
+        for fault in ('missing','direct','tail','bleed'):
+            data = wet_fixture()
+            if fault == 'missing': data[2][0].pop('vocal_components')
+            if fault == 'direct': data[2][0]['vocal_components']['direct']['band_power'] = [0.]*12
+            if fault == 'tail': data[1]['attribution']['tail_complete'] = False
+            if fault == 'bleed': data[3]['groups']['lead']['performances'][0]['capture'] = 'bleed'
+            p = calculate(*data)
+            self.assertEqual(p['status'],'refused',fault)
+            self.assertEqual(p['settings'],data[0]['baseline'])
+        data = wet_fixture(); data[3].pop('wetness_provenance')
+        with self.assertRaisesRegex(ValueError,'send provenance'): calculate(*data)
+
+    def test_production_vetoes_preserve_baseline_without_refit(self):
+        data = wet_fixture(); p = calculate(*data)
+        baseline = calculate(*data,measure_only=True)
+        for fault in ('direct','wet','held_out','composition','activity','policy','controls','accompaniment','incomplete'):
+            actual = wet_replay(data,p); proposal = copy.deepcopy(p)
+            if fault in ('direct','wet'):
+                actual['wet_windows'][0][fault][0] *= 2
+            if fault == 'held_out':
+                for e in actual['windows']:
+                    if e['start'] >= 72000:
+                        e['singer_power'][0] = [v*.01 for v in e['singer_power'][0]]
+                        e['power'][0] = [v*.01 for v in e['power'][0]]
+            if fault == 'activity': actual['activity_evidence'][0]['counts'] = {}
+            if fault == 'incomplete':
+                actual['reasons'] = ['incomplete FX tail']
+                actual.pop('windows')
+            if fault == 'policy': proposal['wetness_policy']['maximum_ratio_db'] = 0.
+            if fault == 'controls': proposal['settings']['channels'][0]['fader_db'] = 1.
+            if fault == 'accompaniment': actual['windows'][0]['denominator'][0] *= 2
+            rejected = accept_remeasurement(proposal,baseline,actual,{'passed':fault != 'composition'},72000)
+            self.assertFalse(rejected['accepted'],fault)
+            self.assertEqual(rejected['settings'],data[0]['baseline'])
+
+    def test_contribution_conflict_remains_unsupported(self):
+        data = wet_fixture(levels=(-8.,-8.,-8.)); p = calculate(*data)
+        self.assertEqual(p['status'],'no_change')
+        self.assertEqual(p['wet_deltas_db'],[0.,0.])
+        self.assertFalse(p['objective_met'])
+
+    def test_cli_wet_proposal_requires_replay(self):
+        state,meta,rows,capture = wet_fixture()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); analysis = root/'analysis'; analysis.mkdir()
+            (analysis/'state.json').write_text(json.dumps(state))
+            (analysis/'observations.json').write_text(json.dumps(dict(**meta,windows=rows),indent=2))
+            (root/'capture.json').write_text(json.dumps(capture))
+            result = run(analysis,root/'capture.json',root/'out')
+            self.assertFalse(result['accepted'])
+            self.assertEqual(json.loads((root/'out'/'settings.json').read_text()),state['baseline'])
+
+    def test_joint_search_keeps_smaller_supported_backing_cut(self):
+        from vocal_balance import wet_predict, singer_metrics, singer_regressions
+        data = wet_fixture(0.)
+        p = calculate(*data)
+        self.assertEqual(p['wet_deltas_db'],[-6.,-4.5])
+        train = [e for e in p['windows'] if e['start']+e['frames'] <= 72000]
+        units = p['units']; zero = [0.]*len(units)
+        before = singer_metrics(zero,train,units,True)
+        full = singer_metrics(zero,wet_predict(train,units,[-6.,-6.]),units,True)
+        supported = singer_metrics(zero,wet_predict(train,units,p['wet_deltas_db']),units,True)
+        self.assertTrue(singer_regressions(full,before,1e-9))
+        self.assertFalse(singer_regressions(supported,before,1e-9))
+        self.assertFalse(p['objective_met'])
+
+    def test_held_out_veto_does_not_research_training_selection(self):
+        data = wet_fixture(0.)
+        p = calculate(*data)
+        low = wet_fixture(0.,levels=(-8.,-8.,-8.))
+        data[2][:] = [r for r in data[2] if r['start'] < 72000]+[r for r in low[2] if r['start'] >= 72000]
+        rejected = calculate(*data)
+        self.assertEqual(rejected['status'],'refused')
+        self.assertEqual(rejected['wet_deltas_db'],p['wet_deltas_db'])
+        self.assertEqual(rejected['settings'],data[0]['baseline'])
+        self.assertTrue(any('held-out veto' in r for r in rejected['reasons']))
+
+    def test_component_pairs_are_required_and_physically_bounded(self):
+        data = wet_fixture()
+        data[2][0]['vocal_component_pairs'] = []
+        self.assertEqual(calculate(*data)['status'],'refused')
+        data = wet_fixture()
+        data[2][0]['vocal_component_pairs'][0][1][0][3] *= 1000
+        with self.assertRaisesRegex(ValueError,'component pair'): calculate(*data)
+
+    def test_level_invariance_and_send_floor(self):
+        data = wet_fixture(); p = calculate(*data)
+        for row in data[2]:
+            for stage in row['stages']:
+                stage['mean_power'] *= .01
+                stage['band_power'] = [v*.01 for v in stage['band_power']]
+            row['competition']['rest_band_power'] = [v*.01 for v in row['competition']['rest_band_power']]
+            for _,power in row['pair_sum_band_power']:
+                power[:] = [v*.01 for v in power]
+            for stage in row['vocal_components'].values():
+                stage['band_power'] = [v*.01 for v in stage['band_power']]
+            for _,components in row['vocal_component_pairs']:
+                for power in components: power[:] = [v*.01 for v in power]
+        self.assertEqual(calculate(*data)['wet_deltas_db'],p['wet_deltas_db'])
+        data[0]['baseline']['effects']['buses'][0]['sends'][0]['db'] = -59.
+        self.assertGreaterEqual(calculate(*data)['wet_deltas_db'][0],-1.)
+
+    def test_signed_direct_return_cancellation_is_not_incoherent_addition(self):
+        from vocal_balance import wet_predict
+        data = wet_fixture()
+        # Each direct and its delayed return have opposite phase in this
+        # analytical fixture. Channels remain mutually uncorrelated.
+        for row in data[2]:
+            total = row['stages'][4]['band_power']
+            row['vocal_components'] = dict(direct=dict(band_power=[4*p for p in total]),
+                                           wet=dict(band_power=list(total)))
+        by_time = {}
+        for row in data[2]: by_time.setdefault(row['start'],{})[row['channel']] = row
+        for group in by_time.values():
+            for row in group.values():
+                row['vocal_component_pairs'] = [[other,[[a+b for a,b in zip(row['vocal_components'][left]['band_power'],
+                    group[other]['vocal_components'][right]['band_power'])]
+                    for left,right in [('direct','direct'),('direct','wet'),('wet','direct'),('wet','wet')]]]
+                    for other,_ in row['pair_sum_band_power']]
+        measured = calculate(*data,measure_only=True)
+        self.assertFalse(measured['reasons'])
+        prediction = wet_predict(measured['windows'],measured['units'],[-6.,-6.])
+        factor = (2-10**(-6/20))**2
+        for old,new in zip(measured['windows'],prediction):
+            for a,b in zip(old['power'][0],new['power'][0]):
+                self.assertAlmostEqual(b,a*factor,places=12)
+        # Removing a cancelling return raises total vocals; contribution
+        # protection must prevent treating this as a harmless energy reduction.
+        self.assertEqual(calculate(*data)['wet_deltas_db'],[0.,0.])
 
 
 if __name__ == '__main__':

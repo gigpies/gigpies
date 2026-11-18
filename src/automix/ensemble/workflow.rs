@@ -178,7 +178,7 @@ pub(super) fn delivery_policy() -> crate::automix::delivery::Policy {
     }
 }
 
-/// Offline fader-only replay. A candidate is never accepted by this measurement API.
+/// Offline fader and bounded linear-send attenuation replay. A candidate is never accepted by this measurement API.
 pub fn remeasure(state: State, candidate: Session, root: &Path, out: &Path) -> Result<()> {
     state.validate()?;
     state.frozen.verify(&state.baseline, root, &state.request)?;
@@ -189,8 +189,25 @@ pub fn remeasure(state: State, candidate: Session, root: &Path, out: &Path) -> R
     for (c, b) in restored.channels.iter_mut().zip(&state.baseline.channels) {
         c.fader_db = b.fader_db;
     }
+    // Send attenuation is permitted only under the audited linear attribution
+    // contract. Restoring values must leave every topology/engine/return field
+    // identical. This API measures; the decision consumer owns musical acceptance.
+    if state.request.vocal_fx_attribution
+        && let (Some(actual), Some(base)) = (&mut restored.effects, &state.baseline.effects)
+    {
+        for (a, b) in actual.buses.iter_mut().zip(&base.buses) {
+            for (send, old) in a.sends.iter_mut().zip(&b.sends) {
+                if !send.db.is_finite() || send.db > old.db || send.db < old.db - 6. {
+                    return Err("remeasurement send attenuation must be within 0..6 dB".into());
+                }
+                send.db = old.db;
+            }
+        }
+    }
     if identity(&restored)? != identity(&state.baseline)? {
-        return Err("remeasurement permits only fader changes".into());
+        return Err(
+            "remeasurement permits only fader changes and attributed send attenuation".into(),
+        );
     }
     let trial = freeze(&candidate, root, &state.request)?;
     if trial.inputs != state.frozen.inputs

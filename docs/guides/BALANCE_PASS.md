@@ -317,9 +317,10 @@ No new targets, independent faders or equal division among singers are introduce
 Separate singers retain distinct `singer` identities; doubles retain their
 singer identity and `double` capture label; alternate microphones of one
 performance stay together in its `channels`. The default common mode preserves
-all within-group offsets. The optional solo-anchored mode below can move separate
-singers; it still links every capture/double of the same singer. Room balance,
-relative direct/double balance and wetness decisions remain open.
+all within-group offsets. The optional solo-anchored and contextual modes below
+can move separate singers; both link every capture/double of the same singer.
+Room balance and relative direct/double balance remain open. Generated-return
+wetness decisions use the explicit wetness mode below.
 
 **Direct-state protection (`vocal-state-protection-v1`):** for `spectral_states`,
 each eligible window retains every matching frozen direct template per microphone
@@ -392,8 +393,9 @@ peak in the final 10 ms <= `1e-5` (−100 dBFS). An incomplete tail refuses;
 extending it requires a new frozen analysis/capture, not refitting the rejected
 candidate. Records retain method, bounds, maximum reconstruction error, coverage
 and tail evidence. The full production master output must also end below the
-same peak floor over its final 10 ms. Sends, returns, excitation and all other
-controls stay fixed.
+same peak floor over its final 10 ms. In fader decision modes, sends, returns,
+excitation and all other controls stay fixed. The explicit wetness mode below
+changes only bounded vocal sends.
 
 Without `--source`, dry output is only a candidate and actual resulting metrics
 remain absent. **FX output retains baseline controls until production replay**.
@@ -405,7 +407,8 @@ attribution evidence, composition checks and explicit rejection reasons.
 The workflow never plays audio.
 
 The replay command `ensemble-remeasure STATE CANDIDATE SOURCE_DIR NEW_DIRECTORY`
-validates the original frozen identity, permits only fader changes, checks exact
+validates the original frozen identity, permits fader changes and, with attributed
+FX, at most 6 dB send attenuation, checks exact
 source identities/offsets/timeline and request, and replays both baseline and
 candidate through continuous production processing. Production composition
 validation includes the actual master limiter and configured tails. Temporary
@@ -490,9 +493,179 @@ results without replay are proposals; FX still requires replay for acceptance.
 Independent real-capture and musical qualification remains open.
 
 Validation: `python3 -m unittest discover -s scripts -p 'test_vocal_balance.py'`.
-Live automation, general voice/bleed identification, singer balancing without solo
-anchors, shared nonlinear wet attribution, wetness decisions and musical
-qualification remain separate work.
+Live automation, general voice/bleed identification, shared nonlinear wet
+attribution and musical qualification remain separate work. Supported wetness
+decisions use the explicit mode below.
+
+### Contextual singer decisions without solo anchors
+
+Set `capture.decision_mode` to `"contextual"` to select
+`contextual-vocal-contribution-v1`. The default common mode and explicit
+`solo_anchored` mode retain their contracts; missing solos never silently select
+this alternative. Use the same capture partition, reviewed activity, provenance,
+complete vocal `observation_pairs` and production replay command above. No new
+capture or singing-recognition assumption is introduced.
+
+**Frozen engineering hypothesis:** evaluate every eligible singer in its actual
+simultaneous context, in the existing 120–5000 Hz contribution and 1600–5000 Hz
+articulation ranges. For singer i and candidate amplitude gains g, measure
+`P_i * g_i²`. Reconstruct its other-vocal competitor as
+`sum(P_j * g_j²) + sum(cross_jk * g_j * g_k)`, excluding i from both sums.
+Signed terms retain cancellation, and include attributed return history even
+when another singer's raw input is idle. The denominator is the **larger** of
+that coherent other-vocal power and the existing measured-accompaniment/pink
+floor. This max is a competition proxy, not a coherent sum of vocals and
+accompaniment; their unmeasured covariance is not invented.
+
+Apply the −4..−2 dB interval to each measured singer/competitor ratio. Minimize
+existing lead/backing ensemble loss plus mean individual singer loss, with equal
+weight for the two ranges and duration weighting within each singer. Averaging
+losses does not divide an ensemble energy target by singer count. These targets
+can conflict in dense ensembles: a useful bounded improvement can still have
+`objective_met: false`. The interval and max-competitor rule are an explicit,
+unqualified hypothesis, not established perceptual masking or intelligibility,
+and were not derived from accepted auditions.
+
+Each singer needs five eligible windows totaling 0.5 seconds in **each** split;
+solo coverage is unnecessary. The stricter existing per-microphone and whole-role
+eligibility requirements still apply, including overlap coverage. Alternate
+microphones/doubles remain one coherently measured, jointly moved singer.
+The same ±6 dB grid, 0.5 dB steps, fader bounds, eight-singer work budget and twelve
+coordinate/paired-step passes apply. The solver protects each singer's loss,
+each observed singer/lineup and singer/direct-state context, both role ensembles,
+existing role contexts and the combined ceiling. Held-out data only vetoes, with
+the existing 0.05 dB² tolerance; short observed contexts also receive protection.
+
+**Selective gain action:** training contribution spread above 12 dB, opposing
+contribution/articulation errors, or a capture override freezes that singer's
+gain. `actionability` records the reason. Other singers remain independently
+actionable only if every protection, including the frozen singer's contextual
+loss, passes. This is not tone or dynamics correction. Insufficient or unsupported
+capture evidence still refuses the workflow; it is not reclassified as an idle
+singer. Remaining unresolved loss is retained even when another singer improves.
+
+The existing window `singer_power`, `singer_cross`, denominator, lineup and state
+support are sufficient to reproduce every competitor and candidate ratio. Split
+`singers` records contain coverage, two-range quantiles and losses;
+`singer_context_losses` retains individual conditional losses. Production replay
+checks each singer, every coherent singer pair, role/combined prediction,
+unchanged accompaniment/eligibility, actual contextual losses, composition and FX
+tails. Pair checks prevent opposite cross-term errors from hiding in an unchanged
+ensemble sum. FX decisions still require `--source`; rejection preserves baseline
+settings. No additional temporary analysis or audio deliverable is required.
+
+Validation uses the normal Python vocal suite and
+`vocal_contextual_singers_without_solo_anchors_replay_with_fx` in the normal Rust
+ensemble suite. Synthetic checks establish mechanics, including overlap-only
+redistribution and linked cancellation, not musical qualification. Independent
+unseen capture/listening qualification, general voice/bleed recognition,
+room/relative-double balance, tone/dynamics correction and live integration remain
+open. Separate return measurements and decisions are described below.
+
+### Measured vocal wetness decisions
+
+Set `decision_mode: "wetness"` in the capture and supply `wetness_provenance`,
+one entry per channel using the same provenance vocabulary as faders. This
+explicit mode requires `vocal_fx_attribution: true`, every vocal
+`observation_pairs` combination, the existing coherent role groups, and the
+unchanged capture/eligibility evidence. Regenerate analysis when separate
+components or component pairs are absent. Run the same vocal command with
+`--source SOURCE_DIR --analyzer target/debug/gigpies`; output controls remain
+baseline until production replay accepts them.
+
+**Frozen objective `vocal-direct-dominance-v1`:** in each existing 120–5000 Hz
+and 1600–5000 Hz range, penalize squared excess of `10 log10(P_wet/P_direct)`
+above **−10 dB**, meaning return energy at most one tenth of direct energy.
+This one-sided direct-dominance budget is an electrical engineering hypothesis,
+not a perceptual wetness model or a musically qualified target. It was frozen
+before synthetic evaluation, without audition calibration. It never boosts wet
+energy, requires no per-song ratio, and makes no claim that a drier mix is always
+better. Loss is duration-weighted across each active coherent role sum and its
+eligible capture observations; individual observations prevent group return
+cancellation from concealing a wet microphone. There is no singer-count energy
+allocation. Missing direct energy refuses: a return tail is not a direct word.
+
+Production analysis records `vocal_components.direct` and `.wet`, each with
+matching native-frame/Hann-window spectral and time-domain measurements. Direct
+means excited, routed channel signal before returns/master. Wet means the
+coherent sum of that source's attributed production returns, retaining continuous
+history. This does not separate natural room sound already in a recording.
+Grouped components are actual coherent waveform sums, not sums of microphone
+powers. The five existing stages remain unchanged. For each requested vocal
+pair, `vocal_component_pairs` measures four sums in order: direct/direct,
+direct/wet, wet/direct, wet/wet. Extra components and pairs count against the
+feature budget; legacy dry observations retain their serialized shape.
+
+For wet amplitude multiplier g, predict `P_direct + g² P_wet + g cross_dw`.
+For two sources a,b, their signed interaction becomes
+`cross_dd + g_b cross_dw + g_a cross_wd + g_a g_b cross_ww`.
+The consumer checks physical pair bounds and reconstruction of separate role
+components, singer powers, singer pairs and complete role sums. Signed
+interactions remain present, including linked captures and inactive return
+history: removing a cancelling return can **raise** the resulting vocal signal.
+
+Search the complete **0 to −6 dB**, **0.5 dB** grid for common lead and backing
+send reductions, at most 169 joint candidates. Apply each role's multiplier to
+all its existing sends, preserving linked capture/bus relationships, direct
+faders, excitation, return controls and accompaniment sends. Shared linear buses
+are supported by the existing checked attribution; no new FX engine is added.
+A send or fader override on any role capture locks that role; the other can
+still move if protected. Send controls cannot fall below −60 dB. No return gain,
+engine, timing, topology, pan, EQ or compressor change is authorized by this mode.
+
+The search also evaluates up to 12 cuts per declared performance in a
+multi-performance role. Each alternative changes that performance alone across
+its existing sends. Linked microphones move together. A fader or send override
+on a linked member locks that performance. The role sum uses both signed
+direct/return interactions and return/return interactions at the proposed gains.
+An individual cut must improve on the best protected role candidate. Ties retain
+the role proposal. The selected channels and common cut appear in
+`wet_individual`; `wet_deltas_db` records only role-wide cuts. This search
+does not combine multiple independent cuts or choose between effects buses.
+
+Training minimizes wetness loss subject to all existing contextual singer,
+individual lineup/state, role, combined-ceiling and role-context protections.
+The contextual objective remains an **unqualified engineering hypothesis**;
+using it as a protection does not establish musical acceptance. Prefer smaller
+moves on equal loss and require 0.05 dB² wetness improvement. A smaller supported
+cut can win when the strongest cut worsens contribution. Held-out windows only
+veto the frozen selection, with existing tolerances; they never refit it.
+Unresolved objectives remain explicit, including protected no-change results.
+In this mode, `objective_met` reports the wetness cap only; it does not certify
+that contextual singer targets, whole-band balance or musical qualification are
+complete. Acceptance remains a separate replay result.
+
+Production replay checks unchanged direct/accompaniment observations, wet scaling,
+coherent source/pair/role predictions within 0.01 dB, unchanged eligibility,
+actual training/held-out losses, complete composition and continuous FX/master
+tails. A veto restores all baseline controls. `wetness_policy` and its hash,
+`wet_windows`, compact `wet_basis`, `wet_deltas_db`, search/metrics, per-send
+before/proposed/accepted controls and accepted provenance retain the decision.
+Replay scratch is disposable and removed automatically.
+
+For a separate-bus decision, set `decision_mode` to `bus_wetness` in the
+same capture and supply `--source` and the production analyzer. This compares
+unchanged controls with −3 and −6 dB cuts to all vocal sends on one bus at a
+time. The two trial depths bound full-song replay cost to at most 25 passes
+through the baseline/candidate replay command for the 12 supported buses.
+Each pass measures the combined direct and wet signals while the other buses,
+their tails, the accompaniment sends and return settings remain in the mix.
+The trial measures how much changing that bus affects the combined return,
+including interference. It does not estimate a listener's preferred decay time.
+
+A linked performance override excludes buses carrying any of that performance's
+sends. The send floor, minimum training improvement and contextual protections
+still apply. Equal training loss favors a smaller move, then the earlier bus in
+session order. Only the frozen winner undergoes the held-out decision and final
+composition veto. A veto retains baseline controls. Inspect `bus_trials` for the
+training comparisons, `bus_action` for the selected alternative, `wet_resulting`
+for measured losses and `send_changes` for proposed and accepted settings.
+
+The normal Rust ensemble suite exercises a shared delay, an individual singer
+with a locked peer, and selection between two active buses. Listening comes
+after replay. Use independent material for musical qualification. Recognition
+of arbitrary voice/bleed, relative room/double balance, wet boosts, nonlinear
+shared return attribution, tone/dynamics and live integration remain open.
 
 ## Commands
 

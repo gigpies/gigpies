@@ -4852,9 +4852,10 @@ explicit hierarchy. These are implementation gaps, not requests for the listener
 to provide per-channel target dB values.
 
 Next action: qualify the fixed spectral objective on independent unseen material;
-qualify the solo-anchored independent-singer mode, implement general voice/bleed
-activity and wetness decisions, and resolve singer objectives without solo anchors
-before extending the contract across the band. Keep accepted V8 as
+qualify both solo-anchored and contextual independent-singer hypotheses; implement
+general voice/bleed activity and qualify the separately measured wetness objective
+before extending the contract across the band. Contextual software decisions without
+solo anchors are available but do not close musical qualification. Keep accepted V8 as
 listening evidence, not a calibration target, hard-coded answer or unseen
 qualification recording.
 
@@ -4902,6 +4903,205 @@ qualification recording.
   without using it as the musical-balance objective. PA/acoustic acceptance remains
   separate from electrical mix evidence.
 
+
+### Offline vocal FX bus selection, 2026-11-18
+
+- [x] Compare unchanged sends and two bounded vocal-send cuts per eligible bus
+  using the production baseline/candidate replay. Score the combined returns
+  with all buses running and retain per-bus trial measurements.
+- [x] Freeze selection on training windows, protect contextual singer and role
+  losses, then veto on held-out measurements or whole-mix composition. Preserve
+  linked overrides, return controls and accompaniment sends.
+- [ ] Listen on independent material after software acceptance. The cut grid
+  and one-sided wet/direct objective still require musical qualification.
+
+The [operating guide](../guides/BALANCE_PASS.md#measured-vocal-wetness-decisions)
+documents the capture mode and replay cost. The production regression is
+`separate_bus_wetness_replays_both_returns`; the Python regression checks a
+held-out veto without refitting and an override that leaves only baseline eligible.
+The normal all-target suite passed 587 Rust tests with 22 opt-ins ignored. The
+additional production test passed all five two-bus comparisons and selected
+the louder delay while preserving the quiet return and guitar send. All 177
+normal Python tests passed. Historical auditions and hardware checks were skipped.
+
+### Individual performance send decisions, 2026-11-18
+
+The offline solver now compares a cut to one declared performance with the
+existing joint role proposals. It retains the frozen one-sided engineering
+ceiling and contextual protections. The four existing component-pair
+measurements support the coherent role prediction when only one performance
+changes. Linked channels retain their relative send levels and an override on
+another performance can stay in force while the selected singer moves.
+The owning guide documents the finite search and evidence fields.
+
+Validation passed on Rust 1.97.1 with 587 normal tests across 78 targets
+and 22 opt-ins ignored. All 176 normal Python tests passed, along with Clippy,
+formatting and whitespace checks. The production regression
+`individual_wet_send_replays_with_locked_backing_peer` accepted a cut on the
+second backing singer with the lead and first backing singer locked, with
+prediction error below 0.01 dB through the shared delay. Historical replays,
+auditions and hardware were skipped. Cleanup reclaimed 6,217,990,144 bytes
+of test executables.
+
+Separate bus choices need per-bus attributed components and their interactions.
+Relative room/double changes still need an independent objective and suitable
+capture evidence. Unseen musical qualification remains open.
+
+### Direct/return wetness continuation, 2026-11-17
+
+Continued **the existing five-file uncommitted batch on `b3d200c`**, preserving
+its contextual singer capabilities. The [owning guide](../guides/BALANCE_PASS.md#measured-vocal-wetness-decisions)
+defines the objective frozen before evaluation, schema, search and limits.
+
+- [x] Separate excited direct and coherent attributed return observations for
+  channels and role groups, with four direct/return component sums per requested
+  vocal pair. Matching Hann windows, native timeline, continuous production FX
+  history and feature budgets remain enforced. Legacy dry serialization remains
+  compatible. No parallel FX implementation or new dependency.
+- [x] Explicit `wetness` mode with the one-sided −10 dB return/direct engineering
+  ceiling in both existing vocal bands. No automatic wet boost, per-song target,
+  audition calibration, singer-count energy allocation or broader capture claim.
+  Separate send provenance and overrides are required; direct absence refuses.
+- [x] Complete bounded joint send search (169 candidates maximum), including
+  signed direct/wet and inter-singer interactions. Linked captures and all bus
+  send relationships stay fixed within each role. Training protects every
+  contextual singer, lineup/state, role and combined ceiling; held-out evidence
+  can veto but never refit. Smaller supported cuts remain actionable when a
+  stronger cut conflicts with contribution. Unresolved/no-change is explicit.
+- [x] Bounded send-only replay permission under audited linear FX attribution;
+  source/settings identity, engine/topology/return invariance, actual direct/wet
+  scaling and coherent pair predictions, unchanged eligibility/accompaniment,
+  composition and full tails remain acceptance gates. Rejections retain baseline
+  controls and provenance, with compact proposed/actual evidence.
+- [ ] Unseen musical qualification of the wetness and contextual hypotheses;
+  general voice/bleed recognition; relative room/double and separate return-type
+  decisions; tone/dynamics actions and broader band policy. Shared nonlinear
+  returns, live integration and physical qualification remain separate blockers.
+
+Reassessment after separate measurements: power of direct+wet cannot identify
+wetness or predict return attenuation; signed component pairs are necessary.
+Reassessment after objective implementation: a wetness-only maximum cut can
+regress contribution, so the batch continued through complete coherent joint
+prediction and protected training selection. Reassessment after supported
+selection: remaining room/double, perceptual wetness and nonlinear attribution
+work needs distinct objectives/evidence; synthetic electrical checks cannot
+establish those musical/capture claims.
+
+Validation: **586 normal default-feature Rust tests passed, 22 opt-ins ignored
+across 78 executables; 175 normal Python tests passed**. Twelve focused wetness
+cases cover bounded/minimal cuts, protected smaller joint choices, no wet boosts,
+linked captures and overrides, direct absence, incomplete/policy/control replay,
+held-out veto without refit, component-pair bounds, scale invariance, send floor,
+signed cancellation and CLI rejection without replay. The final focused 12-case
+run also covers the reviewed incomplete-replay error path.
+
+Production evidence: the new send-decision replay accepted bounded cuts while
+preserving direct faders and accompaniment sends, with <0.01 dB prediction error,
+composition and full tails passing. Extended existing three-engine coverage
+verified unchanged direct taps and scaled return/component pairs through delay,
+reverb and chorus, including cancellation. Existing solo/contextual singer,
+linked-capture, activity/classifier/state and tail replays passed unchanged.
+
+The complete normal Rust pass initially stopped on the new fixture's invalid
+10 ms delay (existing minimum: 20 ms). Corrected the fixture to 20 ms and four
+seconds, enough for five complete FFT windows in each split; no objective or
+production limit was relaxed. Only that regression was rerun (passed); the 53
+previously unrun integration targets and three example test targets then passed.
+Existing slow replays ran once. Python discovery ran once, followed only by the
+focused recheck after the incomplete-evidence error-path correction.
+
+Commands: `cargo +1.97.1 test --locked -j1 --all-targets -- --test-threads=1`,
+focused `--test ensemble vocal_wetness_send_decision_replays_direct_returns_and_shared_bus`,
+and `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py'`;
+the final focused command was `python3 scripts/test_vocal_balance.py WetnessTests`
+with bytecode disabled. Rust commands used the shared nonblocking build lock,
+`CARGO_INCREMENTAL=0`, one build job and the normal target. Historical research,
+auditions, exhaustive matrices and the optional hardware-host matrix were
+intentionally skipped. No musical or physical qualification follows.
+
+Warnings-denied all-target Clippy, formatting and whitespace checks passed.
+After live Git/process inspection and nonblocking build-lock, resolved-path,
+single-link, runtime-alias and `fuser` reference checks, removed 78 task-built test
+executables and six temporary logs: **6,218,080,256 allocated bytes reclaimed**.
+The required analyzer and existing shared build output remain
+(**19,777,892,352 bytes**, about 18.4 GiB), with **26,808,983,552 bytes** free
+(about 25.0 GiB). No rebuild followed cleanup. Retained only implementation,
+production regressions and updates to this card and the owning guide.
+
+The eight modified files remain unstaged on `b3d200c`; all pre-existing work is
+preserved. No agents, worktrees, staging, commits, pushes, publication or hardware
+activity. GP-AUTO-ENSEMBLE remains open for the explicit blockers above.
+
+### Contextual offline vocal decision batch, 2026-11-17
+
+Continued from `b3d200c` with a clean canonical checkout. Implemented explicit
+`decision_mode: "contextual"` (`contextual-vocal-contribution-v1`) for independent
+singer gains without solo anchors. The [owning guide](../guides/BALANCE_PASS.md#contextual-singer-decisions-without-solo-anchors)
+defines the frozen objective, evidence, finite search and limits.
+
+- [x] Coherent competitor decisions: reconstruct each singer's other-vocal sum
+  from measured singer powers and signed pair terms; compare against the larger
+  of that sum and the accompaniment/pink denominator. Reuse the −4..−2 dB interval
+  as an explicit new contextual engineering hypothesis, with ensemble loss plus
+  mean singer loss. No singer-count energy allocation, audition calibration,
+  unmeasured accompaniment covariance or broader capture assumptions.
+- [x] Independent overlap-only redistribution with linked alternate/double
+  captures and overrides, preserving both vocal-role objectives and the combined
+  ceiling. Missing solos do not silently switch modes.
+- [x] Selective supported actions: freeze a singer whose training spread or
+  contribution/articulation conflict makes gain correction unsupported; continue
+  other singers only under all original and individual-context protections.
+  Retain actionability and unresolved objectives. Missing capture evidence still
+  refuses rather than becoming an implicit zero or a partial unsupported boost.
+- [x] Production acceptance: actual contextual loss and every coherent singer
+  pair participate in replay, as do singer/lineup/direct-state contexts, held-out
+  vetoes, unchanged eligibility/accompaniment, composition and continuous FX tails.
+- [ ] Independent unseen capture and musical qualification of both singer modes.
+- [ ] General singing/bleed recognition; separate direct/return measurements and
+  a wetness objective; room/relative-double balance, tone/dynamics correction and
+  broader-band decisions. Live and physical acceptance remain separate scopes.
+
+Reassessment after contextual decisions: the existing complete vocal pair
+observations support a competitor proxy without solo captures, but do not prove
+masking or musical suitability. Reassessment after selective action: one singer's
+unsupported gain hypothesis need not block independently justified actions, but
+all affected singers' losses must remain protected. Reassessment after replay:
+role sums can hide opposite pair errors, so individual pair reconstruction is
+necessary for contextual denominators. Current direct+return measurements do not
+separate wetness; general recognition cannot be inferred from power spectra.
+Further work on those capabilities needs their own evidence/objective contract.
+
+Validation: **584 normal Rust tests passed, 22 opt-ins ignored across 78
+executables; 163 normal Python tests passed**. Eleven new focused Python cases
+cover overlap-only independent redistribution, coherent cancelling/reinforcing
+competitors, linked captures/overrides, balanced no-change, local tone refusal
+with supported other-singer action, level invariance, bounds, missing evidence,
+held-out veto without refit, individual lineup/state protection and replay
+policy/pair tampering. The new production FX replay accepted overlap-only backing
+redistribution, preserved linked signed-cancelling captures, matched predictions
+within 0.01 dB and passed composition checks. The existing solo-anchored replay
+also passed. Synthetic evidence establishes mechanics, not musical qualification.
+
+Fast focused checks ran during implementation. Both complete normal suites ran
+once at the end; slow replays ran only there, with no failures or reruns. Commands
+are the locked Rust 1.97.1 all-target/test-threads1 and Python discovery commands
+in the adjacent solo-anchored batch record, using the shared build lock, one Cargo
+job and
+`CARGO_INCREMENTAL=0`. Historical/audition/exhaustive opt-ins and the optional
+hardware-host matrix were intentionally skipped. No dependency, DSP, hardware,
+publication or capture-assumption expansion.
+
+All-target warnings-denied Clippy, formatting and whitespace checks passed.
+After checking live Git state, idle processes/locks, resolved single-link paths
+and `fuser` references under the shared build lock, removed 78 task-created test
+executables and the five temporary validation/inventory files:
+**6,205,841,408 allocated bytes reclaimed**. The required analyzer and existing
+shared build output remain (**19,776,806,912 bytes**, about 18.4 GiB), with
+**26,816,770,048 bytes** free (about 25.0 GiB). No rebuild followed cleanup.
+Retained deliverables are the existing vocal consumer/tests, production regression,
+this card and the owning guide. The five modified files remain unstaged on
+`b3d200c`; no agents, worktrees, staging, commits, pushes, publication or hardware
+activity. GP-AUTO-ENSEMBLE remains open for the explicit blockers above.
 
 ### Independent offline vocal decision batch, 2026-11-17
 

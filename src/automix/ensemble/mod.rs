@@ -293,7 +293,11 @@ pub fn freeze(s: &Session, root: &Path, request: &Request) -> Result<Frozen> {
     }
     let records = end
         .div_ceil(measure::FFT_FRAMES as u64)
-        .checked_mul(6)
+        .checked_mul(if request.vocal_fx_attribution && s.effects.is_some() {
+            8
+        } else {
+            6
+        })
         .and_then(|n| n.checked_add((end * 100).div_ceil(u64::from(s.sample_rate))))
         .and_then(|n| {
             n.checked_mul(
@@ -309,7 +313,12 @@ pub fn freeze(s: &Session, root: &Path, request: &Request) -> Result<Frozen> {
         .and_then(|n| {
             n.checked_add(
                 end.div_ceil(measure::FFT_FRAMES as u64)
-                    .checked_mul(request.observation_pairs.len() as u64)?,
+                    .checked_mul(request.observation_pairs.len() as u64)?
+                    .checked_mul(if request.vocal_fx_attribution && s.effects.is_some() {
+                        5
+                    } else {
+                        1
+                    })?,
             )
         })
         .ok_or("feature budget overflow")?;

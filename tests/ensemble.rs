@@ -2004,6 +2004,7 @@ fn vocal_fx_sum_matches_full_context_production_bus_with_cancellation() {
     }
     let request = Request {
         vocal_fx_attribution: true,
+        observation_pairs: vec![[0, 1], [0, 2], [1, 2]],
         observation_groups: vec![ensemble::ObservationGroup {
             name: "all".into(),
             channels: vec![0, 1, 2],
@@ -2031,6 +2032,76 @@ fn vocal_fx_sum_matches_full_context_production_bus_with_cancellation() {
         (10. * power.log10() + s.master_db - actual).abs() < 0.001,
         "{actual} vs {power}"
     );
+    // Independent send attenuation across the three production FX engines.
+    // Direct taps stay fixed; each source return scales, including tail history.
+    let mut reduced = s.clone();
+    let deltas = [-3., -6., 0.];
+    for bus in &mut reduced.effects.as_mut().unwrap().buses {
+        for send in &mut bus.sends {
+            send.db += deltas[send.channel];
+        }
+    }
+    let f_reduced = ensemble::freeze(&reduced, &dir.0, &request).unwrap();
+    let attenuated = ensemble::measure::measure(&reduced, &dir.0, &request, &f_reduced).unwrap();
+    for (old, new) in m
+        .windows
+        .iter()
+        .zip(&attenuated.windows)
+        .filter(|(w, _)| w.channel < 3)
+    {
+        let a = old.vocal_components.as_ref().unwrap();
+        let b = new.vocal_components.as_ref().unwrap();
+        let gain = 10_f64.powf(deltas[old.channel] / 20.);
+        for band in 0..a.direct.band_power.len() {
+            let direct = a.direct.band_power[band].unwrap();
+            let wet = a.wet.band_power[band].unwrap();
+            let total = old.stages[4].band_power[band].unwrap();
+            let cross = total - direct - wet;
+            assert_eq!(a.direct.band_power[band], b.direct.band_power[band]);
+            let expected = (direct + gain * gain * wet + gain * cross).max(0.);
+            let actual = new.stages[4].band_power[band].unwrap();
+            if expected.max(actual) > 1e-12 {
+                assert!((10. * (expected / actual).log10()).abs() < 0.01);
+            }
+        }
+        assert_eq!(
+            old.vocal_component_pairs.len(),
+            new.vocal_component_pairs.len()
+        );
+        for ((other, components), (_, actual)) in old
+            .vocal_component_pairs
+            .iter()
+            .zip(&new.vocal_component_pairs)
+        {
+            let peer = m
+                .windows
+                .iter()
+                .find(|w| w.start == old.start && w.channel == *other)
+                .unwrap();
+            let peer = peer.vocal_components.as_ref().unwrap();
+            let peer_gain = 10_f64.powf(deltas[*other] / 20.);
+            for (index, (left, right, ga, gb)) in [
+                (&a.direct, &peer.direct, 1., 1.),
+                (&a.direct, &peer.wet, 1., peer_gain),
+                (&a.wet, &peer.direct, gain, 1.),
+                (&a.wet, &peer.wet, gain, peer_gain),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                for band in 0..left.band_power.len() {
+                    let x = left.band_power[band].unwrap();
+                    let y = right.band_power[band].unwrap();
+                    let cross = components[index][band].unwrap() - x - y;
+                    let expected = (ga * ga * x + gb * gb * y + ga * gb * cross).max(0.);
+                    let measured = actual[index][band].unwrap();
+                    if expected.max(measured) > 1e-12 {
+                        assert!((10. * (expected / measured).log10()).abs() < 0.01);
+                    }
+                }
+            }
+        }
+    }
     // Nonlinear excitation is visible even when the opposite fundamentals cancel.
     s.effects.as_mut().unwrap().exciter_amount = 0.;
     let f = ensemble::freeze(&s, &dir.0, &request).unwrap();
@@ -2139,10 +2210,20 @@ fn vocal_pair_measurements_preserve_signed_power_and_charge_budget() {
 
 #[test]
 fn vocal_independent_singers_and_linked_captures_replay_with_fx() {
+    vocal_singer_replay(false);
+}
+
+#[test]
+fn vocal_contextual_singers_without_solo_anchors_replay_with_fx() {
+    vocal_singer_replay(true);
+}
+
+fn vocal_singer_replay(contextual: bool) {
     let dir = Scratch::new("vocal-singer-replay");
     let mut s = fixture(&dir, 5);
     let window = ensemble::measure::FFT_FRAMES;
-    let frames = 30 * window;
+    let split_windows = if contextual { 5 } else { 15 };
+    let frames = 2 * split_windows * window;
     for (index, c) in s.channels.iter_mut().enumerate() {
         c.hpf_hz = 0.;
         c.eq.clear();
@@ -2170,11 +2251,12 @@ fn vocal_independent_singers_and_linked_captures_replay_with_fx() {
         for frame in 0..frames {
             noise = noise.wrapping_mul(6364136223846793005).wrapping_add(1);
             let context = (frame / window % 15) / 5;
-            let active = match index {
-                1 | 3 => context != 1,
-                2 => context != 0,
-                _ => true,
-            };
+            let active = contextual
+                || match index {
+                    1 | 3 => context != 1,
+                    2 => context != 0,
+                    _ => true,
+                };
             let x = if active {
                 ((noise >> 32) as u32 as f64 / u32::MAX as f64 - 0.5) * 0.02
             } else {
@@ -2216,8 +2298,8 @@ fn vocal_independent_singers_and_linked_captures_replay_with_fx() {
             "singer":singer,"channels":channels,"capture":capture,"confidence":0.9,"spans":[[0,frames]]
         })
     };
-    let capture = serde_json::json!({"decision_mode":"solo_anchored","frozen_id":state["frozen"]["id"],
-        "training_end_frame":15*window,"provenance":["inherited","preset","preset","inherited","preset"],
+    let capture = serde_json::json!({"decision_mode":if contextual {"contextual"} else {"solo_anchored"},"frozen_id":state["frozen"]["id"],
+        "training_end_frame":split_windows*window,"provenance":["inherited","preset","preset","inherited","preset"],
         "groups":{
             "lead":{"channels":[0],"observation":0,"performances":[performance("lead",vec![0],"direct")]},
             "backing":{"channels":[1,2,3],"observation":"backs","performances":[
@@ -2255,4 +2337,267 @@ fn vocal_independent_singers_and_linked_captures_replay_with_fx() {
     assert!(delta(1) > 0.);
     assert!(delta(2) < 0.);
     assert_eq!(delta(1), delta(3));
+    if contextual {
+        assert_eq!(
+            report["singer_policy"]["version"],
+            "contextual-vocal-contribution-v1"
+        );
+        assert!(
+            report["windows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|w| w["solo"][1] == false && w["solo"][2] == false)
+        );
+        assert!(report["metrics_resulting"]["training"]["singers"].is_array());
+    }
+}
+
+#[test]
+fn vocal_wetness_send_decision_replays_direct_returns_and_shared_bus() {
+    replay_wetness_decision(false, false);
+}
+
+#[test]
+fn individual_wet_send_replays_with_locked_backing_peer() {
+    replay_wetness_decision(true, false);
+}
+
+#[test]
+fn separate_bus_wetness_replays_both_returns() {
+    replay_wetness_decision(false, true);
+}
+
+fn replay_wetness_decision(individual: bool, separate_bus: bool) {
+    use gigpies::automix::effects::{self, Effect, Send};
+    let dir = Scratch::new("vocal-wetness");
+    let mut s = fixture(&dir, if individual { 4 } else { 3 });
+    for (i, c) in s.channels.iter_mut().enumerate() {
+        let mut w = hound::WavWriter::create(
+            dir.0.join(&c.file),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48000,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        let mut random = 17_u32;
+        for _ in 0..192000 {
+            random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+            w.write_sample(((random as f64 / u32::MAX as f64 - 0.5) * 0.1) as f32)
+                .unwrap();
+        }
+        w.finalize().unwrap();
+        c.hpf_hz = 0.;
+        c.eq.clear();
+        c.compressor.ratio = 1.;
+        c.compressor.makeup_db = 0.;
+        c.fader_db = if individual && i == 2 { 6. } else { 0. };
+        c.pan = 0.;
+        c.role = match i {
+            0 => config::Role::LeadVocal,
+            1 => config::Role::BackingVocal,
+            2 if individual => config::Role::BackingVocal,
+            _ => config::Role::RhythmGuitar,
+        };
+    }
+    effects::add_pass(&mut s).unwrap();
+    let fx = s.effects.as_mut().unwrap();
+    fx.exciter_amount = 0.;
+    fx.tail_seconds = 0.5;
+    fx.buses.retain(|b| b.name == "vocal_delay");
+    assert_eq!(fx.buses.len(), 1);
+    let bus = &mut fx.buses[0];
+    bus.return_db = 0.;
+    bus.hpf_hz = 20.;
+    bus.lowpass_hz = 20000.;
+    bus.sends = (0..s.channels.len())
+        .map(|channel| Send {
+            channel,
+            db: if channel == s.channels.len() - 1 {
+                -30.
+            } else {
+                0.
+            },
+        })
+        .collect();
+    if let Effect::Delay(delay) = &mut bus.effect {
+        delay.left_ms = 20.;
+        delay.right_ms = 20.;
+        delay.feedback = 0.;
+        delay.damping = 0.;
+    } else {
+        panic!("delay fixture");
+    }
+    if separate_bus {
+        let mut quiet = bus.clone();
+        quiet.name = "quiet_echo".into();
+        quiet.return_db = -42.;
+        fx.buses.push(quiet);
+    }
+    let request = Request {
+        vocal_fx_attribution: true,
+        observation_groups: if individual {
+            vec![ensemble::ObservationGroup {
+                name: "backs".into(),
+                channels: vec![1, 2],
+            }]
+        } else {
+            vec![]
+        },
+        observation_pairs: if individual {
+            vec![[0, 1], [1, 2], [0, 2]]
+        } else {
+            vec![[0, 1]]
+        },
+        ..Default::default()
+    };
+    let analysis = dir.0.join("analysis");
+    ensemble::workflow::analyze(s.clone(), &dir.0, &analysis, request).unwrap();
+    let state: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(analysis.join("state.json")).unwrap()).unwrap();
+    let mut capture = serde_json::json!({
+        "frozen_id": state["frozen"]["id"], "training_end_frame": 98304,
+        "decision_mode": "wetness", "provenance": ["inherited","inherited","preset"],
+        "wetness_provenance": ["inherited","inherited","preset"],
+        "groups": {
+            "lead": {"channels":[0],"observation":0,"performances":[{"singer":"lead","channels":[0],"capture":"direct","confidence":0.9,"spans":[[0,192000]]}]},
+            "backing": {"channels":[1],"observation":1,"performances":[{"singer":"back","channels":[1],"capture":"direct","confidence":0.9,"spans":[[0,192000]]}]},
+            "accompaniment": {"channels":[2],"observation":2}
+        }
+    });
+    if separate_bus {
+        capture["decision_mode"] = serde_json::json!("bus_wetness");
+    }
+    if individual {
+        capture["provenance"] =
+            serde_json::json!(["inherited", "inherited", "inherited", "preset"]);
+        capture["wetness_provenance"] = serde_json::json!([
+            "operator_override",
+            "operator_override",
+            "inherited",
+            "preset"
+        ]);
+        capture["groups"]["accompaniment"] = serde_json::json!({"channels":[3],"observation":3});
+        capture["groups"]["backing"] = serde_json::json!({"channels":[1,2],"observation":"backs","performances":[
+            {"singer":"back","channels":[1],"capture":"direct","confidence":0.9,"spans":[[0,192000]]},
+            {"singer":"second","channels":[2],"capture":"direct","confidence":0.9,"spans":[[0,192000]]}]});
+    }
+    let capture_path = dir.0.join("capture.json");
+    std::fs::write(&capture_path, serde_json::to_vec(&capture).unwrap()).unwrap();
+    let out = dir.0.join("decision");
+    let output = std::process::Command::new("python3")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .args(["scripts/vocal_balance.py"])
+        .arg(&analysis)
+        .arg(&capture_path)
+        .arg(&out)
+        .arg("--source")
+        .arg(&dir.0)
+        .arg("--analyzer")
+        .arg(env!("CARGO_BIN_EXE_gigpies"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let decision: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(out.join("decision.json")).unwrap()).unwrap();
+    assert_eq!(decision["accepted"], true, "{decision}");
+    if separate_bus {
+        assert_eq!(decision["bus_action"]["bus"], "vocal_delay");
+        assert_eq!(decision["bus_trials"].as_array().unwrap().len(), 5);
+        let candidate: config::Session =
+            serde_json::from_slice(&std::fs::read(out.join("settings.json")).unwrap()).unwrap();
+        let candidate_fx = candidate.effects.unwrap();
+        let original = s.effects.unwrap();
+        assert_eq!(
+            serde_json::to_value(&candidate_fx.buses[1]).unwrap(),
+            serde_json::to_value(&original.buses[1]).unwrap()
+        );
+        assert_eq!(candidate_fx.buses[0].sends[2].db, -30.);
+        assert!(candidate_fx.buses[0].sends[0].db < 0.);
+        return;
+    }
+    if individual {
+        assert_eq!(
+            decision["wet_individual"]["channels"],
+            serde_json::json!([2]),
+            "{decision}"
+        );
+        assert!(decision["wet_individual"]["delta"].as_f64().unwrap() < 0.);
+    } else {
+        assert_eq!(decision["wet_deltas_db"], serde_json::json!([-6., -6.]));
+    }
+    assert!(decision["prediction_error_db"].as_f64().unwrap() < 0.01);
+    let candidate: config::Session =
+        serde_json::from_slice(&std::fs::read(out.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(candidate.channels[0].fader_db, s.channels[0].fader_db);
+    assert_eq!(
+        candidate.effects.unwrap().buses[0].sends.last().unwrap().db,
+        -30.
+    );
+}
+
+#[test]
+fn vocal_send_replay_rejects_topology_boost_and_unattributed_changes() {
+    let dir = Scratch::new("vocal-send-boundaries");
+    let mut s = fixture(&dir, 3);
+    s.channels[0].role = config::Role::LeadVocal;
+    gigpies::automix::effects::add_pass(&mut s).unwrap();
+    for attributed in [false, true] {
+        let request = Request {
+            vocal_fx_attribution: attributed,
+            ..Default::default()
+        };
+        let state = ensemble::workflow::State {
+            frozen: ensemble::freeze(&s, &dir.0, &request).unwrap(),
+            baseline: s.clone(),
+            request,
+        };
+        for fault in [
+            "boost", "cut", "return", "topology", "engine", "exciter", "tail",
+        ] {
+            let mut candidate = s.clone();
+            let fx = candidate.effects.as_mut().unwrap();
+            let bus = fx.buses.iter_mut().find(|b| !b.sends.is_empty()).unwrap();
+            match fault {
+                "boost" => bus.sends[0].db += 0.5,
+                "cut" => bus.sends[0].db -= 6.5,
+                "return" => bus.return_db -= 1.,
+                "topology" => bus.sends.clear(),
+                "engine" => bus.hpf_hz += 1.,
+                "exciter" => fx.exciter_amount *= 0.5,
+                "tail" => fx.tail_seconds += 1.,
+                _ => unreachable!(),
+            }
+            let out = dir.0.join("replay");
+            assert!(
+                ensemble::workflow::remeasure(state.clone(), candidate, &dir.0, &out).is_err(),
+                "{attributed} {fault}"
+            );
+            assert!(!out.exists());
+        }
+        if !attributed {
+            let mut candidate = s.clone();
+            candidate
+                .effects
+                .as_mut()
+                .unwrap()
+                .buses
+                .iter_mut()
+                .find(|b| !b.sends.is_empty())
+                .unwrap()
+                .sends[0]
+                .db -= 1.;
+            assert!(
+                ensemble::workflow::remeasure(state, candidate, &dir.0, &dir.0.join("replay"))
+                    .is_err()
+            );
+        }
+    }
 }

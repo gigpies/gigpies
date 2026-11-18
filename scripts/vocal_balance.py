@@ -34,6 +34,9 @@ STATE_CONTEXT = dict(version='vocal-state-protection-v1', training_tolerance=1e-
                      held_out_tolerance=0.05, replay_tolerance=1e-6)
 SOLO = dict(version='solo-anchored-vocal-v1', maximum_singers=8, maximum_passes=12,
             reconstruction_tolerance_db=.01, anchor='sole eligible singer in own role group')
+CONTEXTUAL = dict(version='contextual-vocal-contribution-v1', maximum_singers=8, maximum_passes=12,
+    reconstruction_tolerance_db=.01, competitor='max(accompaniment pink floor, coherent other singers)',
+    ratio_db=[-4., -2.], ranges_hz=[[120., 5000.], [1600., 5000.]])
 KINDS = {'inherited', 'preset', 'measured_calibration', 'operator_override', 'solver_selected'}
 NAMES = ('lead', 'backing', 'accompaniment')
 STAGE = 'routed_before_excitation_fx_master'
@@ -421,7 +424,9 @@ def state_regressions(after, before, tolerance):
 
 def calculate(state, metadata, windows, capture, measure_only=False):
     mode = capture.get('decision_mode', 'common')
-    if mode == 'solo_anchored':
+    if mode in ('wetness', 'bus_wetness'):
+        return calculate_wetness(state, metadata, windows, capture, measure_only or mode == 'bus_wetness')
+    if mode in ('solo_anchored', 'contextual'):
         return calculate_singers(state, metadata, windows, capture, measure_only)
     if mode != 'common':
         raise ValueError('unsupported vocal decision mode')
@@ -703,7 +708,60 @@ def singer_windows(windows, units, deltas):
     return output
 
 
-def singer_metrics(deltas, windows, units):
+def contextual_metrics(deltas, windows, units):
+    """Measured contribution against competing vocals; no per-singer allocation.
+
+    The two competitors are compared with max, not summed: no unmeasured
+    vocal/accompaniment covariance is inferred. Other vocals use signed pairs.
+    Eligibility remains the complete reviewed role-group contract.
+    """
+    result = metrics((0., 0.), singer_windows(windows, units, deltas))
+    factors = [10**(d/20) for d in deltas]
+    observations = [[] for _ in units]
+    contexts = {}
+    for e in windows:
+        for i, unit in enumerate(units):
+            if not (e['active'][unit['group']] and
+                    set(unit['channels']) & set(e['lineup'][unit['group']])):
+                continue
+            power = [v*factors[i]**2 for v in e['singer_power'][i]]
+            other = [sum(p[b]*factors[j]**2 for j,p in enumerate(e['singer_power']) if j != i)
+                + sum(xy[b]*factors[a]*factors[z] for a,z,xy in e['singer_cross'] if i not in (a,z))
+                for b in range(2)]
+            if min(power) <= 1e-18 or min(other) < -1e-12:
+                raise ValueError('unsupported contextual singer contribution/cancellation')
+            denominator = [max(e['denominator'][b], other[b]) for b in range(2)]
+            ratios = [db(p)-db(d) for p,d in zip(power, denominator)]
+            loss = sum(max(CONTEXTUAL['ratio_db'][0]-v, 0., v-CONTEXTUAL['ratio_db'][1])**2
+                       for v in ratios)/2
+            observation = dict(start=e['start'], frames=e['frames'], power=power,
+                               other_vocal_power=other, denominator=denominator, ratios_db=ratios, loss=loss)
+            observations[i].append(observation)
+            # Protect each observed singer/lineup and direct-state support, not
+            # just aggregate role losses. Short contexts still get protection.
+            keys = [json.dumps([i,e['lineup']], separators=(',', ':'))]
+            keys += [json.dumps([i,e['lineup'],c,state], separators=(',', ':'))
+                     for c,states in e['state_support'][unit['group']] if c in unit['channels'] for state in states]
+            for key in keys:
+                total, frames = contexts.get(key, (0., 0))
+                contexts[key] = (total+loss*e['frames'], frames+e['frames'])
+    singers = []
+    for rows in observations:
+        frames = sum(r['frames'] for r in rows)
+        singers.append(dict(windows=len(rows), frames=frames,
+            loss=sum(r['loss']*r['frames'] for r in rows)/frames if frames else None,
+            ratios_db=[dict(p10=percentile([(r['ratios_db'][b],r['frames']) for r in rows], .1),
+                            p50=percentile([(r['ratios_db'][b],r['frames']) for r in rows], .5),
+                            p90=percentile([(r['ratios_db'][b],r['frames']) for r in rows], .9))
+                       for b in range(2)] if rows else []))
+    result.update(singers=singers, singer_context_losses={k:v/n for k,(v,n) in sorted(contexts.items())},
+        decision_loss=result['loss']+sum(r['loss'] or 0. for r in singers)/len(units))
+    return result
+
+
+def singer_metrics(deltas, windows, units, contextual=False):
+    if contextual:
+        return contextual_metrics(deltas, windows, units)
     result = metrics((0., 0.), singer_windows(windows, units, deltas))
     anchors = []
     for i, unit in enumerate(units):
@@ -723,9 +781,15 @@ def singer_metrics(deltas, windows, units):
 
 def singer_regressions(after, before, tolerance):
     failures = []
+    key = 'singers' if 'singers' in before else 'anchors'
     if any(a['loss'] is None or a['loss'] > b['loss']+tolerance
-           for a, b in zip(after['anchors'], before['anchors']) if b['loss'] is not None):
-        failures.append('solo anchor loss regression')
+           for a, b in zip(after[key], before[key]) if b['loss'] is not None):
+        failures.append('contextual singer loss regression' if key == 'singers' else 'solo anchor loss regression')
+    if any(after.get('singer_context_losses', {}).get(k, math.inf) > v+tolerance
+           for k,v in before.get('singer_context_losses', {}).items()):
+        failures.append('individual singer lineup/state loss regression')
+    if after['decision_loss'] > before['decision_loss']+tolerance:
+        failures.append('decision loss regression')
     if any(a > b+tolerance for a, b in zip(after['group_loss'], before['group_loss'])):
         failures.append('ensemble loss regression')
     if context_regressions(after, before, tolerance) or state_regressions(after, before, tolerance):
@@ -738,13 +802,15 @@ def singer_regressions(after, before, tolerance):
 
 
 def calculate_singers(state, metadata, windows, capture, measure_only=False):
+    contextual = capture['decision_mode'] == 'contextual'
+    singer_policy = CONTEXTUAL if contextual else SOLO
     # Reuse exactly the existing capture eligibility, classifier and FX contract.
     common = dict(capture, decision_mode='common')
     units = singer_units(capture)
     channels = sorted(c for u in units for c in u['channels'])
     required = list(itertools.combinations(channels, 2))
     if any(list(pair) not in state['request'].get('observation_pairs', []) for pair in required):
-        raise ValueError('solo-anchored decisions require every routed vocal observation pair')
+        raise ValueError('independent decisions require every routed vocal observation pair')
     edges = metadata['band_edges_hz']
     bands = [[b for b, (lo, hi) in enumerate(zip(edges, edges[1:])) if lo >= a and hi <= z]
              for a, z in POLICY['ranges_hz']]
@@ -757,7 +823,7 @@ def calculate_singers(state, metadata, windows, capture, measure_only=False):
                     row['stages'][4]['band_power'], row.get('pair_sum_band_power', []))
             yield row
     result = calculate(state, metadata, trace(), common, measure_only=True)
-    result.update(evidence=copy.deepcopy(capture), singer_policy=copy.deepcopy(SOLO), units=units)
+    result.update(evidence=copy.deepcopy(capture), singer_policy=copy.deepcopy(singer_policy), units=units)
     result['decisions'] = []
     zero = (0.,)*len(units)
     def finish(deltas=zero):
@@ -771,7 +837,7 @@ def calculate_singers(state, metadata, windows, capture, measure_only=False):
                     proposed_db=old+deltas[i], delta_db=deltas[i], locked=unit['locked'],
                     provenance_before=capture['provenance'][c],
                     provenance_after='solver_selected' if deltas[i] else capture['provenance'][c],
-                    constraints=['linked singer captures', 'solo anchor', 'coherent ensemble protection']))
+                    constraints=['linked singer captures', 'contextual contribution' if contextual else 'solo anchor', 'coherent ensemble protection']))
         return result
     if result['reasons']:
         return finish()
@@ -814,28 +880,36 @@ def calculate_singers(state, metadata, windows, capture, measure_only=False):
     split = capture['training_end_frame']
     subsets = [[e for e in result['windows'] if e['start']+e['frames'] <= split],
                [e for e in result['windows'] if e['start'] >= split]]
-    before, held = [singer_metrics(zero, rows, units) for rows in subsets]
+    before, held = [singer_metrics(zero, rows, units, contextual) for rows in subsets]
     result.update(metrics_before=before, held_out_before=held)
     for label, m in zip(('training', 'held_out'), (before, held)):
-        for unit, anchor in zip(units, m['anchors']):
+        for unit, anchor in zip(units, m['singers' if contextual else 'anchors']):
             if (anchor['windows'] < POLICY['minimum_windows'] or
                     anchor['frames']/metadata['sample_rate'] < POLICY['minimum_seconds']):
-                result['reasons'].append(label+': insufficient solo anchor for '+unit['singer'])
+                result['reasons'].append(label+(': insufficient contextual coverage for ' if contextual else ': insufficient solo anchor for ')+unit['singer'])
     if result['reasons'] or measure_only:
         return finish()
-    for unit, anchor in zip(units, before['anchors']):
+    actionability = []
+    for unit, anchor in zip(units, before['singers' if contextual else 'anchors']):
         rs = anchor['ratios_db']
+        reasons = []
+        if unit['locked']:
+            reasons.append('operator override')
         if any(r['p90']-r['p10'] > POLICY['maximum_spread_db'] for r in rs):
-            result['reasons'].append(unit['singer']+': solo dynamics require separate review')
+            reasons.append('singer dynamics require separate review')
         if min(r['p50'] for r in rs) < POLICY['ratio_db'][0] and max(r['p50'] for r in rs) > POLICY['ratio_db'][1]:
-            result['reasons'].append(unit['singer']+': solo contribution/articulation conflict')
+            reasons.append('singer contribution/articulation conflict')
+        actionability.append(dict(singer=unit['singer'], gain_supported=not reasons, reasons=reasons))
+        if not contextual:
+            result['reasons'].extend(unit['singer']+': '+r for r in reasons if r != 'operator override')
+    result['actionability'] = actionability
     if result['reasons']:
         return finish()
     step = POLICY['step_db']
     steps = round(POLICY['max_delta_db']/step)
-    choices = [[d*step for d in range(-steps,steps+1) if (not u['locked'] or d == 0) and all(
+    choices = [[d*step for d in range(-steps,steps+1) if (actionability[i]['gain_supported'] or d == 0) and all(
         POLICY['fader_bounds_db'][0] <= state['baseline']['channels'][c]['fader_db']+d*step <= POLICY['fader_bounds_db'][1] for c in u['channels'])]
-        for u in units]
+        for i,u in enumerate(units)]
     best, best_metrics = zero, before
     evaluations = 0
     # Finite deterministic coordinate + paired-step descent. Paired steps allow
@@ -853,7 +927,7 @@ def calculate_singers(state, metadata, windows, capture, measure_only=False):
                     candidates.add(tuple(candidate))
         previous = best
         for deltas in sorted(candidates):
-            m = singer_metrics(deltas, subsets[0], units)
+            m = singer_metrics(deltas, subsets[0], units, contextual)
             evaluations += 1
             if singer_regressions(m, before, 1e-9):
                 continue
@@ -864,7 +938,7 @@ def calculate_singers(state, metadata, windows, capture, measure_only=False):
     result['search'] = dict(passes=iteration+1, evaluations=evaluations, global_optimum_claimed=False)
     if before['decision_loss']-best_metrics['decision_loss'] < POLICY['minimum_improvement']:
         best, best_metrics = zero, before
-    held_after = singer_metrics(best, subsets[1], units)
+    held_after = singer_metrics(best, subsets[1], units, contextual)
     result.update(proposed_deltas_db=best, metrics_predicted=best_metrics, held_out_proposed=held_after)
     failures = singer_regressions(held_after, held, POLICY['held_out_tolerance'])
     if failures:
@@ -874,9 +948,399 @@ def calculate_singers(state, metadata, windows, capture, measure_only=False):
     result['objective_met'] = all(m['decision_loss'] <= 1e-12 and all(
         v is None or v <= POLICY['combined_ceiling_db'] for v in m['combined_max_db'])
         for m in (best_metrics, held_after))
-    result['reasons'] = ['bounded solo-anchored improvement' if any(best) else
+    result['reasons'] = [('bounded contextual improvement' if contextual else 'bounded solo-anchored improvement') if any(best) else
                          'objective met' if result['objective_met'] else 'bounded search unresolved']
     return finish(best)
+
+
+# Frozen before evaluation: a one-sided electrical direct-dominance hypothesis.
+# No minimum wetness, fitted audition target, or singer-count allocation.
+WETNESS = dict(version='vocal-direct-dominance-v2', maximum_ratio_db=-10.,
+               ranges_hz=copy.deepcopy(POLICY['ranges_hz']), maximum_cut_db=6.,
+               step_db=.5, minimum_improvement=.05, prediction_tolerance_db=.01)
+
+
+def wet_metrics(rows, deltas):
+    losses, ratios, weights = [0., 0.], [[], []], [0, 0]
+    for row in rows:
+        i = row['group']
+        for direct, wet in zip(row['direct'], row['wet']):
+            ratio = db(wet)-db(direct)+deltas[i]
+            error = max(0., ratio-WETNESS['maximum_ratio_db'])
+            losses[i] += row['frames']*error**2
+            weights[i] += row['frames']
+            ratios[i].append((ratio, row['frames']))
+    return dict(group_loss=[a/b if b else None for a,b in zip(losses,weights)],
+                maximum_ratio_db=[max((r for r,_ in rs), default=None) for rs in ratios],
+                loss=sum(losses)/sum(weights) if sum(weights) else None)
+
+
+def wet_settings(baseline, capture, deltas, individual=None):
+    candidate = copy.deepcopy(baseline)
+    groups = capture['groups']
+    for bus in candidate['effects']['buses']:
+        for send in bus['sends']:
+            for i,name in enumerate(NAMES[:2]):
+                if send['channel'] in groups[name]['channels']:
+                    send['db'] += individual['delta'] if individual and send['channel'] in individual['channels'] else deltas[i]
+    return candidate
+
+
+
+def wet_predict(windows, units, deltas, individual=None):
+    groups = {c:u['group'] for u in units for c in u['channels']}
+    output = []
+    for e in windows:
+        basis = dict(e['wet_basis']['channels'])
+        gains = {c:10**((individual['delta'] if individual and c in individual['channels'] else deltas[groups[c]])/20) for c in basis}
+        power = {c:[max(0.,d+w*gains[c]**2+x*gains[c]) for d,w,x in zip(p['direct'],p['wet'],p['cross'])]
+                 for c,p in basis.items()}
+        xy = {(a,b):[dd+dw*gains[b]+wd*gains[a]+ww*gains[a]*gains[b]
+                     for dd,dw,wd,ww in zip(*terms)] for a,b,terms in e['wet_basis']['pairs']}
+        def cross(a,b): return xy[min(a,b),max(a,b)]
+        singer_power = [[sum(power[c][b] for c in u['channels'])+
+            sum(cross(a,c)[b] for a,c in itertools.combinations(u['channels'],2)) for b in range(2)] for u in units]
+        singer_cross = [[i,j,[sum(cross(a,c)[b] for a in units[i]['channels'] for c in units[j]['channels'])
+            for b in range(2)]] for i,j in itertools.combinations(range(len(units)),2)]
+        predicted = dict(e,singer_power=singer_power,singer_cross=singer_cross)
+        output.extend(singer_windows([predicted],units,[0.]*len(units)))
+    return output
+
+
+def unit_wet_rows(rows, windows, capture, individual):
+    """Scale signed component interactions before summing a coherent role."""
+    if not individual:
+        return rows
+    by_start = {(e['start'], e['frames']): e['wet_basis'] for e in windows}
+    moved = individual['channels']
+    gain = 10**(individual['delta']/20)
+    predicted = []
+    for row in rows:
+        basis = by_start[row['start'],row['frames']]
+        channels = dict(basis['channels'])
+        c = row['channel']
+        role = capture['groups'][NAMES[row['group']]]['channels']
+        members = [c] if c in channels else role
+        if not any(c in moved for c in members):
+            predicted.append(row)
+            continue
+        wet = [sum(channels[c]['wet'][b]*(gain**2 if c in moved else 1.) for c in members)
+               + sum(terms[3][b]*(gain if a in moved else 1.)*(gain if c in moved else 1.)
+                     for a,c,terms in basis['pairs'] if a in members and c in members)
+               for b in range(2)]
+        cross = [sum(channels[c]['cross'][b]*(gain if c in moved else 1.) for c in members)
+                 + sum(terms[1][b]*(gain if c in moved else 1.)
+                       + terms[2][b]*(gain if a in moved else 1.)
+                       for a,c,terms in basis['pairs'] if a in members and c in members)
+                 for b in range(2)]
+        predicted.append(dict(row,wet=[max(0.,v) for v in wet],cross=cross))
+    return predicted
+
+
+def wet_prediction_error(predicted, actual):
+    errors = []
+    for p,n in zip(predicted,actual):
+        for key in ('power','singer_power'):
+            errors.extend(abs(db(a)-db(b)) for pp,nn in zip(p[key],n[key]) for a,b in zip(pp,nn)
+                          if max(a,b) > 1e-18)
+        for (i,j,xy),(ni,nj,nxy) in zip(p['singer_cross'],n['singer_cross']):
+            if (i,j) != (ni,nj): return math.inf
+            for b in range(2):
+                a = p['singer_power'][i][b]+p['singer_power'][j][b]+xy[b]
+                v = n['singer_power'][i][b]+n['singer_power'][j][b]+nxy[b]
+                if max(a,v) > 1e-18: errors.append(abs(db(max(0.,a))-db(max(0.,v))))
+        for b in range(2):
+            a = sum(pp[b] for pp in p['power'])+p['cross'][b]
+            v = sum(pp[b] for pp in n['power'])+n['cross'][b]
+            if max(a,v) > 1e-18: errors.append(abs(db(max(0.,a))-db(max(0.,v))))
+    return max(errors,default=0.)
+
+def calculate_wetness(state, metadata, windows, capture, measure_only=False):
+    # The complete contextual observer protects individual singers, linked
+    # captures, signed pairs, lineups and state supports during actual replay.
+    observed = {}
+    def trace():
+        for row in windows:
+            components = row.get('vocal_components')
+            observed[(row['start'], row['frames'], row['channel'])] = (
+                dict({k: {'band_power': components[k]['band_power']} for k in ('direct','wet')},
+                     total={'band_power': row['stages'][4]['band_power']},
+                     pairs=row.get('vocal_component_pairs', []))
+                if components is not None else None)
+            yield row
+    result = calculate_singers(state, metadata, trace(), dict(capture, decision_mode='contextual'), True)
+    result.update(evidence=copy.deepcopy(capture), wetness_policy=copy.deepcopy(WETNESS),
+                  decisions=[], wet_windows=[], wet_deltas_db=[0., 0.], accepted=False,
+                  wetness_policy_sha256=hashlib.sha256(json.dumps(WETNESS,sort_keys=True).encode()).hexdigest())
+    result['limitations'].append('Wet/direct energy cap is an unqualified engineering hypothesis; no room/double rebalance or wet boost.')
+    if result['reasons']:
+        return result
+    if not state['baseline'].get('effects') or not state['request'].get('vocal_fx_attribution'):
+        result['reasons'] = ['wetness requires production attributed direct/return observations']
+        return result
+    # Separate send provenance is mandatory: fader provenance does not authorize FX.
+    provenance = capture.get('wetness_provenance')
+    n = len(state['baseline']['channels'])
+    if not isinstance(provenance, list) or len(provenance) != n or any(p not in KINDS for p in provenance):
+        raise ValueError('wetness requires explicit send provenance for every channel')
+    indices, _ = prepare(state, metadata, capture)
+    edges = metadata['band_edges_hz']
+    bands = [[b for b,(a,z) in enumerate(zip(edges, edges[1:])) if a >= lo and z <= hi]
+             for lo,hi in WETNESS['ranges_hz']]
+    for e in result['windows']:
+        for i,name in enumerate(NAMES[:2]):
+            if not e['active'][i]:
+                continue
+            # Coherent role sum plus each eligible direct capture. The latter
+            # prevents cancellation in a group return from hiding a wet source.
+            channels = sorted(set([indices[i]]+e['lineup'][i]))
+            for channel in channels:
+                components = observed.get((e['start'], e['frames'], channel))
+                if not isinstance(components, dict):
+                    result['reasons'] = ['missing separate direct/return measurement; regenerate analysis']
+                    return result
+                values = {}
+                for key in ('direct','wet','total'):
+                    p = components[key]['band_power']
+                    if len(p) != len(edges)-1 or any(not finite(x) or x < 0 for x in p):
+                        raise ValueError('invalid direct/return spectral power')
+                    values[key] = [sum(p[b] for b in bs) for bs in bands]
+                if min(values['direct']) <= 1e-18:
+                    result['reasons'] = ['eligible voice lacks direct energy; wet history is not direct voice']
+                    return result
+                values['cross'] = [t-d-w for t,d,w in zip(values['total'],values['direct'],values['wet'])]
+                if any(abs(x) > 2*math.sqrt(d*w)+1e-9*max(1e-20,t)
+                       for x,d,w,t in zip(values['cross'],values['direct'],values['wet'],values['total'])):
+                    raise ValueError('physically inconsistent direct/return interaction')
+                result['wet_windows'].append(dict(start=e['start'], frames=e['frames'],
+                    group=i, channel=channel, **values))
+    units = result['units']
+    vocal_channels = sorted(c for u in units for c in u['channels'])
+    for e in result['windows']:
+        raw = {c: observed[(e['start'],e['frames'],c)] for c in vocal_channels}
+        if any(r is None for r in raw.values()):
+            result['reasons'] = ['missing direct/return history for inactive linked captures']
+            return result
+        basis = {}
+        for c,r in raw.items():
+            values = {}
+            for key in ('direct','wet','total'):
+                p = r[key]['band_power']
+                if len(p) != len(edges)-1 or any(not finite(x) or x < 0 for x in p):
+                    raise ValueError('invalid direct/return history')
+                values[key] = [sum(p[b] for b in bs) for bs in bands]
+            values['cross'] = [t-d-w for t,d,w in zip(values['total'],values['direct'],values['wet'])]
+            if any(abs(x) > 2*math.sqrt(d*w)+1e-9*max(1e-20,d+w)
+                   for x,d,w in zip(values['cross'],values['direct'],values['wet'])):
+                raise ValueError('invalid direct/return history interaction')
+            basis[c] = values
+        pairs = []
+        for a,b in itertools.combinations(vocal_channels,2):
+            matches = [p for c,p in raw[a]['pairs'] if c == b]
+            if len(matches) != 1 or len(matches[0]) != 4:
+                result['reasons'] = ['missing coherent direct/return pairs; regenerate analysis']
+                return result
+            terms = []
+            for power,(left,right) in zip(matches[0],[('direct','direct'),('direct','wet'),('wet','direct'),('wet','wet')]):
+                if len(power) != len(edges)-1 or any(not finite(x) or x < 0 for x in power):
+                    raise ValueError('invalid component pair spectrum')
+                xy = [sum(power[k] for k in bs)-basis[a][left][i]-basis[b][right][i] for i,bs in enumerate(bands)]
+                if any(abs(x) > 2*math.sqrt(p*q)+1e-9*max(1e-20,p+q)
+                       for x,p,q in zip(xy,basis[a][left],basis[b][right])):
+                    raise ValueError('physically inconsistent component pair')
+                terms.append(xy)
+            pairs.append([a,b,terms])
+        # JSON round trips retain stable array identities, never integer dict keys.
+        e['wet_basis'] = dict(channels=[[c,basis[c]] for c in vocal_channels],pairs=pairs)
+    # Check the separately measured coherent role components against the full
+    # channel-pair basis, not merely the direct+wet total (which can hide errors).
+    group_rows = {(r['start'],r['frames'],r['group']):r for r in result['wet_windows']
+                  if r['channel'] == indices[r['group']]}
+    for e in result['windows']:
+        basis = dict(e['wet_basis']['channels'])
+        for i,name in enumerate(NAMES[:2]):
+            if not e['active'][i]:
+                continue
+            cs = capture['groups'][name]['channels']
+            group = group_rows[e['start'],e['frames'],i]
+            for key,term in [('direct',0),('wet',3)]:
+                expected = [sum(basis[c][key][b] for c in cs)+sum(terms[term][b]
+                    for a,c,terms in e['wet_basis']['pairs'] if a in cs and c in cs) for b in range(2)]
+                if any(v < -1e-12 or (max(v,p) > 1e-18 and abs(db(max(0.,v))-db(p)) > WETNESS['prediction_tolerance_db'])
+                       for v,p in zip(expected,group[key])):
+                    raise ValueError('direct/return group reconstruction mismatch')
+    reconstructed = wet_predict(result['windows'],units,[0.,0.])
+    if wet_prediction_error(reconstructed,result['windows']) > WETNESS['prediction_tolerance_db']:
+        raise ValueError('component reconstruction differs from coherent vocal observations')
+    observed.clear()
+    split = capture['training_end_frame']
+    train = [e for e in result['wet_windows'] if e['start']+e['frames'] <= split]
+    held = [e for e in result['wet_windows'] if e['start'] >= split]
+    result['wet_before'] = wet_metrics(train, [0.,0.])
+    result['wet_held_out_before'] = wet_metrics(held, [0.,0.])
+    if measure_only:
+        return result
+    choices = []
+    for i,name in enumerate(NAMES[:2]):
+        cs = capture['groups'][name]['channels']
+        locked = any(provenance[c] == 'operator_override' or capture['provenance'][c] == 'operator_override' for c in cs)
+        sends = [send for bus in state['baseline']['effects']['buses'] for send in bus['sends'] if send['channel'] in cs]
+        choices.append([0.] if locked or not sends else [-k*WETNESS['step_db'] for k in range(round(WETNESS['maximum_cut_db']/WETNESS['step_db'])+1)
+            if all(send['db']-k*WETNESS['step_db'] >= -60 for send in sends)])
+        result['decisions'].append(dict(group=name, send_delta_db=0., locked=locked,
+            channels=cs, provenance_before=[provenance[c] for c in cs], provenance_after='unchanged'))
+    training = [e for e in result['windows'] if e['start']+e['frames'] <= split]
+    held_out = [e for e in result['windows'] if e['start'] >= split]
+    zero = [0.]*len(units)
+    before = singer_metrics(zero,training,units,True)
+    deltas, after = [0.,0.], result['wet_before']
+    for candidate in itertools.product(*choices):
+        predicted = wet_predict(training,units,candidate)
+        if singer_regressions(singer_metrics(zero,predicted,units,True),before,1e-9):
+            continue
+        m = wet_metrics(train,candidate)
+        if (m['loss'],sum(map(abs,candidate)),candidate) < (after['loss'],sum(map(abs,deltas)),tuple(deltas)):
+            deltas, after = list(candidate),m
+    individual = None
+    evaluations = math.prod(map(len,choices))
+    for u in units:
+        cs = u['channels']
+        i = u['group']
+        if len(cs) == len(capture['groups'][NAMES[i]]['channels']):
+            continue
+        if any('operator_override' in (provenance[c],capture['provenance'][c]) for c in cs):
+            continue
+        sends = [s for bus in state['baseline']['effects']['buses'] for s in bus['sends'] if s['channel'] in cs]
+        for k in range(1,1+round(WETNESS['maximum_cut_db']/WETNESS['step_db'])):
+            delta = -k*WETNESS['step_db']
+            if not sends or any(s['db']+delta < -60 for s in sends):
+                break
+            action = dict(channels=cs,delta=delta)
+            evaluations += 1
+            m = wet_metrics(unit_wet_rows(train,training,capture,action),[0.,0.])
+            if m['loss'] >= after['loss']-1e-12:
+                continue
+            predicted = wet_predict(training,units,[0.,0.],action)
+            if not singer_regressions(singer_metrics(zero,predicted,units,True),before,1e-9):
+                individual, deltas, after = action,[0.,0.],m
+    if result['wet_before']['loss']-after['loss'] < WETNESS['minimum_improvement']:
+        deltas,after = [0.,0.],result['wet_before']
+        individual = None
+    held = unit_wet_rows(held,held_out,capture,individual)
+    result['wet_individual'] = individual
+    held_prediction = wet_predict(held_out,units,deltas,individual)
+    vetoes = singer_regressions(singer_metrics(zero,held_prediction,units,True),
+        singer_metrics(zero,held_out,units,True),POLICY['held_out_tolerance'])
+    result.update(wet_deltas_db=deltas, wet_predicted=after,
+                  wet_held_out_predicted=wet_metrics(held,deltas),
+                  objective_met=after['loss'] <= 1e-12 and wet_metrics(held,deltas)['loss'] <= 1e-12,
+                  search=dict(evaluations=evaluations,maximum_evaluations=169+12*len(units)),
+                  status='refused' if vetoes else 'candidate' if individual or any(deltas) else 'no_change',
+                  reasons=['held-out veto; no refit: '+r for r in vetoes] if vetoes else
+                          ['protected bounded wet attenuation; production replay required'])
+    if not vetoes:
+        result['settings'] = wet_settings(state['baseline'],capture,deltas,individual)
+        if individual:
+            result['decisions'] = [dict(group=NAMES[u['group']], channels=u['channels'],
+                locked=any('operator_override' in (provenance[c],capture['provenance'][c]) for c in u['channels']),
+                provenance_before=[provenance[c] for c in u['channels']]) for u in units]
+        for i,decision in enumerate(result['decisions']):
+            if individual:
+                delta = individual['delta'] if individual['channels'] == decision['channels'] else 0.
+                decision.update(send_delta_db=delta,provenance_after='solver_selected' if delta else 'unchanged')
+                continue
+            decision.update(send_delta_db=deltas[i],provenance_after='solver_selected' if deltas[i] else 'unchanged')
+
+    return result
+
+
+def accept_wetness(proposal, baseline, actual, composition, split):
+    result = copy.deepcopy(proposal)
+    result.update(proposed_settings=result.pop('settings'), settings=copy.deepcopy(baseline['settings']),
+                  accepted=False, status='rejected', composition=composition, validation_reasons=[],
+                  validation_policy=copy.deepcopy(VALIDATION))
+    failures = result['validation_reasons']
+    individual = proposal.get('wet_individual')
+    deltas = proposal['wet_deltas_db']
+    if individual and (individual['channels'] not in [u['channels'] for u in proposal['units']] or any(deltas)
+            or individual['delta'] not in [-.5*k for k in range(1,13)] or any(
+                proposal['evidence'][key][c] == 'operator_override' for c in individual['channels']
+                for key in ('provenance','wetness_provenance'))):
+        failures.append('invalid individual send action')
+        return result
+    if (len(deltas) != 2 or any(not finite(d) or not -6 <= d <= 0 for d in deltas)
+            or result['proposed_settings'] != wet_settings(baseline['settings'], proposal['evidence'], deltas, individual)):
+        failures.append('candidate controls differ from bounded send-only proposal')
+    if (proposal['wetness_policy'] != WETNESS or proposal.get('singer_policy') != CONTEXTUAL
+            or proposal.get('state_context_policy') != STATE_CONTEXT):
+        failures.append('frozen wetness/context policy changed')
+    result['remeasurement_evidence'] = {}
+    for label, measured in [('baseline',baseline),('candidate',actual)]:
+        result['remeasurement_evidence'][label] = {k: copy.deepcopy(measured.get(k)) for k in
+            ('attribution','reasons','accepted_windows','accepted_seconds','confidence','activity_evidence')}
+        if (measured.get('reasons') or measured.get('wetness_policy') != WETNESS
+                or measured.get('units') != proposal['units']
+                or measured.get('activity_evidence') != proposal['activity_evidence']
+                or measured.get('singer_policy') != CONTEXTUAL
+                or measured.get('state_context_policy') != STATE_CONTEXT):
+            failures.append(label+': incomplete or changed wetness/context evidence')
+    if failures:
+        return result
+    if baseline.get('windows') != proposal['windows'] or baseline.get('wet_windows') != proposal['wet_windows']:
+        failures.append('baseline differs from frozen wetness observations')
+    fields = ('start','frames','active','lineup','state_support','solo')
+    if [[e.get(k) for k in fields] for e in baseline['windows']] != [[e.get(k) for k in fields] for e in actual['windows']]:
+        failures.append('candidate coverage or eligibility changed')
+    keys = ('start','frames','group','channel')
+    if [[e[k] for k in keys] for e in baseline['wet_windows']] != [[e[k] for k in keys] for e in actual['wet_windows']]:
+        failures.append('candidate direct/return coverage changed')
+    if failures:
+        return result
+    errors = [wet_prediction_error(wet_predict(baseline['windows'],proposal['units'],deltas,individual),actual['windows'])]
+    expected_rows = unit_wet_rows(baseline['wet_windows'],baseline['windows'],proposal['evidence'],individual)
+    for old,new in zip(expected_rows,actual['wet_windows']):
+        d = proposal['wet_deltas_db'][old['group']]
+        for direct,wet,cross,total in zip(old['direct'],old['wet'],old['cross'],new['total']):
+            expected = max(0.,direct+wet*10**(d/10)+cross*10**(d/20))
+            if max(expected,total) > 1e-18:
+                errors.append(abs(db(expected)-db(total)))
+        for key, delta in [('direct',0.),('wet',d)]:
+            for a,b in zip(old[key],new[key]):
+                if max(a,b) > 1e-18:
+                    errors.append(abs(db(a)+delta-db(b)))
+    for old,new in zip(baseline['windows'],actual['windows']):
+        errors.extend(abs(db(a)-db(b)) for a,b in zip(old['denominator'],new['denominator']))
+    resulting = {}
+    wet_resulting = {}
+    for label, select in [('training',lambda e:e['start']+e['frames'] <= split),
+                          ('held_out',lambda e:e['start'] >= split)]:
+        old = [e for e in baseline['windows'] if select(e)]
+        new = [e for e in actual['windows'] if select(e)]
+        units = proposal['units']
+        before = singer_metrics([0.]*len(units), old, units, True)
+        after = singer_metrics([0.]*len(units), new, units, True)
+        tolerance = POLICY['held_out_tolerance'] if label == 'held_out' else VALIDATION['loss_tolerance']
+        failures.extend(label+': '+r for r in singer_regressions(after,before,tolerance))
+        resulting[label] = after
+        wet_before = wet_metrics([e for e in baseline['wet_windows'] if select(e)],[0.,0.])
+        wet_after = wet_metrics([e for e in actual['wet_windows'] if select(e)],[0.,0.])
+        wet_resulting[label] = wet_after
+        if any(a > b+tolerance for a,b in zip(wet_after['group_loss'],wet_before['group_loss'])):
+            failures.append(label+': wetness regression; no refit')
+        if label == 'training' and (individual or any(deltas)) and wet_before['loss']-wet_after['loss'] < WETNESS['minimum_improvement']-1e-6:
+            failures.append('insufficient actual wetness improvement')
+    result.update(metrics_resulting=resulting, wet_resulting=wet_resulting,
+                  prediction_error_db=max(errors, default=0.),
+                  resulting_attribution=actual.get('attribution'),
+                  objective_met=all(m['loss'] <= 1e-12 for m in wet_resulting.values()))
+    if result['prediction_error_db'] > WETNESS['prediction_tolerance_db']:
+        failures.append('direct invariance/wet scaling/accompaniment replay error')
+    if composition.get('passed') is not True:
+        failures.append('production composition protection failed')
+    if not failures:
+        result.update(accepted=True, settings=result['proposed_settings'],
+                      status='accepted' if individual or any(deltas) else 'accepted_no_change')
+    return result
 
 
 def accept_singers(proposal, baseline, actual, composition, split):
@@ -885,14 +1349,16 @@ def accept_singers(proposal, baseline, actual, composition, split):
         accepted=False, status='rejected', validation_policy=copy.deepcopy(VALIDATION),
         composition=composition, validation_reasons=[])
     failures = result['validation_reasons']
-    if proposal.get('singer_policy') != SOLO or proposal.get('state_context_policy') != STATE_CONTEXT:
+    contextual = proposal['evidence'].get('decision_mode') == 'contextual'
+    singer_policy = CONTEXTUAL if contextual else SOLO
+    if proposal.get('singer_policy') != singer_policy or proposal.get('state_context_policy') != STATE_CONTEXT:
         failures.append('frozen singer or state policy changed')
     result['remeasurement_evidence'] = {}
     for label, measurement in [('baseline', baseline), ('candidate', actual)]:
         result['remeasurement_evidence'][label] = {k: copy.deepcopy(measurement.get(k)) for k in
             ('attribution', 'reasons', 'accepted_windows', 'accepted_seconds', 'confidence', 'activity_evidence')}
         if (measurement.get('state_context_policy') != STATE_CONTEXT
-                or measurement.get('singer_policy') != SOLO or measurement.get('units') != proposal['units']
+                or measurement.get('singer_policy') != singer_policy or measurement.get('units') != proposal['units']
                 or measurement.get('activity_evidence') != proposal['activity_evidence']
                 or measurement.get('reasons')):
             failures.append(label+': changed or incomplete singer measurement')
@@ -913,12 +1379,25 @@ def accept_singers(proposal, baseline, actual, composition, split):
         for i,d in enumerate(deltas):
             errors.extend(abs(db(a)+d-db(b)) for a,b in zip(p['singer_power'][i],n['singer_power'][i])
                           if max(a,b) > 1e-18)
+        # Group sums alone can hide opposite errors in two pair terms. Every
+        # singer-complement denominator depends on the individual signed pairs.
+        for (i,j,xy), (ni,nj,nxy) in zip(p['singer_cross'], n['singer_cross']):
+            if (i,j) != (ni,nj):
+                failures.append('candidate singer pair identities changed')
+                continue
+            for b in range(2):
+                expected = (p['singer_power'][i][b]*10**(deltas[i]/10)
+                            + p['singer_power'][j][b]*10**(deltas[j]/10)
+                            + xy[b]*10**((deltas[i]+deltas[j])/20))
+                observed = n['singer_power'][i][b]+n['singer_power'][j][b]+nxy[b]
+                if max(expected,observed) > 1e-18:
+                    errors.append(abs(db(max(0.,expected))-db(max(0.,observed))))
     measured_metrics = {}
     for label, select in [('training', lambda e:e['start']+e['frames'] <= split),
                           ('held_out', lambda e:e['start'] >= split)]:
-        before = singer_metrics((0.,)*len(units), list(filter(select,old)), units)
-        prediction = singer_metrics(deltas, list(filter(select,old)), units)
-        measured = singer_metrics((0.,)*len(units), list(filter(select,new)), units)
+        before = singer_metrics((0.,)*len(units), list(filter(select,old)), units, contextual)
+        prediction = singer_metrics(deltas, list(filter(select,old)), units, contextual)
+        measured = singer_metrics((0.,)*len(units), list(filter(select,new)), units, contextual)
         measured_metrics[label] = measured
         errors.extend(abs(a-b) for aa,bb in zip(prediction['combined_windows_db'],measured['combined_windows_db'])
                       for a,b in zip(aa,bb))
@@ -949,6 +1428,8 @@ VALIDATION = dict(version='vocal-replay-v1', prediction_tolerance_db=0.01,
 
 
 def accept_remeasurement(proposal, baseline, actual, composition, split):
+    if proposal.get('wetness_policy'):
+        return accept_wetness(proposal, baseline, actual, composition, split)
     if proposal.get('singer_policy'):
         return accept_singers(proposal, baseline, actual, composition, split)
     result = copy.deepcopy(proposal)
@@ -1038,12 +1519,34 @@ def accept_remeasurement(proposal, baseline, actual, composition, split):
     return result
 
 
+def replay_observations(state, metadata, capture, settings, source, analyzer):
+    with tempfile.TemporaryDirectory(prefix='gigpies-vocal-') as temp:
+        temp = Path(temp)
+        write_json(temp/'state.json', state)
+        write_json(temp/'candidate.json', settings)
+        subprocess.run([str(Path(analyzer).resolve()), 'ensemble-remeasure', str(temp/'state.json'),
+                        str(temp/'candidate.json'), str(Path(source).resolve()), str(temp/'replay')],
+                       check=True, capture_output=True, text=True)
+        measured = []
+        for name in ('baseline', 'candidate'):
+            path = temp/'replay'/f'{name}-observations.json'
+            data = read_metadata(path)
+            if (any(data[k] != metadata[k] for k in ('frames', 'sample_rate', 'stage_names', 'band_edges_hz'))
+                    or data.get('observation_groups', []) != metadata.get('observation_groups', [])):
+                raise ValueError('production metadata changed')
+            measured.append(calculate(state, data, array_items(path, 'windows'), capture, measure_only=True))
+        composition = json.loads((temp/'replay'/'composition.json').read_text())
+        return measured, composition
+
+
 def validate_production(state, metadata, capture, proposal, source, analyzer):
     baseline_settings = copy.deepcopy(state['baseline'])
     proposal['accepted'] = False
     proposal['composition_policy'] = copy.deepcopy(state['request'].get('composition'))
     if proposal['status'] not in ('candidate', 'no_change'):
-        proposal['proposed_settings'] = copy.deepcopy(proposal['settings'])
+        proposal['proposed_settings'] = (wet_settings(baseline_settings,capture,proposal['wet_deltas_db'],proposal.get('wet_individual'))
+            if proposal.get('wetness_policy') and proposal.get('wet_predicted') is not None
+            else copy.deepcopy(proposal['settings']))
         if 'proposed_deltas_db' in proposal:
             groups = ([u['channels'] for u in proposal['units']] if proposal.get('singer_policy')
                       else [capture['groups'][name]['channels'] for name in NAMES[:2]])
@@ -1052,29 +1555,113 @@ def validate_production(state, metadata, capture, proposal, source, analyzer):
                     proposal['proposed_settings']['channels'][c]['fader_db'] += proposal['proposed_deltas_db'][i]
         return proposal
     try:
-        with tempfile.TemporaryDirectory(prefix='gigpies-vocal-') as temp:
-            temp = Path(temp)
-            write_json(temp/'state.json', state)
-            write_json(temp/'candidate.json', proposal['settings'])
-            subprocess.run([str(Path(analyzer).resolve()), 'ensemble-remeasure', str(temp/'state.json'),
-                            str(temp/'candidate.json'), str(Path(source).resolve()), str(temp/'replay')],
-                           check=True, capture_output=True, text=True)
-            measured = []
-            for name in ('baseline', 'candidate'):
-                path = temp/'replay'/f'{name}-observations.json'
-                data = read_metadata(path)
-                if (any(data[k] != metadata[k] for k in ('frames', 'sample_rate', 'stage_names', 'band_edges_hz'))
-                        or data.get('observation_groups', []) != metadata.get('observation_groups', [])):
-                    raise ValueError('production metadata changed')
-                measured.append(calculate(state, data, array_items(path, 'windows'), capture, measure_only=True))
-            composition = json.loads((temp/'replay'/'composition.json').read_text())
-            return accept_remeasurement(proposal, *measured, composition, capture['training_end_frame'])
+        measured, composition = replay_observations(state, metadata, capture, proposal['settings'], source, analyzer)
+        return accept_remeasurement(proposal, *measured, composition, capture['training_end_frame'])
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         detail = error.stderr.strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
         proposal.update(proposed_settings=proposal['settings'], settings=baseline_settings,
                         status='rejected', validation_reasons=['incomplete production validation: '+detail],
                         validation_policy=copy.deepcopy(VALIDATION))
         return proposal
+
+
+def select_fx_bus(state, metadata, capture, baseline, source, analyzer):
+    """Compare single-bus send cuts by replaying the complete coherent mix."""
+    result = copy.deepcopy(baseline)
+    result.update(status='refused', accepted=False, bus_trials=[], bus_action=None,
+                  bus_cut_grid_db=[-3., -6.])
+    if baseline['reasons']:
+        return result
+    if source is None:
+        result['reasons'] = ['bus selection requires --source production replay']
+        return result
+    split = capture['training_end_frame']
+    units = baseline['units']
+    zero = [0.] * len(units)
+
+    def scores(measurement, held):
+        def included(row):
+            if held:
+                return row['start'] >= split
+            return row['start'] + row['frames'] <= split
+        windows = [row for row in measurement['windows'] if included(row)]
+        wet = [row for row in measurement['wet_windows'] if included(row)]
+        return wet_metrics(wet, [0., 0.]), singer_metrics(zero, windows, units, True)
+
+    def compare(candidate, reference, tolerance):
+        wet, singers = candidate
+        old_wet, old_singers = reference
+        failures = singer_regressions(singers, old_singers, tolerance)
+        if any(a > b + tolerance for a, b in zip(wet['group_loss'], old_wet['group_loss'])):
+            failures.append('role wetness regression')
+        return failures
+
+    def invariants(measurement):
+        return (measurement['activity_evidence'], measurement['units'],
+                [[w[k] for k in ('start', 'frames', 'active', 'lineup', 'state_support',
+                                  'solo', 'denominator')] for w in measurement['windows']],
+                [[w[k] for k in ('start', 'frames', 'channel', 'group', 'direct')]
+                 for w in measurement['wet_windows']])
+
+    training = scores(baseline, False)
+    best = None
+    try:
+        # Include unchanged controls so a no-change decision also has a full replay.
+        alternatives = [(None, 0., [])]
+        channels = {c for unit in units for c in unit['channels']}
+        locked = {c for unit in units if any(capture[key][member] == 'operator_override'
+                  for key in ('provenance', 'wetness_provenance') for member in unit['channels'])
+                  for c in unit['channels']}
+        for index, bus in enumerate(state['baseline']['effects']['buses']):
+            sends = [i for i, send in enumerate(bus['sends']) if send['channel'] in channels]
+            if not sends or any(bus['sends'][i]['channel'] in locked for i in sends):
+                continue
+            for delta in result['bus_cut_grid_db']:
+                if all(bus['sends'][i]['db'] + delta >= -60 for i in sends):
+                    alternatives.append((index, delta, sends))
+        for index, delta, sends in alternatives:
+            settings = copy.deepcopy(state['baseline'])
+            action = None
+            if index is not None:
+                bus = settings['effects']['buses'][index]
+                for i in sends:
+                    bus['sends'][i]['db'] += delta
+                action = dict(bus=bus['name'], delta_db=delta,
+                              channels=[bus['sends'][i]['channel'] for i in sends])
+            (old, actual), composition = replay_observations(
+                state, metadata, capture, settings, source, analyzer)
+            if (old['reasons'] or actual['reasons'] or old['windows'] != baseline['windows']
+                    or old['wet_windows'] != baseline['wet_windows']
+                    or old['activity_evidence'] != baseline['activity_evidence']
+                    or invariants(actual) != invariants(baseline)):
+                raise ValueError('incomplete or inconsistent bus replay evidence')
+            measured = scores(actual, False)
+            failures = compare(measured, training, 1e-9)
+            loss = measured[0]['loss']
+            result['bus_trials'].append(dict(action=action, training=measured[0], reasons=failures))
+            if failures or (action and training[0]['loss'] - loss < WETNESS['minimum_improvement']):
+                continue
+            rank = (loss, abs(delta))
+            if best is None or rank < best[0]:
+                best = rank, settings, action, actual, composition
+        if best is None:
+            raise ValueError('no supported bus replay')
+        _, settings, action, actual, composition = best
+        held = scores(actual, True)
+        failures = compare(held, scores(baseline, True), POLICY['held_out_tolerance'])
+        if composition.get('passed') is not True:
+            failures.append('production composition protection failed')
+        result.update(bus_action=action, proposed_settings=settings, composition=composition,
+                      resulting_attribution=actual['attribution'], validation_reasons=failures,
+                      wet_resulting=dict(training=scores(actual, False)[0], held_out=held[0]),
+                      objective_met=best[0][0] <= 1e-12 and held[0]['loss'] <= 1e-12,
+                      reasons=failures, status='rejected')
+        if not failures:
+            result.update(accepted=True, settings=settings,
+                          status='accepted' if action else 'accepted_no_change')
+    except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        result['reasons'] = ['incomplete production bus replay: ' + str(error)]
+    return result
 
 
 def read_metadata(path):
@@ -1092,20 +1679,39 @@ def run(analysis, capture_path, output, source=None, analyzer=None):
     metadata = read_metadata(path)
     capture = json.loads(Path(capture_path).read_text())
     result = calculate(state, metadata, array_items(path, 'windows'), capture)
-    if source is None and state['baseline'].get('effects') is not None:
+    if capture.get('decision_mode') == 'bus_wetness':
+        result = select_fx_bus(state, metadata, capture, result, source, analyzer)
+    elif source is None and state['baseline'].get('effects') is not None:
         result.update(proposed_settings=copy.deepcopy(result['settings']),
                       settings=copy.deepcopy(state['baseline']), accepted=False)
         if result['status'] in ('candidate', 'no_change'):
             result.update(status='rejected', validation_reasons=['FX acceptance requires --source production replay'])
-    if source is not None:
+    elif source is not None:
         result = validate_production(state, metadata, capture, result, source, analyzer)
-    if 'proposed_settings' in result:
+    if 'proposed_settings' in result and not result.get('wetness_policy'):
         for decision in result['decisions']:
             decision['proposed_db'] = result['proposed_settings']['channels'][decision['channel']]['fader_db']
             decision['proposed_delta_db'] = decision['proposed_db']-decision['before_db']
             decision['accepted_db'] = result['settings']['channels'][decision['channel']]['fader_db']
             decision['accepted_provenance'] = (decision['provenance_after'] if result['accepted']
                                                else decision['provenance_before'])
+    if result.get('wetness_policy'):
+        for i,decision in enumerate(result['decisions']):
+            delta = decision['send_delta_db']
+            decision['proposed_send_delta_db'] = delta
+            decision['accepted_send_delta_db'] = delta if result.get('accepted') else 0.
+            decision['accepted_provenance'] = (['solver_selected']*len(decision['channels'])
+                if result.get('accepted') and delta else decision['provenance_before'])
+        result['send_changes'] = []
+        proposed = result.get('proposed_settings',result['settings'])
+        if state['baseline'].get('effects'):
+            for old,new,accepted in zip(state['baseline']['effects']['buses'],proposed['effects']['buses'],result['settings']['effects']['buses']):
+                for a,b,c in zip(old['sends'],new['sends'],accepted['sends']):
+                    result['send_changes'].append(dict(bus=old['name'],channel=a['channel'],
+                        before_db=a['db'],proposed_db=b['db'],accepted_db=c['db'],
+                        accepted_provenance=('solver_selected' if a['db'] != c['db'] else
+                            capture['wetness_provenance'][a['channel']])
+                        if 'wetness_provenance' in capture else None))
     # Validate complete serialization before creating a partially usable candidate.
     json.dumps(result, allow_nan=False)
     output = Path(output)

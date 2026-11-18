@@ -34,8 +34,15 @@ pub struct Competition {
     pub overlap_fraction: Option<f64>,
     pub signed_cross_power: f64,
 }
+pub type VocalComponentPair = (usize, [Vec<Option<f64>>; 4]);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Window {
+    /// Matching Hann-window direct and coherent attributed return observations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocal_components: Option<VocalComponents>,
+    /// Direct/direct, direct/wet, wet/direct, wet/wet coherent pair sums.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vocal_component_pairs: Vec<VocalComponentPair>,
     /// (other source index, coherent routed pair-sum band powers).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pair_sum_band_power: Vec<(usize, Vec<Option<f64>>)>,
@@ -46,6 +53,25 @@ pub struct Window {
     pub note_hz: Option<f64>,
     pub stages: Vec<Stage>,
     pub max_reduction_db: f64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VocalComponents {
+    pub direct: Stage,
+    pub wet: Stage,
+}
+fn components(
+    buffers: &[Vec<[f64; 2]>],
+    rate: u32,
+    edges: &[f64],
+) -> Result<Option<VocalComponents>> {
+    if buffers.len() == 7 {
+        Ok(Some(VocalComponents {
+            direct: stage(&buffers[5], rate, edges, None)?,
+            wet: stage(&buffers[6], rate, edges, None)?,
+        }))
+    } else {
+        Ok(None)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EventWindow {
@@ -271,9 +297,10 @@ pub(super) fn measure_to(
         .map(|_| Loudness::new(s.sample_rate))
         .collect::<Vec<_>>();
     let count = s.channels.len();
+    let stage_count = if shared.is_some() { 7 } else { 5 };
     let mut buffers = (0..count)
         .map(|_| {
-            (0..5)
+            (0..stage_count)
                 .map(|_| Vec::with_capacity(FFT_FRAMES))
                 .collect::<Vec<_>>()
         })
@@ -355,10 +382,12 @@ pub(super) fn measure_to(
                 s.channels[i].pan,
                 gain(s.channels[i].fader_db),
             );
+            let direct = routed;
+            let mut wet = [0.; 2];
             if let Some(fx) = &mut shared {
                 fx.send(i, routed);
                 split_racks[i].send(0, routed);
-                let wet = split_racks[i].returns();
+                wet = split_racks[i].returns();
                 for side in 0..2 {
                     routed[side] += wet[side];
                 }
@@ -370,7 +399,10 @@ pub(super) fn measure_to(
                 evidence.tail_peak = evidence.tail_peak.max(routed[0].abs()).max(routed[1].abs());
             }
             loud[i].add(routed);
-            for (buffer, value) in buffers[i].iter_mut().zip([raw, eq, pre, post, routed]) {
+            for (buffer, value) in buffers[i]
+                .iter_mut()
+                .zip([raw, eq, pre, post, routed, direct, wet])
+            {
                 buffer.push(value);
             }
             reduction[i] = reduction[i].max(strips[i].reduction_db());
@@ -521,7 +553,27 @@ pub(super) fn measure_to(
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?;
+                let mut vocal_component_pairs = Vec::new();
+                if stage_count == 7 {
+                    for pair in request.observation_pairs.iter().filter(|pair| pair[0] == i) {
+                        let mut powers: [Vec<Option<f64>>; 4] = std::array::from_fn(|_| Vec::new());
+                        for (index, (a, b)) in
+                            [(5, 5), (5, 6), (6, 5), (6, 6)].into_iter().enumerate()
+                        {
+                            let samples = buffers[i][a]
+                                .iter()
+                                .zip(&buffers[pair[1]][b])
+                                .map(|(x, y)| [x[0] + y[0], x[1] + y[1]])
+                                .collect::<Vec<_>>();
+                            powers[index] =
+                                stage(&samples, s.sample_rate, &edges, None)?.band_power;
+                        }
+                        vocal_component_pairs.push((pair[1], powers));
+                    }
+                }
                 result.windows.push(Window {
+                    vocal_components: components(&buffers[i], s.sample_rate, &edges)?,
+                    vocal_component_pairs,
                     pair_sum_band_power,
                     competition,
                     note_hz,
@@ -530,6 +582,7 @@ pub(super) fn measure_to(
                     channel: i,
                     stages: buffers[i]
                         .iter()
+                        .take(5)
                         .map(|b| stage(b, s.sample_rate, &edges, note_hz))
                         .collect::<Result<Vec<_>>>()?,
                     max_reduction_db: reduction[i],
@@ -549,7 +602,7 @@ pub(super) fn measure_to(
                         .map(|(i, g)| (request.profiles.len() + i, &g.channels, false)),
                 )
             {
-                let grouped = (0..5)
+                let grouped = (0..stage_count)
                     .map(|stage_index| {
                         (0..buffers[0][0].len())
                             .map(|frame_index| {
@@ -576,6 +629,7 @@ pub(super) fn measure_to(
                 };
                 let stages = grouped
                     .iter()
+                    .take(5)
                     .map(|x| stage(x, s.sample_rate, &edges, note))
                     .collect::<Result<Vec<_>>>()?;
                 let overlap = stages[4]
@@ -585,6 +639,8 @@ pub(super) fn measure_to(
                     .filter_map(|(a, b)| a.zip(*b).map(|(a, b)| a.min(b)))
                     .sum::<f64>();
                 result.windows.push(Window {
+                    vocal_components: components(&grouped, s.sample_rate, &edges)?,
+                    vocal_component_pairs: Vec::new(),
                     pair_sum_band_power: Vec::new(),
                     start,
                     frames: grouped[0].len(),
