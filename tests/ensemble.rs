@@ -114,9 +114,18 @@ fn loudness_native_windows_do_not_drift_or_accept_incomplete_blocks() {
 struct Scratch(std::path::PathBuf);
 impl Scratch {
     fn new(name: &str) -> Self {
-        let p = std::env::temp_dir().join(format!("ensemble-{name}-{}", std::process::id()));
-        std::fs::create_dir(&p).unwrap();
-        Self(p)
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        loop {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("ensemble-{name}-{}-{id}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create scratch directory {}: {error}", path.display()),
+            }
+        }
     }
     fn wav(&self, file: &str) {
         let mut w = hound::WavWriter::create(
@@ -141,6 +150,15 @@ impl Drop for Scratch {
         std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
+#[test]
+fn same_name_scratch_directories_have_independent_lifetimes() {
+    let first = Scratch::new("shared-label");
+    let second = Scratch::new("shared-label");
+    assert_ne!(first.0, second.0);
+    drop(first);
+    assert!(second.0.is_dir());
+}
+
 fn fixture(dir: &Scratch, count: usize) -> config::Session {
     let mut s = config::example();
     s.sample_rate = 48000;
