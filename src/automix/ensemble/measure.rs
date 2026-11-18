@@ -34,8 +34,18 @@ pub struct Competition {
     pub overlap_fraction: Option<f64>,
     pub signed_cross_power: f64,
 }
+pub type VocalComponentPair = (usize, [Vec<Option<f64>>; 4]);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Window {
+    /// Matching Hann-window direct and coherent attributed return observations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocal_components: Option<VocalComponents>,
+    /// Direct/direct, direct/wet, wet/direct, wet/wet coherent pair sums.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vocal_component_pairs: Vec<VocalComponentPair>,
+    /// (other source index, coherent routed pair-sum band powers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pair_sum_band_power: Vec<(usize, Vec<Option<f64>>)>,
     pub competition: Competition,
     pub start: u64,
     pub frames: usize,
@@ -43,6 +53,25 @@ pub struct Window {
     pub note_hz: Option<f64>,
     pub stages: Vec<Stage>,
     pub max_reduction_db: f64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VocalComponents {
+    pub direct: Stage,
+    pub wet: Stage,
+}
+fn components(
+    buffers: &[Vec<[f64; 2]>],
+    rate: u32,
+    edges: &[f64],
+) -> Result<Option<VocalComponents>> {
+    if buffers.len() == 7 {
+        Ok(Some(VocalComponents {
+            direct: stage(&buffers[5], rate, edges, None)?,
+            wet: stage(&buffers[6], rate, edges, None)?,
+        }))
+    } else {
+        Ok(None)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EventWindow {
@@ -65,6 +94,10 @@ pub struct ChannelSummary {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Measurement {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<Attribution>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observation_groups: Vec<(String, usize)>,
     pub profile_groups: Vec<(String, usize)>,
     pub sample_rate: u32,
     pub frames: u64,
@@ -75,6 +108,35 @@ pub struct Measurement {
     /// Contiguous native-frame ~10 ms energy windows; these are not LUFS.
     pub events: Vec<EventWindow>,
     pub limitations: Vec<String>,
+}
+/// Frozen before synthetic evaluation. No attribution through nonlinear master DSP.
+pub const FX_STAGE: &str = "excited_direct_plus_linear_returns_before_master";
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Attribution {
+    pub method: String,
+    pub absolute_tolerance: f64,
+    pub relative_tolerance: f64,
+    pub max_absolute_error: f64,
+    pub max_tolerance_fraction: f64,
+    pub checked_frames: u64,
+    pub tail_peak: f64,
+    pub tail_complete: bool,
+    pub tail_floor: f64,
+}
+impl Default for Attribution {
+    fn default() -> Self {
+        Self {
+            method: "source-local-excitation-linear-returns-v1".into(),
+            absolute_tolerance: 1e-7,
+            relative_tolerance: 1e-5,
+            max_absolute_error: 0.,
+            max_tolerance_fraction: 0.,
+            checked_frames: 0,
+            tail_peak: 0.,
+            tail_complete: false,
+            tail_floor: 1e-5,
+        }
+    }
 }
 fn stage(samples: &[[f64; 2]], rate: u32, edges: &[f64], note: Option<f64>) -> Result<Stage> {
     let spectra = (0..2)
@@ -198,15 +260,47 @@ pub(super) fn measure_to(
         .iter()
         .map(|c| Strip::new(c, s.sample_rate))
         .collect::<Vec<_>>();
+    // Use the production rack, not a second effects implementation. The shared
+    // rack excites each input once before faders; split racks receive those same
+    // routed samples and attribute only the linear wet return operators.
+    let mut shared = request
+        .vocal_fx_attribution
+        .then_some(s.effects.as_ref())
+        .flatten()
+        .map(|fx| crate::automix::effects::Rack::new(fx, s.channels.len(), s.sample_rate));
+    let mut split_racks = if shared.is_some() {
+        (0..s.channels.len())
+            .map(|i| {
+                let mut fx = s.effects.clone().unwrap();
+                fx.buses
+                    .retain(|b| b.sends.iter().any(|send| send.channel == i));
+                for b in &mut fx.buses {
+                    // Exhaustive audit boundary: a new shared nonlinear engine must
+                    // not inherit this attribution contract without review.
+                    match b.effect {
+                        crate::automix::effects::Effect::Delay(_)
+                        | crate::automix::effects::Effect::Reverb(_)
+                        | crate::automix::effects::Effect::Chorus(_) => {}
+                    }
+                    b.sends.retain(|send| send.channel == i);
+                    b.sends[0].channel = 0;
+                }
+                crate::automix::effects::Rack::new(&fx, 1, s.sample_rate)
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let mut loud = s
         .channels
         .iter()
         .map(|_| Loudness::new(s.sample_rate))
         .collect::<Vec<_>>();
     let count = s.channels.len();
+    let stage_count = if shared.is_some() { 7 } else { 5 };
     let mut buffers = (0..count)
         .map(|_| {
-            (0..5)
+            (0..stage_count)
                 .map(|_| Vec::with_capacity(FFT_FRAMES))
                 .collect::<Vec<_>>()
         })
@@ -240,7 +334,35 @@ pub(super) fn measure_to(
             max_reduction_db: 0.,
         })
         .collect::<Vec<_>>();
-    let mut result=Measurement{profile_groups: request.profiles.iter().enumerate().filter(|(_,p)| p.channels.len()>1).map(|(i,p)|(p.name.clone(), count+i)).collect(),sample_rate:s.sample_rate,frames:frozen.timeline_frames,stage_names:STAGES.iter().map(|s|(*s).into()).collect(),band_edges_hz:edges.clone(),channels:Vec::new(),windows:Vec::new(),events:Vec::new(),limitations:vec!["Channel stages precede excitation, FX returns and master processing. Routed-source LUFS is not an additive contribution through nonlinear master DSP.".into(),"Spectra use symmetric Hann windows and zero-padded partial tails; weighted power is distinct from all-sample mean power. Feature windows do not diagnose musical faults.".into()]};
+    let mut result = Measurement {
+        attribution: request.vocal_fx_attribution.then(Attribution::default),
+        observation_groups: request.observation_groups.iter().enumerate()
+            .map(|(i, g)| (g.name.clone(), count + request.profiles.len() + i)).collect(),
+        profile_groups: request.profiles.iter().enumerate().filter(|(_, p)| p.channels.len() > 1)
+            .map(|(i, p)| (p.name.clone(), count + i)).collect(),
+        sample_rate: s.sample_rate,
+        frames: frozen.timeline_frames,
+        stage_names: STAGES.iter().map(|s| (*s).into()).collect(),
+        band_edges_hz: edges.clone(),
+        channels: Vec::new(),
+        windows: Vec::new(),
+        events: Vec::new(),
+        limitations: vec![
+            "Channel stages precede excitation, FX returns and master processing. Routed-source LUFS is not an additive contribution through nonlinear master DSP.".into(),
+            "Spectra use symmetric Hann windows and zero-padded partial tails; weighted power is distinct from all-sample mean power. Feature windows do not diagnose musical faults.".into(),
+        ],
+    };
+    if request.vocal_fx_attribution {
+        result.stage_names[4] = FX_STAGE.into();
+        result.limitations[0] = "Source-local excitation before faders; coherent direct+linear wet returns before master. Not nonlinear master attribution or proven audibility.".into();
+    }
+    let source_end = frozen
+        .inputs
+        .iter()
+        .map(|i| i.offset + i.frames)
+        .max()
+        .unwrap_or(0);
+    let tail_window = u64::from(s.sample_rate).div_ceil(100);
     let mut phase = 0_u64;
     let mut start = 0;
     for frame in 0..end {
@@ -253,14 +375,34 @@ pub(super) fn measure_to(
             let raw = sources[i].next(frame)?;
             let (eq, post) = strips[i].tick_with_eq_tap(raw);
             let pre = post.map(|v| v / gain(s.channels[i].compressor.makeup_db));
-            let routed = route(
-                post,
+            let excited = shared.as_mut().map_or(post, |fx| fx.excite(i, post));
+            let mut routed = route(
+                excited,
                 sources[i].channels,
                 s.channels[i].pan,
                 gain(s.channels[i].fader_db),
             );
+            let direct = routed;
+            let mut wet = [0.; 2];
+            if let Some(fx) = &mut shared {
+                fx.send(i, routed);
+                split_racks[i].send(0, routed);
+                wet = split_racks[i].returns();
+                for side in 0..2 {
+                    routed[side] += wet[side];
+                }
+            }
+            if s.effects.is_some()
+                && frame >= end.saturating_sub(tail_window)
+                && let Some(evidence) = &mut result.attribution
+            {
+                evidence.tail_peak = evidence.tail_peak.max(routed[0].abs()).max(routed[1].abs());
+            }
             loud[i].add(routed);
-            for (buffer, value) in buffers[i].iter_mut().zip([raw, eq, pre, post, routed]) {
+            for (buffer, value) in buffers[i]
+                .iter_mut()
+                .zip([raw, eq, pre, post, routed, direct, wet])
+            {
                 buffer.push(value);
             }
             reduction[i] = reduction[i].max(strips[i].reduction_db());
@@ -286,6 +428,30 @@ pub(super) fn measure_to(
                     max_reduction_db: 0.,
                 };
             }
+        }
+        if let Some(fx) = &mut shared {
+            let actual = fx.returns();
+            let evidence = result.attribution.as_mut().unwrap();
+            for side in 0..2 {
+                let components = split_racks
+                    .iter()
+                    .flat_map(|r| r.return_outputs.iter())
+                    .map(|x| x[side]);
+                let expected: f64 = components.clone().sum();
+                let magnitude: f64 = components.map(f64::abs).sum();
+                let error = (actual[side] - expected).abs();
+                let tolerance =
+                    evidence.absolute_tolerance + evidence.relative_tolerance * magnitude;
+                if !error.is_finite() || error > tolerance {
+                    return Err(format!("unsupported FX attribution: shared return reconstruction failed at frame {frame}, side {side}: error {error}, tolerance {tolerance}").into());
+                }
+                evidence.max_absolute_error = evidence.max_absolute_error.max(error);
+                evidence.max_tolerance_fraction =
+                    evidence.max_tolerance_fraction.max(error / tolerance);
+            }
+        }
+        if let Some(evidence) = &mut result.attribution {
+            evidence.checked_frames += 1;
         }
         for (e, (_, p)) in group_events.iter_mut().zip(
             request
@@ -371,7 +537,44 @@ pub(super) fn measure_to(
                 } else {
                     None
                 };
+                let pair_sum_band_power = request
+                    .observation_pairs
+                    .iter()
+                    .filter(|pair| pair[0] == i)
+                    .map(|pair| {
+                        let samples = buffers[i][4]
+                            .iter()
+                            .zip(&buffers[pair[1]][4])
+                            .map(|(a, b)| [a[0] + b[0], a[1] + b[1]])
+                            .collect::<Vec<_>>();
+                        Ok((
+                            pair[1],
+                            stage(&samples, s.sample_rate, &edges, None)?.band_power,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let mut vocal_component_pairs = Vec::new();
+                if stage_count == 7 {
+                    for pair in request.observation_pairs.iter().filter(|pair| pair[0] == i) {
+                        let mut powers: [Vec<Option<f64>>; 4] = std::array::from_fn(|_| Vec::new());
+                        for (index, (a, b)) in
+                            [(5, 5), (5, 6), (6, 5), (6, 6)].into_iter().enumerate()
+                        {
+                            let samples = buffers[i][a]
+                                .iter()
+                                .zip(&buffers[pair[1]][b])
+                                .map(|(x, y)| [x[0] + y[0], x[1] + y[1]])
+                                .collect::<Vec<_>>();
+                            powers[index] =
+                                stage(&samples, s.sample_rate, &edges, None)?.band_power;
+                        }
+                        vocal_component_pairs.push((pair[1], powers));
+                    }
+                }
                 result.windows.push(Window {
+                    vocal_components: components(&buffers[i], s.sample_rate, &edges)?,
+                    vocal_component_pairs,
+                    pair_sum_band_power,
                     competition,
                     note_hz,
                     start,
@@ -379,23 +582,32 @@ pub(super) fn measure_to(
                     channel: i,
                     stages: buffers[i]
                         .iter()
+                        .take(5)
                         .map(|b| stage(b, s.sample_rate, &edges, note_hz))
                         .collect::<Result<Vec<_>>>()?,
                     max_reduction_db: reduction[i],
                 });
             }
-            for (index, p) in request
+            for (index, channels, is_bass) in request
                 .profiles
                 .iter()
                 .enumerate()
                 .filter(|(_, p)| p.channels.len() > 1)
+                .map(|(i, p)| (i, &p.channels, p.family == profile::Family::Bass))
+                .chain(
+                    request
+                        .observation_groups
+                        .iter()
+                        .enumerate()
+                        .map(|(i, g)| (request.profiles.len() + i, &g.channels, false)),
+                )
             {
-                let grouped = (0..5)
+                let grouped = (0..stage_count)
                     .map(|stage_index| {
                         (0..buffers[0][0].len())
                             .map(|frame_index| {
                                 std::array::from_fn(|side| {
-                                    p.channels
+                                    channels
                                         .iter()
                                         .map(|&c| buffers[c][stage_index][frame_index][side])
                                         .sum()
@@ -410,13 +622,14 @@ pub(super) fn measure_to(
                     .map(|(a, b)| [a[0] - b[0], a[1] - b[1]])
                     .collect::<Vec<_>>();
                 let rest_stage = stage(&rest, s.sample_rate, &edges, None)?;
-                let note = if p.family == profile::Family::Bass {
+                let note = if is_bass {
                     crate::automix::bass::estimate_note(&grouped[0], s.sample_rate).map(|n| n.hz)
                 } else {
                     None
                 };
                 let stages = grouped
                     .iter()
+                    .take(5)
                     .map(|x| stage(x, s.sample_rate, &edges, note))
                     .collect::<Result<Vec<_>>>()?;
                 let overlap = stages[4]
@@ -426,6 +639,9 @@ pub(super) fn measure_to(
                     .filter_map(|(a, b)| a.zip(*b).map(|(a, b)| a.min(b)))
                     .sum::<f64>();
                 result.windows.push(Window {
+                    vocal_components: components(&grouped, s.sample_rate, &edges)?,
+                    vocal_component_pairs: Vec::new(),
+                    pair_sum_band_power: Vec::new(),
                     start,
                     frames: grouped[0].len(),
                     channel: count + index,
@@ -442,7 +658,7 @@ pub(super) fn measure_to(
                             / rest.len() as f64,
                     },
                     stages,
-                    max_reduction_db: p.channels.iter().map(|&c| reduction[c]).fold(0., f64::max),
+                    max_reduction_db: channels.iter().map(|&c| reduction[c]).fold(0., f64::max),
                 });
             }
             for i in 0..count {
@@ -453,6 +669,10 @@ pub(super) fn measure_to(
             }
             start = frame + 1;
         }
+    }
+    if let Some(evidence) = &mut result.attribution {
+        evidence.tail_complete = s.effects.is_none()
+            || (end >= source_end + tail_window && evidence.tail_peak <= evidence.tail_floor);
     }
     result.channels = sources
         .iter()

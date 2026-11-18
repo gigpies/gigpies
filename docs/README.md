@@ -14,6 +14,7 @@ controls; a complete live-show setup is not yet a finished product.
 | Adjust a monitor mix | [Monitor sends](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#monitor-sends) |
 | Adjust the main PA EQ | [Master EQ](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#master-eq) |
 | See implemented PA processing, generators and setup tools | [PA capabilities](https://github.com/gigpies/shr-pa/blob/main/docs/STATUS.md) |
+| Compare a PA correction across microphone positions | [Offline acoustic comparison](development/ACOUSTIC_BENCH.md#compare-microphone-positions-offline) |
 | Review software PA measurements | [PA measurement and setup](https://github.com/gigpies/shr-desk/blob/main/docs/PA_MEASUREMENT.md) |
 | Set up the standalone PA processor or generate pink noise/sweeps | [PA guide](https://github.com/gigpies/shr-pa/blob/main/docs/RUNNING.md) |
 | Adjust GigPies effects | [Desk FX controls](https://github.com/gigpies/shr-desk/blob/main/docs/USING.md#effects) |

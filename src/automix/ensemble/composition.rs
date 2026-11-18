@@ -57,9 +57,24 @@ pub(super) fn verify(
             dir.join("stages.json"),
         )?)?);
     }
+    let mut final_tails = Vec::new();
+    for name in ["baseline-composition", "candidate-composition"] {
+        let m: Value = serde_json::from_reader(std::fs::File::open(
+            out.join(name).join("measurements.json"),
+        )?)?;
+        final_tails.push(json!({"peak": m["final_tail_peak"], "frames": m["final_tail_frames"]}));
+    }
     let [a, b] = [&observed[0], &observed[1]];
     let mut failures = Vec::<String>::new();
     let budget = &state.request.composition;
+    if state.request.vocal_fx_attribution && candidate.effects.is_some() {
+        for (label, tail) in ["baseline", "candidate"].iter().zip(&final_tails) {
+            let peak = tail["peak"].as_f64().ok_or("missing final tail peak")?;
+            if peak > measure::Attribution::default().tail_floor {
+                failures.push(format!("{label}: incomplete final master tail"));
+            }
+        }
+    }
     for i in 0..4 {
         let x = &a["stages"][i];
         let y = &b["stages"][i];
@@ -113,6 +128,6 @@ pub(super) fn verify(
         }
     }
     Ok(
-        json!({"passed":failures.is_empty(),"failures":failures,"baseline":a,"candidate":b,"windows_checked":before.len(),"window_floor_dbfs":-100.,"fixed_fx_unchanged":identity(&state.baseline.effects)?==identity(&candidate.effects)?,"scope":"actual production direct, direct+returns, master HPF, FX master and final limiter; common windows include tails; no nonlinear per-source attribution"}),
+        json!({"passed":failures.is_empty(),"failures":failures,"final_tails":final_tails,"baseline":a,"candidate":b,"windows_checked":before.len(),"window_floor_dbfs":-100.,"fixed_fx_unchanged":identity(&state.baseline.effects)?==identity(&candidate.effects)?,"scope":"actual production direct, direct+returns, master HPF, FX master and final limiter; common windows include tails; no nonlinear per-source attribution"}),
     )
 }
