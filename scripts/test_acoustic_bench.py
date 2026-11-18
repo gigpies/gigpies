@@ -57,18 +57,26 @@ class BenchTests(unittest.TestCase):
                 bench.capture(args)
             popen.assert_not_called()
 
+    def test_position_id_matches_measurement_contract(self):
+        self.assertEqual(bench.position_id('front-left'), 'front-left')
+        for value in ('', 'two words', 'A'*129, 'é', 'p\n'):
+            with self.assertRaises(bench.argparse.ArgumentTypeError):
+                bench.position_id(value)
+
     def test_capture_failure_never_starts_playback(self):
         self.wav([100, 0] * 100)
         args = SimpleNamespace(authorize_audio=True, capture_device='hw:E205U,0',
                                playback_device='hw:AUDIO,0', play=self.path,
-                               channel='left', output=Path(self.temp.name) / 'capture')
+                               position_id='front-left', channel='left', output=Path(self.temp.name) / 'capture')
         child = Mock()
         child.poll.return_value = 1
         with patch.object(bench.subprocess, 'Popen', return_value=child), patch.object(bench, 'run') as run:
             with self.assertRaises(RuntimeError):
                 bench.capture(args)
             run.assert_not_called()
-        self.assertEqual(json.loads((args.output / 'session.json').read_text())['state'], 'incomplete')
+        record = json.loads((args.output / 'session.json').read_text())
+        self.assertEqual(record['state'], 'incomplete')
+        self.assertEqual(record['position_id'], 'front-left')
 
     def test_playback_failure_reaps_capture(self):
         self.wav([100, 0] * 100)

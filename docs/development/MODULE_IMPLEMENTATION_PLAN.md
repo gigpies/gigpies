@@ -165,6 +165,11 @@ publication guard. Rust, historical and hardware/load suites were intentionally
 skipped because production engine behavior is unchanged. This is exploratory
 acquisition, not completed steps 1–4 above.
 
+The USB capture and live bench commands now retain an optional operator-supplied
+`position_id` using the GP20 identifier format. The focused offline tests cover
+invalid identifiers and preservation in an incomplete acquisition. Matching
+before/after evidence across placements and physical acquisition remain open.
+
 Next action: continue the synchronized acquisition contract and representative-position
 workflow; reuse the accepted independent-clock bench evidence below. Independent USB clocks and absent calibrated
 reference prevent absolute latency/GP20 timing acceptance with the current wiring.

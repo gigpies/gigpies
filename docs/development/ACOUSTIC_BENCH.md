@@ -7,6 +7,11 @@ This bench supports uncalibrated spectra and comparative experiments. SHR PA own
 independent-clock EQ proposals; GigPies owns explicit live application and capture.
 This path does not establish synchronized GP20 capture.
 
+For repeated placements, pass the same `--position-id` to `capture` or `live`
+for both sides of each before/after comparison. Give distinct placements distinct
+IDs. The private session manifest records the supplied ID, or null when omitted.
+Existing unlabelled captures have unknown placement.
+
 ## Supported pilot-mode acquisition and auto-EQ
 
 The production acoustic adapter has an explicit `pilot_bench: true` option.
