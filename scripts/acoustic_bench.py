@@ -23,6 +23,13 @@ MAX_SECONDS = 20
 PEAK_LIMIT = 10 ** (-30 / 20)
 
 
+def position_id(value):
+    """Use the same printable ASCII identifier contract as GP20."""
+    if not re.fullmatch(r'[!-~]{1,128}', value):
+        raise argparse.ArgumentTypeError('Position ID requires 1..128 visible ASCII characters')
+    return value
+
+
 def read_pcm(path, max_seconds=MAX_SECONDS):
     with wave.open(str(path), 'rb') as w:
         if (w.getframerate(), w.getsampwidth(), w.getnchannels()) != (RATE, 2, 2):
@@ -108,6 +115,7 @@ def capture(args):
     args.output.mkdir(parents=True, exist_ok=False)
     record = {'capture_device': args.capture_device, 'playback_device': args.playback_device,
               'channel': args.channel, 'state': 'incomplete', 'seconds': duration,
+              'position_id': getattr(args, 'position_id', None),
               'clock_domains': ['E205U USB', 'Pi4 USB HIFI AUDIO'],
               'timing': 'independent device clocks; SSH start is not a latency reference',
               'stimulus': summary(args.play) if args.play else None}
@@ -170,6 +178,7 @@ def live(args):
             raise RuntimeError('PCM owner active or ownership check failed')
     args.output.mkdir(parents=True, exist_ok=False)
     record = {'state': 'incomplete', 'common_clock': False,
+              'position_id': getattr(args, 'position_id', None),
               'microphone_channel': 1, 'capture_channels': 2,
               'microphone_calibration': None, 'seconds': args.seconds,
               'provider': str(args.provider), 'brain': str(args.brain),
@@ -189,6 +198,25 @@ def live(args):
         children.append(child)
         return child
     try:
+        if record['position_id']:
+            # Snapshot the raw stereo control and the actual playback host's source.
+            # Runs using built-in timing probes have no broadband excitation file.
+            mixer = subprocess.check_output(
+                ['amixer', '-c', 'E205U', 'cget', "name=Mic Capture Volume"], text=True, timeout=5)
+            gain = re.search(r'^\s*: values=(\d+),(\d+)\s*$', mixer, re.M)
+            if not gain:
+                raise ValueError('Cannot read stereo E205U capture gain')
+            record['capture_gain_raw'] = [int(value) for value in gain.groups()]
+            remote = ['ssh', 'gigpies-pi4']
+            provider = json.loads(subprocess.check_output(
+                remote + [shlex.join(['cat', '--', str(args.provider)])], timeout=10))
+            excitation = provider['acoustic_bench'].get('excitation')
+            if excitation:
+                digest = subprocess.check_output(remote + [shlex.join(['sha256sum', '--', excitation])],
+                                                 text=True, timeout=10).split()[0]
+                if not re.fullmatch('[a-f0-9]{64}', digest):
+                    raise ValueError('Invalid excitation digest')
+                record['excitation_sha256'] = digest
         pcm = args.output / 'capture.pcm'
         cap = start(['arecord', '-D', 'hw:E205U,0', '-t', 'raw', '-f', 'S16_LE',
                      '-r', str(RATE), '-c', '2', '-d', str(args.seconds), str(pcm)], 'capture')
@@ -248,6 +276,13 @@ def live(args):
         record['capture'] = info
         if any(c['peak_dbfs'] is not None and c['peak_dbfs'] >= -3 for c in info['channels']):
             raise RuntimeError('Capture clipping/headroom refusal')
+        if record.get('excitation_sha256'):
+            report_path = provider['report']
+            record['provider_sha256'] = subprocess.check_output(
+                remote + [shlex.join(['sha256sum', '--', report_path])], text=True, timeout=10).split()[0]
+            for name, path in [('brain', json.loads(args.brain.read_text())['report']),
+                               ('control', control_config['report'])]:
+                record[name+'_sha256'] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
         record['state'] = 'captured_pending_owner_report_review'
     except BaseException as error:
         record['fault'] = str(error) or type(error).__name__
@@ -304,8 +339,14 @@ def main():
     p.add_argument('wav', type=Path)
     p.add_argument('directory', type=Path)
     p.add_argument('--mic-channel', type=int, choices=[1, 2], required=True)
+    p = sub.add_parser('compare', help='Compare matched broadband PA verification runs offline')
+    p.add_argument('--baseline', type=Path, nargs='+', required=True)
+    p.add_argument('--corrected', type=Path, nargs='+', required=True)
+    p.add_argument('--proposal', type=Path, required=True)
+    p.add_argument('--owner', default='shr-pa-measure')
     p = sub.add_parser('capture', help='Explicit attended hardware action')
     p.add_argument('output', type=Path)
+    p.add_argument('--position-id', type=position_id, help='Microphone placement identifier')
     p.add_argument('--capture-device', default='hw:E205U,0')
     p.add_argument('--playback-device', default='hw:AUDIO,0')
     p.add_argument('--channel', choices=['left', 'right'], default='left')
@@ -313,6 +354,7 @@ def main():
     p.add_argument('--authorize-audio', action='store_true')
     p = sub.add_parser('live', help='Bounded production provider/Brain acquisition; prepared configs required')
     p.add_argument('output', type=Path)
+    p.add_argument('--position-id', type=position_id, help='Microphone placement identifier')
     for name in ['provider', 'binary', 'ready', 'brain', 'control', 'local-binary']:
         p.add_argument('--'+name, type=Path, required=True)
     p.add_argument('--seconds', type=int, required=True)
@@ -320,6 +362,12 @@ def main():
     args = parser.parse_args()
     if args.action == 'prepare':
         prepare(args.directory, args.channel, args.level)
+    elif args.action == 'compare':
+        from acoustic_comparison import compare
+        result = compare(args)
+        print(json.dumps(result, indent=2, allow_nan=False))
+        if result['invalid']:
+            sys.exit(2)
     elif args.action == 'live':
         live(args)
     elif args.action == 'inspect':

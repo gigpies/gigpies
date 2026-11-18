@@ -51,9 +51,24 @@ pub struct CaptureIdentity {
     pub performance: Option<String>,
     pub capture: Option<String>,
 }
+/// Measurement-only coherent sum; never a tone-correction or performance identity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObservationGroup {
+    pub name: String,
+    pub channels: Vec<usize>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    /// Explicit routed pair sums for coherent independent-gain prediction.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observation_pairs: Vec<[usize; 2]>,
+    /// Source-local excitation and additive fixed-return attribution, pre-master only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vocal_fx_attribution: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observation_groups: Vec<ObservationGroup>,
     #[serde(default)]
     pub dynamic_trials: Vec<dynamic::Trial>,
     #[serde(default)]
@@ -75,6 +90,9 @@ pub struct Request {
 impl Default for Request {
     fn default() -> Self {
         Self {
+            observation_pairs: Vec::new(),
+            vocal_fx_attribution: false,
+            observation_groups: Vec::new(),
             dynamic_trials: Vec::new(),
             grouped_hierarchy: false,
             composition: composition::Protection::default(),
@@ -183,6 +201,28 @@ pub fn freeze(s: &Session, root: &Path, request: &Request) -> Result<Frozen> {
             }
         }
     }
+    // A disjoint measurement partition bounds additional work by the source
+    // count. Tone profiles retain their stricter family/performance contract.
+    let mut pairs = std::collections::BTreeSet::new();
+    for &[a, b] in &request.observation_pairs {
+        if a >= b || b >= s.channels.len() || !pairs.insert([a, b]) {
+            return Err("observation pairs must be unique ordered source indices".into());
+        }
+    }
+    let mut observed = std::collections::BTreeSet::new();
+    for group in &request.observation_groups {
+        if group.name.trim().is_empty()
+            || group.name.len() > 120
+            || !profile_names.insert(&group.name)
+            || group.channels.len() < 2
+            || group
+                .channels
+                .iter()
+                .any(|&c| c >= s.channels.len() || !observed.insert(c))
+        {
+            return Err("invalid/overlapping observation group".into());
+        }
+    }
     let mut dynamic_profiles = std::collections::BTreeSet::new();
     for trial in &request.dynamic_trials {
         if !dynamic_profiles.insert(&trial.profile) {
@@ -233,9 +273,31 @@ pub fn freeze(s: &Session, root: &Path, request: &Request) -> Result<Frozen> {
     if end as f64 / s.sample_rate as f64 > b.max_seconds || visits > b.max_sample_visits {
         return Err("native timeline exceeds ensemble analysis budget".into());
     }
+    // Charge each source-specific return and the shared reconstruction rack.
+    if request.vocal_fx_attribution {
+        let buses = s.effects.as_ref().map_or(0, |fx| fx.buses.len());
+        let work = visits
+            .checked_mul((2 + 2 * buses) as u64)
+            .ok_or("FX attribution work overflow")?;
+        if work > b.max_sample_visits {
+            return Err("FX attribution exceeds sample visit budget".into());
+        }
+        if !request.profiles.is_empty()
+            || request.hierarchy.is_some()
+            || !request.dynamic_trials.is_empty()
+        {
+            return Err(
+                "vocal FX attribution is measurement-only; incompatible correction request".into(),
+            );
+        }
+    }
     let records = end
         .div_ceil(measure::FFT_FRAMES as u64)
-        .checked_mul(6)
+        .checked_mul(if request.vocal_fx_attribution && s.effects.is_some() {
+            8
+        } else {
+            6
+        })
         .and_then(|n| n.checked_add((end * 100).div_ceil(u64::from(s.sample_rate))))
         .and_then(|n| {
             n.checked_mul(
@@ -244,7 +306,19 @@ pub fn freeze(s: &Session, root: &Path, request: &Request) -> Result<Frozen> {
                         .profiles
                         .iter()
                         .filter(|p| p.channels.len() > 1)
-                        .count()) as u64,
+                        .count()
+                    + request.observation_groups.len()) as u64,
+            )
+        })
+        .and_then(|n| {
+            n.checked_add(
+                end.div_ceil(measure::FFT_FRAMES as u64)
+                    .checked_mul(request.observation_pairs.len() as u64)?
+                    .checked_mul(if request.vocal_fx_attribution && s.effects.is_some() {
+                        5
+                    } else {
+                        1
+                    })?,
             )
         })
         .ok_or("feature budget overflow")?;
