@@ -12,6 +12,39 @@ for both sides of each before/after comparison. Give distinct placements distinc
 IDs. The private session manifest records the supplied ID, or null when omitted.
 Existing unlabelled captures have unknown placement.
 
+## Compare microphone positions offline
+
+Use the reviewed SHR PA broadband proposal and one baseline and corrected live
+run per placement. Keep the amp controls, mic orientation and basis description
+fixed within each pair. Pass the run directories in any order. Each contains
+`capture/session.json`, the original `capture/capture.wav`, the exact
+`provider.json`, `brain.json` and `control.json` reports, and the SHR PA
+`eq-request.json` with its analysis windows and accessible WAV paths. Use
+absolute paths in the request. Labelled live acquisitions record the E205U's raw
+stereo gain, the playback host's broadband WAV digest and the report digests.
+Retain the reports byte for byte when copying them from their hosts.
+
+```sh
+python3 scripts/acoustic_bench.py compare \
+  --owner ../shr-pa/target/release/shr-pa-measure --proposal "$bench/proposal.json" \
+  --baseline "$bench/front-before" "$bench/rear-before" \
+  --corrected "$bench/rear-after" "$bench/front-after"
+```
+
+The JSON report lists each placement separately. Read the before and after
+response, change in dB, and RMS error against that position's fixed baseline
+target. Both measurements use the original samples. The owner selects reliable
+bands in each run (15 dB signal margin, at most 1.5 dB repeat range). At least
+12 common bands spanning three octaves must remain. The report applies the
+owner's 0.25 dB RMS improvement and 1 dB band-error limits to the measured
+changes. Worsening RMS or a band exceeding the error limit flags a regression.
+A valid regression is a measured outcome. Exit status 2 with an `invalid` list
+means evidence is missing, duplicated or incompatible. Other positions still
+appear. Older captures without placement or acquisition provenance need fresh
+evidence. These independent-clock measurements describe uncalibrated magnitude
+at the microphone. Absolute SPL, phase, latency and listening acceptance require
+separate evidence.
+
 ## Supported pilot-mode acquisition and auto-EQ
 
 The production acoustic adapter has an explicit `pilot_bench: true` option.

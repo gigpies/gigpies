@@ -167,8 +167,13 @@ acquisition, not completed steps 1–4 above.
 
 The USB capture and live bench commands now retain an optional operator-supplied
 `position_id` using the GP20 identifier format. The focused offline tests cover
-invalid identifiers and preservation in an incomplete acquisition. Matching
-before/after evidence across placements and physical acquisition remain open.
+invalid identifiers and preservation in an incomplete acquisition. The [offline comparison command](ACOUSTIC_BENCH.md#compare-microphone-positions-offline)
+matches labelled production run directories, verifies the stimulus, raw gain,
+route and actual PA readback against the reviewed proposal, and reports measured
+band changes against each placement's fixed baseline target. Deterministic
+command tests with the real SHR PA analyzer exercise simultaneous improving and
+regressing positions, missing/duplicate sides, unknown placement and changed gain.
+Representative-position physical acquisition and listening remain open.
 
 Next action: continue the synchronized acquisition contract and representative-position
 workflow; reuse the accepted independent-clock bench evidence below. Independent USB clocks and absent calibrated
