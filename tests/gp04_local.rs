@@ -70,7 +70,9 @@ impl Drop for Process {
     }
 }
 fn attach(path: &std::path::Path) -> UnixStream {
-    let mut s = UnixStream::connect(path).unwrap();
+    subscribe(UnixStream::connect(path).unwrap())
+}
+fn subscribe(mut s: UnixStream) -> UnixStream {
     s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
     let b = br#"{"subscription":"lux.aux.v1","version":1}"#;
     s.write_all(&(b.len() as u32).to_be_bytes()).unwrap();
@@ -112,13 +114,26 @@ fn real_process_delivers_actual_signed_pcm_and_survives_reader_loss() {
             .unwrap(),
     );
     let socket = dir.0.join("analysis.sock");
-    for _ in 0..200 {
-        if socket.exists() {
-            break;
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    let stream = loop {
+        match UnixStream::connect(&socket) {
+            Ok(stream) => break stream,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) && std::time::Instant::now() < deadline =>
+            {
+                assert!(
+                    child.child.try_wait().unwrap().is_none(),
+                    "headless exited during startup: {e}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => panic!("initial analysis connection: {e}"),
         }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    let mut s = attach(&socket);
+    };
+    let mut s = subscribe(stream);
     let d: Descriptor = serde_json::from_slice(&frame(&mut s, "initial descriptor")).unwrap();
     d.validate().unwrap();
     let mut cursor = WindowCursor::new(d).unwrap();
