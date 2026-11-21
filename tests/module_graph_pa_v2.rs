@@ -205,3 +205,41 @@ fn initial_preparation_waits_for_actual_commit_frame_and_refuses_live_legacy_swi
         .process_interleaved(7, 48, &raw, &mix, 4, Some(&wet))
         .unwrap();
 }
+
+#[test]
+#[ignore = "requires an independently built feedback-capable owner"]
+fn single_feedback_notch_readback_and_bypass() {
+    let path = PathBuf::from(std::env::var_os("GP_FEEDBACK_PA_LIBRARY").unwrap());
+    let root = PathBuf::from(std::env::var_os("GP14_PA_FIXTURES").unwrap());
+    let mut graph: serde_json::Value = serde_json::from_slice(&read(&root, "stereo3way")).unwrap();
+    graph["outputs"].as_array_mut().unwrap().truncate(1);
+    graph["outputs"][0]["splits_hz"] = serde_json::json!([]);
+    graph["outputs"][0]["band"] = 0.into();
+    let bypass = serde_json::to_vec(&graph).unwrap();
+    graph["feedback_output"] = 0.into();
+    let mut pa = Pa::load(&path, &serde_json::to_vec(&graph).unwrap(), 1, 0).unwrap();
+    assert_eq!(pa.status().unwrap().feedback_output_plus_one, 1);
+    assert_eq!(pa.rearm(1, 0), 0);
+    let mut frame = 0;
+    let mut input = [0.; 512];
+    let mut out = [0.; 256];
+    for _ in 0..40 {
+        for (i, pair) in input.chunks_exact_mut(2).enumerate() {
+            let n = (frame + i as u64) as f64;
+            pair.fill(0.002 * (n / 4800.).exp() * (std::f64::consts::TAU * n / 48.).sin());
+        }
+        assert_eq!(pa.process(&input, &mut out, 1, frame), 0);
+        frame += 256;
+    }
+    assert!(pa.status().unwrap().feedback_hz.abs_diff(1000) <= 4);
+    let mut prepared = pa.prepare(&bypass).unwrap();
+    assert_eq!(pa.mute(), 0);
+    assert_eq!(pa.process(&input, &mut out, 1, frame), 0);
+    assert_eq!(pa.commit(&mut prepared, 1, frame + 256), 0);
+    let status = pa.status().unwrap();
+    assert_eq!(
+        (status.feedback_output_plus_one, status.feedback_hz),
+        (0, 0)
+    );
+    pa.retire();
+}

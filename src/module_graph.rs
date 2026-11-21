@@ -1074,6 +1074,9 @@ impl ModuleGraph {
             .as_ref()
             .map_or(&[], |s| s.program_buses.as_slice())
     }
+    pub fn feedback_supported(&self) -> bool {
+        self.observed.feedback_supported
+    }
     pub fn pa_v2_capabilities(&self) -> Option<crate::host::pa_v2::Capabilities> {
         self.observed.pa_v2_capabilities
     }

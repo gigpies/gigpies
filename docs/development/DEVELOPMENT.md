@@ -33,6 +33,12 @@ build headers but opens no physical devices. Held-proof and atomic-control produ
 regressions are included; ignored owner-artifact, physical and historical campaigns
 remain explicit opt-ins (no `--ignored` in CI).
 
+To exercise feedback-notch readback and bypass through an independently built
+SHR PA, set `GP_FEEDBACK_PA_LIBRARY` to its trusted shared library and
+`GP14_PA_FIXTURES` to the owner's `tests/fixtures/cpa/v2` directory. Run
+`cargo test --locked --features hardware-host --test module_graph_pa_v2 single_feedback_notch -- --ignored`.
+This regression processes synthetic audio in memory.
+
 ## Synthetic transport validation
 
 `src/transport/` owns packet/control contracts and bounded worker handoffs; see

@@ -1483,7 +1483,13 @@ impl LocalAudio {
                     .transpose()
                     .map_err(|e| e.to_string())?,
                 g.pa_v2_capabilities()
-                    .map(serde_json::to_value)
+                    .map(|caps| -> serde_json::Result<_> {
+                        let mut value = serde_json::to_value(caps)?;
+                        if g.feedback_supported() {
+                            value["feedback_notch"] = true.into();
+                        }
+                        Ok(value)
+                    })
                     .transpose()
                     .map_err(|e| e.to_string())?,
             )

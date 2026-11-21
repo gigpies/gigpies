@@ -18,8 +18,10 @@ pub struct Status {
     pub quiesced: u32,
     pub fault_latched: u32,
     pub committed: u32,
-    pub reserved0: u32,
-    pub reserved1: u32,
+    #[serde(default, alias = "reserved0")]
+    pub feedback_output_plus_one: u32,
+    #[serde(default, alias = "reserved1")]
+    pub feedback_hz: u32,
     pub epoch: u64,
     pub next_frame: u64,
     pub generation: u64,
@@ -241,6 +243,7 @@ impl Drop for PreparedEq {
     }
 }
 struct Api {
+    feedback_supported: bool,
     eq: Option<EqApi>,
     prepare: Prepare,
     validate: Validate,
@@ -391,13 +394,15 @@ impl Pa {
             {
                 return Err("SHR PA v2 capabilities mismatch".into());
             }
+            let feedback_query = library.get::<Query>(b"shr_pa_v2_feedback_status").ok();
             Arc::new(Api {
+                feedback_supported: feedback_query.is_some(),
                 eq: EqApi::load(&library),
                 prepare: *library.get::<Prepare>(b"shr_pa_v2_prepare")?,
                 validate: *library.get::<Validate>(b"shr_pa_v2_validate")?,
                 apply: *library.get::<Apply>(b"shr_pa_v2_apply")?,
                 process: *library.get::<Process>(b"shr_pa_v2_process")?,
-                status: *library.get::<Query>(b"shr_pa_v2_status")?,
+                status: *feedback_query.unwrap_or(library.get::<Query>(b"shr_pa_v2_status")?),
                 destroy: *library.get::<Destroy>(b"shr_pa_v2_destroy")?,
                 mute: *library.get(b"shr_pa_v2_mute")?,
                 rearm: *library.get(b"shr_pa_v2_rearm")?,
@@ -569,6 +574,9 @@ impl Pa {
         }
         bytes.truncate(code as usize);
         String::from_utf8(bytes).map_err(Into::into)
+    }
+    pub fn feedback_supported(&self) -> bool {
+        self.api.feedback_supported
     }
     pub fn capabilities(&self) -> Capabilities {
         self.api.capabilities

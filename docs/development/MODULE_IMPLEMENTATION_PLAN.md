@@ -100,6 +100,16 @@ as `ecd471e`; this maintenance does not authorize T3 or physical activation.
 | [GP-H2](#gp-h2--physical-dual-console-operation) | GigPies lead; Desk/Lightdesk contributors | Physical input/profile integration and actual display/controller acceptance; see card |
 | [GP-H3](#gp-h3--whole-show-qualification) | GigPies lead; all runtime owners | PLANNED: follows audio/console qualification and Lux LX-06 output |
 
+## GP-PA-FEEDBACK — one notch on one output
+
+- [x] Configurable SHR PA v2 guard, bypass and GigPies structural readback. Desk F9 exposes the output selector and applied frequency.
+  [Operator controls](../reference/MODULAR_PROCESSING.md#automatic-feedback-notch).
+- [x] Simulated 1 kHz acoustic loop, held guitar/vowel/flute-like fixtures,
+  independent output and real owner-library status/bypass regression.
+- [ ] Rehearsal acceptance: observe the cut frequency, response time and
+  false triggers on a representative PA with musicians. Requires an authorized
+  hardware session.
+
 ## GP-PA-MEASURE — physical measurement workflow
 
 State: **IN PROGRESS — independent-clock auto-EQ/live remeasurement and Brain relative timing accepted on the bounded USB bench; synchronized workflow open**. Owner: GigPies. Contributors: SHR PA analysis/proposals and
@@ -4811,6 +4821,15 @@ recorded in this card; implementation does not imply musical acceptance.
 Owner: GigPies. This card alone owns the implementation sequence, acceptance,
 evidence and next action. [Research record](../archive/studies/AUTOMIX_ROLE_RESEARCH_2026-10-28.md)
 contains sources R1–R9 and access limitations, not another backlog.
+
+### Main vocal soundcheck rule (2026-11-21)
+
+Measure the main vocal while the singer soundchecks. Keep its soundcheck level.
+The only automatic adjustment allowed on this mic is a level reduction when it
+peaks. Stage spill needs no classification or treatment. This supersedes all
+lead-vocal proposals and open classifier, capture-review and listening gates
+below. The offline experiments are historical evidence. Apply this rule when
+implementing live soundcheck in GP-AUTO. Backing vocals have their own scope.
 
 ### Outcome and authorization
 

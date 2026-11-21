@@ -74,7 +74,15 @@ independent vocal/backing prominence, event recognition or a bounded live
 controller. Its output is a calculated candidate for listening, not an automatic
 claim of a musically correct mix. Those requirements remain in the owning task.
 
+## Main vocal at soundcheck
+
+Measure the singer at soundcheck and keep that level. Reduce the level only
+if the main vocal peaks. Skip the offline vocal experiment for this mic.
+
 ## Measured vocal decisions (offline v1)
+
+The following procedure documents an offline experiment. Its lead-vocal
+proposals are superseded by the soundcheck rule above.
 
 `python3 scripts/vocal_balance.py ANALYSIS CAPTURE.json NEW_DIRECTORY` proposes
 faders and writes `decision.json` plus `settings.json`. It reuses frozen

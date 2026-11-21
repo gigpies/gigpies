@@ -159,3 +159,15 @@ buses patched directly are monitor buses, not a claim that SHR PA speaker
 protection has been applied; route a monitor through an owner program/output when
 that protection is required. Physical mains configured with PA cannot bypass it
 through a direct Main patch.
+
+## Automatic feedback notch
+
+In SHR Desk, open the F9 PA editor and select a speaker output or Bypass in the first field. The readback shows the applied frequency.
+
+For direct structural control with a feedback-capable SHR PA library, set `"feedback_output": 0` in the PA
+graph for the first speaker output (1 selects the second). Use the existing
+`pa_set` operation and explicit output rearm. In `structural_snapshot.pa_status`,
+`feedback_output_plus_one` identifies the selected output, or zero for bypass.
+`feedback_hz` shows the applied cut frequency, or zero while waiting. To bypass
+and clear the cut, omit `feedback_output` and reapply the graph. This structural
+change briefly mutes the PA. Existing graphs default to bypass.
