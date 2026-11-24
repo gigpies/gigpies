@@ -819,6 +819,10 @@ pub struct HostMediaStats {
     pub min_wet_margin_frames: Option<u64>,
     /// Accepted wet packets that arrived with less than the 192-frame (4 ms) margin.
     pub wet_margin_below_192: u64,
+    /// Identity of the packet that set the current minimum margin.
+    pub min_wet_margin_witness: Option<LateWetWitness>,
+    /// Source frames of the first eight packets under 192 frames of margin.
+    pub low_margin_source_frames: Vec<u64>,
     pub late_wet_packets: u64,
     pub first_late_wet: Option<LateWetWitness>,
     pub last_late_wet: Option<LateWetWitness>,
@@ -1157,13 +1161,26 @@ impl HostAuthority {
                     self.media_stats.accepted_wet_packets =
                         self.media_stats.accepted_wet_packets.saturating_add(1);
                     let margin = packet.output_frame().saturating_sub(receipt.frame);
-                    self.media_stats.min_wet_margin_frames = Some(
-                        self.media_stats
-                            .min_wet_margin_frames
-                            .map_or(margin, |m| m.min(margin)),
-                    );
+                    if self
+                        .media_stats
+                        .min_wet_margin_frames
+                        .is_none_or(|m| margin < m)
+                    {
+                        self.media_stats.min_wet_margin_frames = Some(margin);
+                        self.media_stats.min_wet_margin_witness = Some(LateWetWitness {
+                            source_epoch: receipt.epoch,
+                            packet_source_frame: packet.source_frame(),
+                            packet_output_frame: packet.output_frame(),
+                            observed_source_frame: receipt.frame,
+                        });
+                    }
                     if margin < 192 {
                         self.media_stats.wet_margin_below_192 += 1;
+                        if self.media_stats.low_margin_source_frames.len() < 8 {
+                            self.media_stats
+                                .low_margin_source_frames
+                                .push(packet.source_frame());
+                        }
                     }
                     self.media_stats
                         .first_wet_source_frame
