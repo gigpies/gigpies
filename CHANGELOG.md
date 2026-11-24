@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Measured meters are now checked against the real PA/FX/REC modules: Main
+  pre-PA and every monitor match independent references at 16/17/32/48 inputs,
+  and identity changes, slow readers and repeated reads cannot refresh old windows.
+- Shared panel 0.3.3 adds a read-only MIDI reader. Both desks accept a learned
+  controller profile (`--controller-profile`); Desk imports the learned SHR-DAW
+  MiniLab mapping (`--controller-import-daw`) and adds a read-only `--controller-learn`. Physical controller acceptance remains open.
+- `scripts/owner_manifest.py` records owner-library manifests from clean
+  committed checkouts, so owner-backed tests no longer depend on stale hashes.
+- The integration plan and development guide are condensed; their full history
+  is archived.
+
 ## 0.2.3 — 2026-10-04
 
 - Defines GigPies as the complete audio and lighting system: SHR Desk owns the

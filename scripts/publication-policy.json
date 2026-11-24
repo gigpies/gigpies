@@ -66,7 +66,8 @@
     "scripts/test_acoustic_bench.py",
     "scripts/test_acoustic_comparison.py",
     "scripts/vocal_balance.py",
-    "scripts/test_vocal_balance.py"
+    "scripts/test_vocal_balance.py",
+    "scripts/owner_manifest.py"
   ],
   "binary_artwork": [
     "docs/assets/gigpies-concept.png",

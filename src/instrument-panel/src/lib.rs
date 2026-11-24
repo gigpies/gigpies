@@ -1,6 +1,7 @@
 //! Shared, cell-native instrument controls. No device or authority logic.
 pub mod assets;
 pub mod keybed;
+pub mod midi;
 pub mod protocol;
 use ratatui::{
     buffer::Buffer,

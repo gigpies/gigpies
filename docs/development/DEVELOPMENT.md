@@ -1,391 +1,130 @@
 # Development
 
-## Console and engine ownership
+[Engineering index](README.md) · [Integration plan](MODULE_IMPLEMENTATION_PLAN.md) · [Publication](PUBLICATION.md)
 
-GigPies owns final integration and show/control contracts. Audio surface work
-belongs in `../shr-desk`, lighting surface work in `../shr-lightdesk`, and lighting
-engine algorithms/output in `../shr-lux`. Both desks target one Brain with two
-1920×1080 monitors and separate MIDI controllers. They currently build and run
-offline independently; this CLI does not launch either desk. See
-[Brain integration](../architecture/BRAIN_CONSOLES.md) before adding adapters.
+GigPies owns integration, the processing engine and show/control contracts.
+Audio desk work lives in `../shr-desk`, lighting desk in `../shr-lightdesk`,
+lighting engine in `../shr-lux`, PA in `../shr-pa`, effects in `../shr-fx` and
+recording in `../shr-rec` ([components](../architecture/COMPONENTS.md)). Each
+repository builds on its own: no path dependencies.
 
-## Explicit hardware host
+## Toolchain and build lock
 
-The optional `hardware-host` feature builds `gigpies-hardware`, a bounded stereo
-ALSA/module bench; see [its contract and acceptance](../acceptance/AUDIO_HARDWARE.md). Build
-owner libraries independently and pass explicit paths in private configuration.
-Normal tests open no devices; actual measurements require session authorization
-and resource reservation. `cargo run` still defaults to the offline GigPies CLI.
+Rust 1.97.1 (pinned in `rust-toolchain.toml`), edition 2024, committed `Cargo.lock`.
+The Pis share one nonblocking build lock; a busy lock means wait, not retry harder.
 
 ```sh
-CARGO_INCREMENTAL=0 cargo test --locked --all-targets --features hardware-host
-CARGO_INCREMENTAL=0 cargo clippy --locked --all-targets --features hardware-host -- -D warnings
-CARGO_INCREMENTAL=0 cargo build --locked --release --features hardware-host --bin gigpies-hardware
+B="flock -xn /home/shome/p/.gigpies-build.lock env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1"
+$B cargo +1.97.1 test --locked -j1 --all-targets
+$B cargo +1.97.1 test --locked -j1 --all-targets --features hardware-host
+$B cargo +1.97.1 clippy --locked -j1 --all-targets --features hardware-host -- -D warnings
+cargo fmt --all -- --check
+python3 -m unittest discover -s scripts -p 'test_*.py'
+$B cargo +1.97.1 build --locked -j1 --release
 ```
 
-`tests/host.rs` protects channel-wide fades, deadline selection, source precision,
-frame ownership and bounded metric reporting. Historical studies and the opt-in
-socket test retain their existing classification.
+Pi 5 has 2 GiB RAM: run one Cargo job at a time. Review disk use below 20 GiB free
+or above 5 GiB in a target directory; remove only task-built test executables.
 
-CI runs the normal offline checks, warning-denied Clippy, tests and release build
-in both default and `hardware-host` configurations. The feature job installs ALSA
-build headers but opens no physical devices. Held-proof and atomic-control producer
-regressions are included; ignored owner-artifact, physical and historical campaigns
-remain explicit opt-ins (no `--ignored` in CI).
+## Test classes
 
-To exercise feedback-notch readback and bypass through an independently built
-SHR PA, set `GP_FEEDBACK_PA_LIBRARY` to its trusted shared library and
-`GP14_PA_FIXTURES` to the owner's `tests/fixtures/cpa/v2` directory. Run
-`cargo test --locked --features hardware-host --test module_graph_pa_v2 single_feedback_notch -- --ignored`.
-This regression processes synthetic audio in memory.
+The agent selects tests by changed behavior and reports what ran and what was skipped.
+
+| Class | Runs | When |
+|---|---|---|
+| Normal | `cargo test --all-targets` (both configurations), Python `test_*.py` | Always for shared engine, schema, routing, transport, safety or rendering changes; CI runs both |
+| Owner-artifact | `-- --ignored` with `GP05_MANIFEST` etc. | When the change touches PA/FX/REC integration or meters (see below) |
+| Long virtual-clock | `--release --test brain_bridge -- --ignored` | When the Brain bridge/ASRC or its assumptions change |
+| Historical / audition / exhaustive | Named `--ignored` tests, private media | Only when directly relevant or requested |
+| Two-node / physical | Lab runners, real devices | Only in a separately authorized, reserved session |
+
+Normal tests generate synthetic WAVs in temporary directories. They never open
+audio, MIDI, DMX, sockets to other hosts or third-party music.
+
+## Owner-artifact tests
+
+These load the real SHR PA/FX/REC libraries. Build each owner's release library
+from a clean committed checkout, then record a fresh manifest:
+
+```sh
+for r in shr-pa shr-fx shr-rec; do (cd ../$r && $B cargo +1.97.1 build --locked -j1 --release --lib); done
+python3 scripts/owner_manifest.py artifacts/owners          # writes artifacts/owners/modules.json
+export GP05_MANIFEST=$PWD/artifacts/owners/modules.json
+export GP_PA_V2_FIXTURES=/home/shome/p/shr-pa/tests/fixtures/cpa/v2 GP14_PA_FIXTURES=$GP_PA_V2_FIXTURES
+```
+
+The manifest pins each library, header and owner revision by SHA-256; loading
+fails if a file changes. Then run the relevant targets with
+`--features hardware-host -- --ignored --test-threads=1`:
+
+| Target | Proves |
+|---|---|
+| `--test modular_owners` | PA v2 retirement/rearm, FX bank, REC takes, monitor taps into the PA matrix |
+| `--test brain_owners` | Brain duplex with actual owners and raw analysis |
+| `--test metering actual_owner` | GP-METER Main pre-PA/monitor levels and PA output against independent instances |
+| `--test gp07_frontend` | Desk frontend edits, monitors, FX wet+dry→PA, raw PCM24 stems (also needs `GP07_DESK_DRIVER`) |
+| `--test module_graph_pa_v2 single_feedback_notch` | Feedback-notch readback and bypass through real SHR PA (set `GP_FEEDBACK_PA_LIBRARY` to the PA library) |
+| `--lib actual_four_aux` | Four Brain FX auxes over authenticated transport (needs `GP_FX_LIBRARY`) |
+
+Never make untrusted library loading implicit in CI.
 
 ## Synthetic transport validation
 
-`src/transport/` owns packet/control contracts and bounded worker handoffs; see
-[the protocol and evidence](../reference/AUDIO_TRANSPORT.md). Normal `tests/transport.rs`
-covers parsing, exact samples, channel/session admission, ordering, loss, frame
-and sequence limits, drift diagnostics, wet envelopes and control recovery.
-It opens no sockets or audio devices.
+`src/transport/` owns packet/control contracts and bounded worker handoffs
+([protocol](../reference/AUDIO_TRANSPORT.md), [v1 blueprint](../architecture/AUDIO_TRANSPORT_V1.md)).
+`tests/transport.rs` covers parsing, exact samples, admission, ordering, loss,
+drift diagnostics and control recovery without sockets. The loopback-socket
+capacity check is opt-in: `cargo test --locked --test transport_network -- --ignored`.
+Two-Pi runners stay private under `artifacts/audio-transport/` and need a new
+mutually acknowledged reservation before any rerun.
 
-```sh
-CARGO_INCREMENTAL=0 cargo test --locked --test transport
-CARGO_INCREMENTAL=0 cargo test --locked --all-targets
-```
+## Hardware host and Brain
 
-The local socket-capacity regression is opt-in because it binds a loopback UDP
-socket. It generates no external traffic or audio:
+The optional `hardware-host` feature builds `gigpies-hardware` (bounded ALSA/module
+bench), `gigpies-remote` (configured provider/Brain runner) and `gigpies-brain`
+(fake duplex adapter over the production host, ASRC and transport). Physical
+opening needs `--activate-physical` and session authorization; no service is
+installed. See [hardware evidence](../acceptance/AUDIO_HARDWARE.md),
+[modular processing](../reference/MODULAR_PROCESSING.md) and [Brain audio](../reference/BRAIN_AUDIO.md).
 
-```sh
-CARGO_INCREMENTAL=0 cargo test --locked --test transport_network -- --ignored
-```
+## Code map
 
-Paced two-Pi runners and their evidence remain private under
-`artifacts/audio-transport/2026-10-03/`. They require a new mutually acknowledged
-resource reservation before rerunning, with exact ports, candidate hashes and
-hard deadlines. Neither CI nor the offline CLI starts a transport service.
+| Area | Source | Contract / guide | Tests |
+|---|---|---|---|
+| Mixer, channel strip, gate | `mixer.rs`, `channel_processing.rs`, `gate.rs` | [channel processing](../reference/CHANNEL_PROCESSING.md) | `gp07*`, `gate`, `dynamic_eq` |
+| Control authority, wire | `mixer_control.rs`, `control_model.rs`, `processing_wire.rs` | [control wire](../reference/AUDIO_CONTROL_WIRE.md) | `gp02`–`gp07`, `structural_control` |
+| Engine host, module graph | `local_audio.rs`, `local_audio/`, `module_graph.rs`, `host/` | [module graph](../reference/MODULE_GRAPH.md), [contracts](../reference/MODULE_CONTRACTS.md) | `modular_engine`, `modular_owners` |
+| Meters, spectrum | `metering.rs`, `meter_wire.rs`, `spectrum.rs` | [contracts](../reference/MODULE_CONTRACTS.md) | `metering` |
+| Remote and Brain | `remote/`, `brain_runtime/`, `transport/` | [remote transport](../reference/REMOTE_TRANSPORT.md), [Brain bridge](../reference/BRAIN_AUDIO_BRIDGE.md) | `remote::tests`, `brain_bridge`, `transport` |
+| PA measurement capture | `measurement_capture.rs` | [measurement producer](../reference/MEASUREMENT_PRODUCER.md) | `gp20_*` |
+| Offline automix | `automix/` (`balance`, `tone`, `bass`, `drums`, `bleed`, `ambience`, `matching`, `delivery`, …) | [offline guides](../guides/README.md) | `balance`, `tone`, `bass`, `drums`, `ensemble`, … |
+| Shared console UI and MIDI | `src/instrument-panel/` (package `shr-instrument-panel`) | [instrument panel](../reference/INSTRUMENT_PANEL.md) | crate tests |
 
-## Layout
+Automix rules separate detection, proposed change, actual validation and remaining
+defects. Python scripts under `scripts/` only summarise or plot saved measurements;
+all processing decisions stay in Rust. The previous module-by-module tour is in
+the [archived guide](../archive/records/DEVELOPMENT-before-2026-11-24.md#offline-automixer).
+
+The shared panel package is vendored into consumers with
+`python3 scripts/package_panel.py [shr-desk|shr-lightdesk]`; bump its version and
+the consumer's exact requirement together.
+
+## Repository layout
 
 ```text
-src/                    Rust library and command entry point
-tests/                  fast synthetic integration and CLI tests
-examples/               instructions for runnable examples as they are added
-sessions/               public session-format guidance; local/ is ignored
-docs/                   maintained design, status and development guides
-docs/assets/            current SVG diagrams and retained historical concept artwork
-docs/archive/           preserved draft documents
-recordings              ignored link to ../waves/recordings
-artifacts/              ignored renders, reports and scratch evidence
-archive/local/          ignored retired local experiments
-.github/workflows/      hardware-free Rust CI
+src/            library, CLI and binaries      tests/      fast synthetic integration tests
+docs/           maintained documentation        scripts/    reviewed helper scripts
+examples/       runnable example notes          sessions/   public session format (local/ ignored)
+recordings      ignored link to ../waves         artifacts/  ignored evidence and scratch
+archive/local/  ignored retired experiments     .github/    hardware-free CI
 ```
 
-Keep current decisions in maintained docs. Preserve historically useful drafts under
-`docs/archive/` with an index; do not treat them as active implementation requirements.
-Use `archive/local/` for private retired experiments and `artifacts/` for disposable
-outputs. Never move private recordings into the public documentation archive.
+## Documentation rules
 
-## Validation
-
-Enable [publication hooks](PUBLICATION.md) with
-`git config --local core.hooksPath .githooks` after checking for existing hooks.
-Use `CARGO_INCREMENTAL=0` for local Rust builds/tests.
-
-```sh
-rustc -vV
-cargo fmt --all -- --check
-cargo check --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
-python3 -m unittest discover -s scripts -p 'test_*.py'
-cargo build --locked --release
-```
-
-Normal tests use generated synthetic WAVs and temporary directories. They protect
-metadata interpretation, malformed input handling and CLI contracts. They never
-start audio, MIDI, DMX, network services or access third-party music.
-
-The agent selects tests based on changed behavior. Run focused regressions while
-implementing; run the normal production suite for engine/rendering, shared models,
-routing/persistence, concurrency, safety and broadly reused changes, and releases.
-Historical auditions, exhaustive matrices, long benchmarks and private-media checks
-belong behind explicit opt-in commands once added. Keep required current production
-regressions in the default suite. Report run and intentionally skipped test classes.
-
-## Scope and hardware
-
-Sibling checkouts are references. Keep this project independently buildable; no local
-path dependencies or assumptions that another repository has been installed.
-Preserve source licences when adapting code. The skeleton starts no hardware.
-Hardware sessions and audible playback require a specific authorized task.
-
-Before publication inspect staged files, confirm music/private data are absent,
-run `git diff --cached --check`, and run the normal checks above. Version 0.2.3
-includes offline tools and an explicit optional hardware bench, with both consoles
-still in development. Release notes must distinguish
-implemented, offline-validated and physically verified behavior.
-Run `python3 scripts/check_publication.py` after staging. The guard checks the
-actual Git blobs, private directory boundaries and the reviewed script list.
-
-## Offline automixer
-
-See [AUTOMIX.md](../archive/workflows/AUTOMIX.md) for commands and explicit private-media test opt-ins.
-`src/automix/config.rs` owns editable settings and validation, `dsp.rs` owns signal
-processing, and `render.rs` owns offline files/timeline/reports. Production tests
-remain hardware-free. Failed render directories are partial and must not be published.
-
-The optional FX/review extension is documented in [FX_PASS.md](../guides/FX_PASS.md).
-`effects.rs` owns configuration/routing; attributed static engines are in
-`fx_engines.rs` and `exciter.rs`; `analysis.rs` owns deterministic measurements and
-bounded review rules. `scripts/analyze_mix.py` is optional plotting only and cannot
-change settings. All correction decisions remain in Rust and are covered by the
-normal synthetic suite.
-
-The [musical balance pass](../guides/BALANCE_PASS.md) is owned by `automix/balance.rs`. It
-reuses native source reading/routing and DSP, buffers synchronized energy covariance,
-and searches musical faders without touching input trims. `scripts/balance_excerpts.py`
-is an optional PCM excerpt/export verification tool; it never changes mix settings.
-
-The [manufacturer-reference experiment](../archive/studies/PRESET_EXPERIMENT.md) adds explicit shelf
-shapes and local parameter mapping. Numerical collections and media stay ignored.
-
-The [tone pass](../guides/TONE_PASS.md) is owned by `automix/tone.rs`. It reuses the existing
-FFT and production DSP, accepts explicit instrument-path identity, and has focused
-normal regressions in `tests/tone.rs`. Its spectral targets are editable intent
-choices in a separate policy; it does not change the session persistence schema.
-
-The [source-rule coordinator](../guides/SOURCE_RULES.md), `automix/expert.rs`, owns explicit
-profile applicability, sustained-compression plans, source advice and joint
-validation. `tone.rs` owns guitar spectral measurements and EQ search. New rules
-must separate detection, proposed changes, actual validation and remaining defects;
-never assign processing from display names. `tests/expert.rs` uses synthetic media
-and is part of the normal suite. Public profile/rule examples are our parameters;
-manufacturer collections and private media stay local.
-
-Independent finished-mix review is owned by `automix/reference.rs`; it must never
-import or modify processing settings. `tests/reference.rs` exercises alignment and
-file contracts with synthetic audio. `scripts/play_pair.py` owns prepared two-clip
-playback; its normal tests inject a fake player and never open hardware. See
-[reference review](../guides/REFERENCE_REVIEW.md) for confidence limits and commands.
-
-Source audio is shared across sibling projects through `../waves`; see
-[local media layout](LOCAL_MEDIA.md). Generated evidence stays project-local.
-
-The [DI bass/kick extension](../guides/BASS_KICK.md) is owned by `automix/bass.rs`. Its separate
-policy keeps bass intent distinct from guitar profiles. It reuses production DSP
-and the expert module's repeated-contact thresholds. `tests/bass.rs` protects
-current decisions and guards in the normal suite. `scripts/bass_evidence.py` only
-summarizes/plots saved measurements; it cannot select or modify processing.
-
-The [drum extension](../guides/DRUMS.md) is owned by `automix/drums.rs`, with the explicit
-rhythmic-offset calculation in `balance.rs`. It uses production source/strip/routing
-DSP and the existing bass FFT helpers. `tests/drums.rs` belongs in the normal suite;
-`scripts/drum_evidence.py` summarizes saved measurements without choosing settings.
-`drum-verify` checks a frozen pilot candidate and cannot search against held-out data.
-
-`automix/bleed.rs` owns [conditional snare-spill analysis](../guides/SNARE_BLEED.md), bounded
-static probes and diagnostic waveform predictors. `tests/bleed.rs` is normal synthetic
-coverage. `scripts/snare_bleed_evidence.py` summarizes fixed masks without selecting
-settings. The renderer has no new gate, expander or reference-cancellation path.
-
-`scripts/snare_temporal_evidence.py` audits frozen attack/decay representations and
-retained-rise support. Its separate fit/evaluate commands never select processing;
-`test_snare_temporal_evidence.py` is fast normal coverage for training isolation,
-quiet/compound protection, malformed evidence and source-identifiability limits.
-See the [temporal follow-up](../archive/studies/SNARE_BLEED.md#temporal-follow-up-frozen-representation-audit).
-
-`automix/bleed_reference.rs` owns frozen joint-reference diagnostic fitting and
-full-source evaluation. It reuses `bleed::measure`, keeps sample support inside each
-split, and never changes settings or audio. `tests/bleed_reference.rs` is normal fast
-synthetic coverage for identifiability, reference contamination and saved-model bounds.
-
-`balance-source-analyze` shares source reading/routing with the processed balance
-analyzer but bypasses DSP. `scripts/ensemble_review.py` is a descriptive observer
-of those measurements; it cannot select processing or populate listener preference.
-`tests/balance.rs` checks SOURCE against production renderer samples and coherent
-sums; `scripts/test_ensemble_review.py` checks fixed raw activity, section conflicts,
-export-stage separation and provenance/alignment refusal. Both are normal fast tests.
-See [Complainiacs reassessment](../archive/studies/COMPLAINIACS_REASSESSMENT.md) for the current use.
-
-The [subsequent workflow review](../archive/studies/COMPLAINIACS_WORKFLOW_REVIEW.md) adds coherent
-snare/remaining-ensemble groups and `scripts/snare_context.py`. Its normal tests
-protect fixed-event context, signed interaction, silence and split independence.
-Listening specifications now pin original SOURCE settings/WAV hashes; preparation
-rechecks every parent and metadata file before writing its completion manifest.
-Unknown rhythmic intent withholds fader moves without vetoing independent
-fixed-fader processing. Existing technical guards remain unchanged.
-
-`automix/preservation.rs` owns explicit unchanged-source preparation. The shared
-offline admission contract allows schema-valid HPFs including bypass; production
-measurement must use the configured filter. `tests/preservation.rs` checks exact
-SOURCE-as-FINAL samples and analyzer/renderer agreement. Missing tone/balance intent
-and default FX review preserve settings; explicit historical experiments remain
-reproducible. See [source preservation](../guides/SOURCE_PRESERVATION.md).
-
-`automix/ambience.rs` owns explicit artistic FX proposals, engine-decay calibration,
-training-only return calibration and held-out ensemble checks. It preserves the
-accepted direct settings. `tests/ambience.rs` verifies production render agreement,
-zero amount, source identity, invalid input/FX-return refusal, held-out isolation
-and overload rejection. The checkpoint contract accepts an explicitly declared
-production FX tail while retaining pinned SOURCE files; Python regressions reject
-unexplained duration changes, altered offsets and inconsistent tail metadata.
-`ambience::calibration` reports individual decay/return limits and amount-aware
-bus observations; `ambience::review` writes the separate eligibility, target and
-pending-acceptance results. Normal synthetic coverage includes unreachable decay,
-return-floor limitation, actual measured ratios and missing held-out evidence.
-`ambience::persistence` pins inputs/reports and writes the completion record last;
-`ambience-check` verifies it without rendering. Normal tests cover changed inputs,
-partial/failed plans, no overwrite and master-limiter observer/render agreement.
-Chronological splits prevent continuous FX history from carrying held-out audio
-into later training. The generic content hashes live in `automix::identity`;
-EQ matching retains its existing identity API through re-exports.
-`ambience::validation` owns complete-window coverage and named ensemble failures.
-`ambience::audit` reads saved evidence without audio access or a new eligibility
-decision. Its normal tests cover legacy missing observations, bounded returns,
-zero amount, rejected plans, inconsistent saved evidence and output preservation.
-
-`automix::matching` owns [frozen EQ matching](../guides/EQ_MATCHING.md), map imports and the
-local review page. `tests/matching.rs` covers production-DSP preservation, recovery,
-noise/cancellation abstention, persistence and nonlinear interactions. SHA-256 pins
-inputs/settings; serde_json float round trips preserve those identities. The page
-exports a selection request for offline validation and has no live control path.
-`matching::compare_eq` adds a read-only comparison of identical recordings with
-group EQ as the only permitted settings difference. Paired spectral dispersion is
-diagnostic evidence, never a target or fit tolerance. Normal matching regressions
-cover exact identity, nonlinear interactions, settings refusal, missing evidence
-and held-out isolation; private phrase-comparability studies remain opt-in.
-`matching::comparison_review` formats new or saved diagnostics with identity and
-scope checks, explicit missing evidence and named compressor/FX consequences.
-New matching plans require chronological splits; historical state validation and
-exact reset retain the existing contract. Newly written HTML reviews disclose
-interleaved historical evidence. The shared ordering predicate lives in
-`automix/mod.rs`; diagnostics can describe legacy passages without refitting them.
-
-`automix::delivery` owns the versioned export sidecar and completed-delivery checks;
-`true_peak` owns the streaming interpolation meter. `render` keeps the legacy path
-and supplies the policy-aware render and scalar-only observation entry points.
-`observation` taps actual production states and reconciles peak contributions.
-The normal `tests/summing.rs` and `tests/delivery.rs` protect independent arithmetic,
-conversion, mode independence, static output identity and failure recovery.
-The policy checkpoint and external-meter script have synthetic Python regressions;
-normal tests do not require FFmpeg. See [commands and contracts](../guides/SUMMING_DELIVERY.md).
-
-## GP07 channel processing checks
-
-Normal `gp07`, `gp07_alloc` and `gp07_local` tests protect DSP references,
-transition/neutral behavior, every input, allocation-free rendering, strict wire,
-shared authority/retry history and private-endpoint recovery. Run Cargo under the
-parent-held nonblocking build lock with the existing Rust1.97.1, locked, jobs1 and
-incremental0 policy. Default and hardware-host complete suites remain required.
-
-The ignored `gp07_frontend` acceptance test requires an explicitly hash-verified
-Desk test executable (`GP07_DESK_DRIVER`) and actual owner libraries (`GP05_MANIFEST`).
-It runs the actual LocalAudio pump and Desk frontend, checks every monitor block,
-independent actual FX wet+dry→PA output, raw analysis and all eight recorded PCM24
-stems. See the v2 fixture README for the opt-in producer-corpus regeneration command.
-The v1 corpus is retained unchanged for explicit unsupported-version checks; its
-historical generator is reproducible at the archived v1 source checkpoint.
-No hardware or operator windows are opened. Private task manifests bind artifacts
-and results; tests cannot substitute fixtures for actual-provider acceptance.
-
-
-After independently building and checking the Desk `gp07_frontend` test binary and
-owner-library manifest, run from this repository with explicit absolute paths:
-
-```sh
-flock -xn /home/shome/p/.gigpies-build.lock \
-  env CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 \
-  GP05_MANIFEST=/absolute/private/modules.json \
-  GP07_DESK_DRIVER=/absolute/private/gp07_frontend-test-binary \
-  GP07_ACCEPTANCE_EVIDENCE=/absolute/private/acceptance.json \
-  cargo +1.97.1 test --locked -j1 --features hardware-host \
-  --test gp07_frontend -- --ignored --exact \
-  actual_frontend_processing_preserves_raw_and_monitors_and_module_order
-```
-
-The test requires at least seventeen real frontend edits, checks every actual
-final-reply sample-frame boundary against provider observations,
-and replays each physical input through an independent slot-zero mixer to verify
-channel mapping across the entire captured FOH timeline. A separate direct-form-I
-bell reference checks the full EQ-only timeline, including crossfades, all four
-band controls, crossed frequencies and bypass; neutral/bypass are bit exact.
-The same source drives independent actual FX wet-plus-dry -> PA comparisons. It checks recording
-coverage and retained settings after the driver exits and the lease expires.
-
-## Configurable processing and remote integration
-
-The `hardware-host` feature also exposes the shared multichannel `host::duplex`
-adapter and explicitly configured synthetic `gigpies-remote` provider/Brain runner.
-Neither starts by default or qualifies a physical device. See
-[composition and mapping](../reference/MODULAR_PROCESSING.md), [remote transport](../reference/REMOTE_TRANSPORT.md)
-and the [acceptance matrix](../acceptance/MODULAR_ENGINE_ACCEPTANCE.md).
-
-Serialize all local Rust validation through the parent-held nonblocking lock:
-
-```sh
-flock -xn /home/shome/p/.gigpies-build.lock env CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo +1.97.1 test --locked -j1 --all-targets
-flock -xn /home/shome/p/.gigpies-build.lock env CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo +1.97.1 test --locked -j1 --all-targets --features hardware-host
-flock -xn /home/shome/p/.gigpies-build.lock env CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo +1.97.1 clippy --locked -j1 --all-targets --features hardware-host -- -D warnings
-```
-
-A busy lock means defer the command. `modular_engine`, `structural_control`,
-`gp07_alloc` and remote unit regressions belong in the normal production suite.
-`modular_owners`, `module_graph_pa_v2` and `structural_producer` explicitly require
-trusted independently built owner artifacts: set `GP05_MANIFEST`,
-`GP_PA_V2_FIXTURES` and `GP14_PA_FIXTURES`, plus a private `GP14_PRODUCER_DIR`
-for producer output, then run the selected test with `--features hardware-host`
-and `-- --ignored` under the same lock. Do not make untrusted library loading
-or generated acceptance artifacts implicit in CI. Tests document their exact
-required inputs. Actual cross-node checks require a bounded reservation on both
-hosts; physical PCM remains a separate authorization and acceptance step.
-
-## Brain duplex software validation
-
-The `hardware-host` feature also builds `gigpies-brain`. Its fake duplex adapter
-uses the production host, ASRC, authority and authenticated transport; physical
-opening additionally requires `--activate-physical` and session authorization.
-No service is installed. [Brain audio](../reference/BRAIN_AUDIO.md) tracks integrated acceptance
-and physical gates; [bridge details](../reference/BRAIN_AUDIO_BRIDGE.md) state numerical bounds.
-
-On the two-Pi lab, hold the shared nonblocking build lock for each Cargo command:
-
-```sh
-flock -n /home/shome/p/.gigpies-build.lock env CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo +1.97.1 test --locked -j1 --features hardware-host --test brain_bridge
-flock -n /home/shome/p/.gigpies-build.lock env CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo +1.97.1 test --locked -j1 --release --features hardware-host --test brain_bridge -- --ignored --nocapture
-```
-
-The first command is normal production coverage. The second explicitly selects
-long virtual-clock evidence; run it when the bridge/controller or its assumptions
-change. Actual owner-library acceptance in `brain_owners` is likewise explicit:
-provide a hash-verified `GP05_MANIFEST` and `GP14_PA_FIXTURES`, then run that target
-with `--features hardware-host -- --ignored`. Nothing downloads owner artifacts or
-media. Full normal default/hardware suites remain required for shared changes.
-
-[CI failure/recovery alerts](CI_ALERTS.md) track default-branch incidents in GitHub issue threads.
-
-## Documentation ownership
-
-Keep `docs/` limited to its index and current product status. Put system design in
-`architecture/`, operating instructions in `guides/`, runtime/API contracts in
-`reference/`, qualification matrices in `acceptance/`, and contributor procedures
-in `development/`. Update the relevant directory index when adding a document.
-
-Describe what the product does, how to use it and its limits. Keep test commands
-and material acceptance boundaries; avoid appending task IDs, daily test counts,
-commit receipts or narration of completed work to product pages. Release changes
-belong in `CHANGELOG.md`. Completed prompts/plans, session handoffs, experiment
-selections and superseded drafts belong in `docs/archive/`. Ongoing coordination
-and exact source receipts belong in the private ledger.
-
-When a study also documents reusable behavior, retain the full historical study
-in the archive and extract the current contract or instructions into the owning
-product document. Preserve failed evidence and avoid presenting a historical
-fixture or experiment setting as a product requirement. Repair relative links
-when moving a document, including links from contributor instructions and fixtures.
-
-Historical fixture manifests and serialized report/map citations retain their
-original source paths and hashes. `docs/EQ_MATCHING.md` and `docs/AUTOMIX.md`
-in those records correspond to `docs/guides/EQ_MATCHING.md` and
-`docs/guides/AUTOMIX.md`; `docs/AUDIO_CONTROL_WIRE.md` corresponds to
-`docs/reference/AUDIO_CONTROL_WIRE.md`. A documentation move must not silently
-change a frozen corpus or saved map identity.
+- `docs/README.md` and `STATUS.md` are for musicians; `architecture/` design,
+  `guides/` operation, `reference/` contracts, `acceptance/` evidence,
+  `development/` contributor procedures, `archive/` history.
+- Describe current behavior, usage and limits. No task logs, daily test counts or
+  commit receipts on product pages; task state lives only in the integration plan.
+- When moving a document, archive the original, repair links, and never change a
+  frozen fixture's recorded path or hash.

@@ -31,9 +31,10 @@ requirement for live operation. Shortcut lists describe the current software
 interface; they do not redefine that intended workflow.
 
 Both consoles provide labelled semantic menus and value entry without synthesizing
-computer keypresses. Physical MIDI acquisition and learned device mappings remain
-unfinished. Complete controller-only operation on the actual rig is an
-open [console acceptance requirement](development/MODULE_IMPLEMENTATION_PLAN.md#gp-h2--physical-dual-console-operation),
+computer keypresses. Each console can read its controller from a learned profile
+file, imported from the MiniLab mapping already learned in SHR-DAW ([Desk controller guide](https://github.com/gigpies/shr-desk/blob/main/docs/CONTROLLER.md#learning-and-running-a-physical-controller)).
+A learned MiniLab profile and complete controller-only operation on the actual rig
+are still an open [console acceptance requirement](development/MODULE_IMPLEMENTATION_PLAN.md#gp-h2--physical-dual-console-operation),
 not an already delivered capability.
 
 ## Before a session

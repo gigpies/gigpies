@@ -2,11 +2,15 @@
 """Freeze the shared package into authorized consumers' Cargo directory sources.
 No registry upload, Git writes or path dependencies. Consumers resolve exact version.
 """
-import hashlib,json,shutil,tomllib
+import hashlib,json,shutil,sys,tomllib
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 source=ROOT/'src/instrument-panel'
-for repo in ['shr-desk','shr-lightdesk']:
+CONSUMERS=['shr-desk','shr-lightdesk']
+# Optional arguments select a subset, e.g. when one consumer still pins an older version.
+selected=sys.argv[1:] or CONSUMERS
+assert set(selected)<=set(CONSUMERS),'unknown consumer'
+for repo in selected:
     root=ROOT.parent/repo
     dest=root/'vendor/shr-instrument-panel'
     dest.mkdir(parents=True,exist_ok=True)

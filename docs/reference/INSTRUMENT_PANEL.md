@@ -76,7 +76,19 @@ edit cancellation/review behavior. Mouse, ordinary keyboard navigation and any
 subsequently learned MIDI keys feed the same semantic selection path. No MIDI
 anchor note, velocity action, hold action or hardware qualification is inferred
 from the drawing. Implementation and acceptance are owned by
-[GP-PANEL](../development/MODULE_IMPLEMENTATION_PLAN.md#three-row-keybed-flow-plan).
+[GP-PANEL](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-panel--shared-physical-instrument-panel).
+
+## Read-only MIDI acquisition (`midi`, 0.3.3)
+
+`shr_instrument_panel::midi` is the one controller reader both consoles use.
+`resolve_by_id` maps a stable `/dev/snd/by-id` name to that card's `midiC*D0`
+node; `Reader::spawn` opens it read-only and non-blocking, parses MIDI 1.0 with
+running status (realtime bytes ignored, SysEx and system-common discarded) and
+delivers complete channel messages over a bounded 256-event queue. Each
+connection gets a new generation; a disconnect sends one `Lost` event and the
+reader retries every 500 ms. A full queue drops and counts input rather than
+blocking. It never writes to the device. Profile decoding, role fences and
+authority stay in each console (`controller_input.rs` in Desk and Lightdesk).
 
 ## Rotary and master-strip flow direction
 

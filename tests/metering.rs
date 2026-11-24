@@ -424,3 +424,277 @@ fn selected_spectrum_handoff_has_no_callback_heap_work() {
     ACTIVE.with(|a| a.set(false));
     assert_eq!(EVENTS.with(Cell::get), 0);
 }
+
+/// GP-METER P4: the main pre-PA tap with actual hash-verified owner PA/FX/REC
+/// libraries loaded. The oracle is an independently loaded FX instance and an
+/// independent slot-zero mixer, not another meter or a decoder round trip.
+#[cfg(all(target_os = "linux", feature = "hardware-host"))]
+#[test]
+#[ignore = "explicit hash-verified PA/FX/REC libraries (GP05_MANIFEST) and owner PA fixtures (GP_PA_V2_FIXTURES)"]
+fn actual_owner_main_pre_pa_and_monitor_taps_match_independent_references() {
+    use gigpies::{
+        host::{adapters::Dsp, pa_v2::Pa},
+        local_audio::LocalAudio,
+        mixer::Mixer,
+        module_graph::Manifest,
+        show::Counter,
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let manifest_path = std::path::PathBuf::from(std::env::var("GP05_MANIFEST").unwrap());
+    let manifest = Manifest::load(&manifest_path).unwrap();
+    let fixtures = std::path::PathBuf::from(std::env::var("GP_PA_V2_FIXTURES").unwrap());
+    let pa_json = std::fs::read(fixtures.join("stereo3way.json")).unwrap();
+    let db = |v: f64| {
+        if v == 0. {
+            -120000
+        } else {
+            ((20000. * v.log10()).round() as i32).max(-120000)
+        }
+    };
+    for (inputs, monitors) in [(16, 3), (17, 1), (32, 5), (48, 7)] {
+        let dir =
+            std::env::temp_dir().join(format!("gp-meter-owner-{}-{inputs}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        {
+            let topology = EngineTopology::software(inputs, monitors, 6).unwrap();
+            let mut provider =
+                LocalAudio::bind_configured(&dir, "audio.sock", SHOW, Counter(1), topology.clone())
+                    .unwrap();
+            provider.enable_modules(&manifest_path).unwrap();
+            provider.configure_pa(&pa_json).unwrap();
+            provider.rearm().unwrap();
+            let mut mixer = Mixer::from_topology(0, topology.clone()).unwrap();
+            mixer.rearm().unwrap();
+            let mut fx = Dsp::load(&manifest.fx.library, "fx", 48).unwrap();
+            let mut pa = Pa::load(&manifest.pa.library, &pa_json, 1, 0).unwrap();
+            assert_eq!(pa.rearm(1, 0), 0);
+            let buses = monitors + 2;
+            let mut capture = vec![0.; 48 * topology.capture_channels];
+            let mut playback = vec![0.; 48 * topology.playback_channels];
+            let mut raw = vec![0.; 48 * inputs];
+            let mut dry = vec![0.; 48 * buses];
+            let mut foh = [0.; 96];
+            let mut wet = [0.; 96];
+            let mut pa_out = [0.; 288];
+            let mut main_reference = Vec::new();
+            let mut bus_reference = Vec::new();
+            let mut pa_matched = 0usize;
+            for block in 0..60u64 {
+                for f in 0..48 {
+                    let frame = block * 48 + f as u64;
+                    for i in 0..inputs {
+                        let hz = 110. * (1 + i % 7) as f64;
+                        let level = 0.05 + 0.01 * (i % 5) as f64;
+                        let s = level * (std::f64::consts::TAU * hz * frame as f64 / 48000.).sin();
+                        // REC accepts exact signed PCM24; both references use these values.
+                        let q = (s * 8_388_608.).round() / 8_388_608.;
+                        raw[f * inputs + i] = q;
+                        capture[f * topology.capture_channels + topology.inputs[i].capture_slot] =
+                            q;
+                    }
+                }
+                provider
+                    .tick_with_capture(block, 1, block * 48, &capture, &mut playback)
+                    .unwrap();
+                mixer.process_interleaved(&raw, &mut dry).unwrap();
+                for f in 0..48 {
+                    foh[f * 2] = dry[f * buses];
+                    foh[f * 2 + 1] = dry[f * buses + 1];
+                }
+                assert_eq!(fx.process_result(&foh, &mut wet, 2), 0);
+                let main: Vec<f64> = foh.iter().zip(&wet).map(|(d, w)| d + w).collect();
+                assert_eq!(pa.process(&main, &mut pa_out, 1, block * 48), 0);
+                for f in 0..48 {
+                    let played =
+                        &playback[f * topology.playback_channels..][..topology.playback_channels];
+                    if played[buses..buses + 6] == pa_out[f * 6..f * 6 + 6] {
+                        pa_matched += 1;
+                    }
+                }
+                main_reference.extend(main);
+                bus_reference.extend_from_slice(&dry);
+            }
+            assert_eq!(
+                pa_matched,
+                60 * 48,
+                "actual PA output equals independent PA(dry+wet)"
+            );
+            let s = provider
+                .meter_snapshot(&Request::new(SHOW, 1, 1, 1), 1)
+                .unwrap();
+            s.validate().unwrap();
+            assert!(s.valid, "{:?}", s.reason);
+            let (first, end) = (
+                s.first_frame.unwrap().0 as usize,
+                s.end_frame.unwrap().0 as usize,
+            );
+            assert_eq!(end - first, 960);
+            let stats = |samples: &mut dyn Iterator<Item = f64>| {
+                let (mut peak, mut sum, mut n, mut clips) = (0f64, 0f64, 0usize, 0u64);
+                for v in samples {
+                    peak = peak.max(v.abs());
+                    sum += v * v;
+                    n += 1;
+                    clips += (v.abs() >= 1.) as u64;
+                }
+                (db(peak), db((sum / n as f64).sqrt()), clips)
+            };
+            for (ch, id) in ["main-l", "main-r"].into_iter().enumerate() {
+                let tap = s.taps.iter().find(|t| t.id == id).unwrap();
+                let (peak, rms, clips) =
+                    stats(&mut (first..end).map(|f| main_reference[f * 2 + ch]));
+                assert!(tap.valid, "{id}");
+                assert!(
+                    (tap.peak_millidbfs.unwrap() - peak).abs() <= 1,
+                    "{id} peak {tap:?} {peak}"
+                );
+                assert!(
+                    (tap.rms_millidbfs.unwrap() - rms).abs() <= 1,
+                    "{id} rms {tap:?} {rms}"
+                );
+                assert_eq!(tap.clip_count.0, clips, "{id}");
+            }
+            let dry_main: f64 = (first..end)
+                .map(|f| main_reference[f * 2] - bus_reference[f * buses])
+                .map(f64::abs)
+                .fold(0., f64::max);
+            assert!(
+                dry_main > 1e-4,
+                "actual FX wet contributes to the measured main"
+            );
+            for m in 0..monitors {
+                let tap = &s.taps[inputs * 2 + 2 + m];
+                let (peak, rms, clips) =
+                    stats(&mut (first..end).map(|f| bus_reference[f * buses + 2 + m]));
+                assert!(
+                    (tap.peak_millidbfs.unwrap() - peak).abs() <= 1,
+                    "monitor {m} {tap:?}"
+                );
+                assert!(
+                    (tap.rms_millidbfs.unwrap() - rms).abs() <= 1,
+                    "monitor {m} {tap:?}"
+                );
+                assert_eq!(tap.clip_count.0, clips);
+            }
+            provider.quiesce_source("test").unwrap();
+            assert!(
+                !provider
+                    .meter_snapshot(&Request::new(SHOW, 1, 1, 2), 1)
+                    .unwrap()
+                    .valid
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// GP-METER P2 fault matrix: identity changes, half-written frames and repeated
+/// reads can neither refresh an old window nor stall audio or touch control state.
+#[cfg(target_os = "linux")]
+#[test]
+fn epoch_recovery_slow_reader_and_repeated_reads_never_refresh_or_block() {
+    use gigpies::{local_audio::LocalAudio, show::Counter};
+    use std::{
+        io::{Read, Write},
+        os::unix::{fs::PermissionsExt, net::UnixStream},
+    };
+    let dir = std::env::temp_dir().join(format!("gp-meter-faults-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    {
+        let topology = EngineTopology::software(4, 2, 0).unwrap();
+        let mut provider =
+            LocalAudio::bind_configured(&dir, "audio.sock", SHOW, Counter(1), topology.clone())
+                .unwrap();
+        provider.rearm().unwrap();
+        let capture = vec![0.25; 48 * topology.capture_channels];
+        let mut output = vec![0.; 48 * topology.playback_channels];
+        for i in 0..40 {
+            provider
+                .tick_with_capture(i, 1, i * 48, &capture, &mut output)
+                .unwrap();
+        }
+        let revision = provider.engine_mut().revision();
+        let first = provider
+            .meter_snapshot(&Request::new(SHOW, 1, 1, 1), 1)
+            .unwrap();
+        assert!(first.valid);
+        // Repeated reads return the same immutable window, never a fresher one.
+        for q in 2..6 {
+            let again = provider
+                .meter_snapshot(&Request::new(SHOW, 1, 1, q), 1)
+                .unwrap();
+            assert_eq!(
+                (again.sequence, again.first_frame, again.end_frame),
+                (first.sequence, first.first_frame, first.end_frame)
+            );
+        }
+        // A slow reader that sends only part of a frame header must not stall
+        // rendering or another reader's reply.
+        let mut slow = UnixStream::connect(dir.join("audio.sock")).unwrap();
+        slow.write_all(&[0, 0]).unwrap();
+        let mut reader = UnixStream::connect(dir.join("audio.sock")).unwrap();
+        reader
+            .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+            .unwrap();
+        let b = serde_json::to_vec(&Request::new(SHOW, 1, 1, 7)).unwrap();
+        reader.write_all(&(b.len() as u32).to_be_bytes()).unwrap();
+        reader.write_all(&b).unwrap();
+        let before = provider.frame();
+        for i in 40..44 {
+            provider
+                .tick_with_capture(i, 1, i * 48, &capture, &mut output)
+                .unwrap();
+        }
+        assert_eq!(
+            provider.frame(),
+            before + 4 * 48,
+            "slow reader cannot block audio"
+        );
+        let mut prefix = [0; 4];
+        reader.read_exact(&mut prefix).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(prefix) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        assert!(Snapshot::decode(&bytes).unwrap().valid);
+        assert_eq!(
+            provider.engine_mut().revision(),
+            revision,
+            "reads never mutate"
+        );
+        // Epoch recovery clears every cached window; nothing from epoch 1 survives.
+        provider.recover_source(Counter(2), 44 * 48).unwrap();
+        // Recovery also advances the map identity; the old identity is refused.
+        let map = provider.topology().map_revision;
+        assert!(map > 1);
+        let stale = provider
+            .meter_snapshot(&Request::new(SHOW, 2, 1, 8), 1)
+            .unwrap();
+        assert_eq!(stale.reason.as_deref(), Some("identity"));
+        let cleared = provider
+            .meter_snapshot(&Request::new(SHOW, 2, map, 8), 1)
+            .unwrap();
+        assert_eq!(cleared.reason.as_deref(), Some("missing_window"));
+        assert!(
+            cleared.first_frame.is_none()
+                && cleared.taps.iter().all(|t| t.peak_millidbfs.is_none())
+        );
+        provider.rearm().unwrap();
+        for i in 44..90 {
+            provider
+                .tick_with_capture(i, 2, i * 48, &capture, &mut output)
+                .unwrap();
+        }
+        let fresh = provider
+            .meter_snapshot(&Request::new(SHOW, 2, map, 9), 1)
+            .unwrap();
+        assert!(fresh.valid, "{:?}", fresh.reason);
+        assert_eq!(fresh.source_epoch, Counter(2));
+        assert!(
+            fresh.first_frame.unwrap().0 >= 44 * 48,
+            "no window spans the epoch change"
+        );
+        drop(slow);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
