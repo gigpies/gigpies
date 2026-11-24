@@ -60,7 +60,11 @@ pub fn lock_memory() {
     #[cfg(target_os = "linux")]
     {
         // SAFETY: plain syscall with constant flags.
-        let code = if unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) } == 0 {
+        // MCL_ONFAULT locks pages as they are first touched. Without it, every
+        // later mapping (thread stacks, prepared buffers) is fully populated at
+        // creation, which delayed the Brain's first wet blocks past the deadline.
+        let flags = libc::MCL_CURRENT | libc::MCL_FUTURE | libc::MCL_ONFAULT;
+        let code = if unsafe { libc::mlockall(flags) } == 0 {
             1
         } else {
             -std::io::Error::last_os_error().raw_os_error().unwrap_or(1)
