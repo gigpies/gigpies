@@ -41,7 +41,7 @@ not runtime modules ([components](../architecture/COMPONENTS.md)).
 
 | Session | Card | What it proves |
 |---|---|---|
-| Two-node transport timing | [GP-H1 T3](#gp-h1--physical-audio-qualification) | Combined 5 s → 30 s → 60 s Stagebox↔Brain wet-return timing and recovery |
+| Two-node transport timing | [GP-H1 T3](#gp-h1--physical-audio-qualification) | 5 s passed; 30 s fails on non-realtime stalls — realtime workers first (software) |
 | Stagebox audio rig | [GP-H1](#gp-h1--physical-audio-qualification) | Socket maps, UMC/ADAT clock, latency, sustained deadlines, REC/FX/PA on hardware |
 | Controllers and displays | [GP-H2](#gp-h2--physical-dual-console-operation) | Learned MiniLab profiles, LEDs, disconnect recovery, two desks at once |
 | Rehearsal with PA | [GP-PA-FEEDBACK](#gp-pa-feedback--one-notch-on-one-output) | Cut frequency, response time and false triggers with musicians |
@@ -211,10 +211,22 @@ closure, independent duplex service with both ASRC crossings
 
 | Step | State |
 |---|---|
-| T3 combined two-node timing: 5 s pass, then propose 30 s, then 60 s | Needs both nodes to acknowledge a reservation |
+| T3 combined two-node timing: 5 s, then 30 s, then ≤60 s | **5 s PASSED, 30 s FAILED** (2026-11-24, see below) |
 | T4 alternative comparison, or explicitly declined after T3 | Open |
 | T5 security-preserving replacement, or keep QUIC and remove candidate | Open |
 | T6 one production path and concise handoff | Open |
+
+**T3 run, 2026-11-24** (both nodes at `9dfe26b`, operator-authorized, ledger
+task 0030). 5 s: 0 late/rejected wet, minimum wet margin 288 frames, no egress
+refusals, all 16 raw REC channels exact. 30 s, twice: still 0 late, but 1–3
+Stagebox source-egress refusals (4-block ring), 1–2 FX owner resets and wet margin
+dips to 144/96 frames, below the 192-frame GO threshold. Pi 5 was otherwise idle
+and unthrottled. Cause: few-millisecond stalls of non-realtime threads. Only the
+physical ALSA thread gets SCHED_FIFO; the synthetic source clock, egress encoder
+and network workers do not. **Next:** give those workers configured realtime
+priority (the `@audio` rtprio limit already exists), consider a deeper egress
+ring, then rerun 5 s → 30 s. The runner now reports `min_wet_margin_frames`,
+`wet_margin_below_192` and rejected-wet witnesses.
 
 Keep 768-frame wet deadline and the 60 s synthetic cap; never subtract
 unsynchronized clocks. Proposed thresholds: ≥4 ms wet margin, ≥2 ms benefit for a
