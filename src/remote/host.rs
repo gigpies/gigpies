@@ -565,6 +565,10 @@ impl HostSourceMedia {
             .as_mut()
             .is_some_and(|lane| lane.push(MonitorBlock { frame, samples }).is_ok())
     }
+    /// Egress present and still open: an offer refusal is then a real loss.
+    fn egress_open(&self) -> bool {
+        self.egress.as_ref().is_some_and(|e| !e.closed())
+    }
     fn offer_egress(&mut self, frame: u64, capture: &[f64], capture_channels: usize) -> bool {
         for f in 0..48 {
             for (index, slot) in self.analysis_indices.iter().enumerate() {
@@ -819,6 +823,10 @@ pub struct HostMediaStats {
     pub first_late_wet: Option<LateWetWitness>,
     pub last_late_wet: Option<LateWetWitness>,
     pub rejected_wet_packets: u64,
+    /// Parsed rejected wet packets (wrong generation, closed fence, unknown group
+    /// or buffer refusal), with the same identity as late witnesses.
+    pub first_rejected_wet: Option<LateWetWitness>,
+    pub last_rejected_wet: Option<LateWetWitness>,
     pub nonzero_received_wet_samples: u64,
     pub nonzero_rendered_wet_samples: u64,
     pub rendered_wet_energy: f64,
@@ -1186,6 +1194,14 @@ impl HostAuthority {
                 WetAdmission::Rejected => {
                     self.media_stats.rejected_wet_packets =
                         self.media_stats.rejected_wet_packets.saturating_add(1);
+                    let witness = LateWetWitness {
+                        source_epoch: receipt.epoch,
+                        packet_source_frame: packet.source_frame(),
+                        packet_output_frame: packet.output_frame(),
+                        observed_source_frame: receipt.frame,
+                    };
+                    self.media_stats.first_rejected_wet.get_or_insert(witness);
+                    self.media_stats.last_rejected_wet = Some(witness);
                 }
             }
         }

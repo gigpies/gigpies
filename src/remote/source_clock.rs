@@ -651,7 +651,7 @@ impl SourceClock {
                 width,
             );
         }
-        if media.egress.is_some() {
+        if media.egress_open() {
             if media.fx_send.len() == 384 {
                 for f in 0..48 {
                     for (bus, samples) in graph.mixer.mixer.fx_aux_samples().iter().enumerate() {

@@ -358,6 +358,10 @@ impl SourceEgress {
     }
 }
 impl SourceEgressInput {
+    /// True once the session's egress was closed; later offers are not losses.
+    pub fn closed(&self) -> bool {
+        self.shared.closed.load(Ordering::Acquire)
+    }
     pub fn offer(&mut self, frame: u64, analysis: &[f64], fx: &[f64]) -> bool {
         if self.shared.closed.load(Ordering::Acquire) {
             return false;
