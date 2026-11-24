@@ -147,6 +147,7 @@ impl Service {
         let thread = std::thread::Builder::new()
             .name("gp-brain-duplex".into())
             .spawn(move || {
+                crate::realtime::enter(crate::realtime::Role::Source);
                 let prepared = Core::prepare(
                     config,
                     physical,

@@ -549,6 +549,7 @@ impl Execution {
         let thread = std::thread::Builder::new()
             .name("gp-brain-fx".into())
             .spawn(move || {
+                crate::realtime::enter(crate::realtime::Role::Worker);
                 let _ = ready_tx.send(());
                 while !core.shared.stop.load(Ordering::Acquire) {
                     match core.input.pop() {
@@ -968,6 +969,7 @@ impl MediaWorker {
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let thread = std::thread::Builder::new().name("gp-fx-media".into()).spawn(move || {
+            crate::realtime::enter(crate::realtime::Role::Worker);
             let mut report = MediaReport { energy: vec![0.; channels.div_ceil(2)], assembly_prepared_bytes: receiver.prepared_storage().total_bytes, ..MediaReport::default() };
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(runtime) => runtime,

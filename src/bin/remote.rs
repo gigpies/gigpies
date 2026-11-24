@@ -4,19 +4,13 @@
 fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
+        .on_thread_start(|| gigpies::realtime::enter(gigpies::realtime::Role::Network))
         .enable_all()
         .build()
 }
-fn main() {
-    let result = runtime()
-        .map_err(|e| e.to_string())
-        .and_then(|rt| rt.block_on(run()));
-    if let Err(error) = result {
-        eprintln!("gigpies-remote: {error}");
-        std::process::exit(1);
-    }
-}
-async fn run() -> Result<(), String> {
+/// Read the config and apply the optional `media_realtime_priority` before any
+/// runtime or media thread starts; the key is removed before strict decoding.
+fn load() -> Result<(serde_json::Value, bool), String> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let physical_authorized = args.len() == 3 && args[2] == "--activate-physical";
     if (args.len() != 2 && !physical_authorized) || args[0] != "--config" {
@@ -29,8 +23,36 @@ async fn run() -> Result<(), String> {
     if !metadata.is_file() || metadata.len() > 65_536 {
         return Err("config file capacity/type".into());
     }
-    let config = serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    let priority = match config
+        .as_object_mut()
+        .and_then(|o| o.remove("media_realtime_priority"))
+    {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(
+            v.as_i64()
+                .and_then(|p| i32::try_from(p).ok())
+                .ok_or("media_realtime_priority must be an integer")?,
+        ),
+    };
+    gigpies::realtime::configure(priority)?;
+    Ok((config, physical_authorized))
+}
+fn main() {
+    let result = load().and_then(|(config, physical)| {
+        runtime()
+            .map_err(|e| e.to_string())
+            .and_then(|rt| rt.block_on(run(config, physical)))
+    });
+    if let Err(error) = result {
+        eprintln!("gigpies-remote: {error}");
+        std::process::exit(1);
+    }
+}
+async fn run(config: serde_json::Value, physical_authorized: bool) -> Result<(), String> {
+    let config = serde_json::from_value(config).map_err(|e| e.to_string())?;
     let report = gigpies::remote::run_config_authorized(config, physical_authorized).await?;
     println!(
         "{}",

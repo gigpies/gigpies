@@ -284,6 +284,7 @@ impl<T: Send + 'static> SourceExecutor<T> {
         let worker = thread::Builder::new()
             .name(name.into())
             .spawn(move || {
+                crate::realtime::enter(crate::realtime::Role::Source);
                 while !source_stop.load(std::sync::atomic::Ordering::Acquire) {
                     // One bounded progression step precedes command work, even
                     // if either return lane is full or the controller is stalled.

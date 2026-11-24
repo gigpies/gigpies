@@ -38,6 +38,7 @@ impl Worker {
         let stop = Arc::new(AtomicBool::new(false));
         let stopping = stop.clone();
         let thread = std::thread::Builder::new().name("gp-analysis-media".into()).spawn(move || {
+            crate::realtime::enter(crate::realtime::Role::Worker);
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()
                 .map_err(|e| e.to_string())?;
             runtime.block_on(async move {

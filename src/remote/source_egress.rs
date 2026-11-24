@@ -181,6 +181,7 @@ impl SourceEgress {
                 .into(),
             )
             .spawn(move || {
+                crate::realtime::enter(crate::realtime::Role::Worker);
                 while !state.closed.load(Ordering::Acquire) {
                     #[cfg(test)]
                     if state.paused.load(Ordering::Acquire) {

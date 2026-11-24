@@ -40,6 +40,7 @@ impl MediaWorker {
         let stopping = stop.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let thread = std::thread::Builder::new().name("gp-brain-media".into()).spawn(move || -> Result<Report> {
+            crate::realtime::enter(crate::realtime::Role::Worker);
             let runtime=match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(runtime)=>runtime,
                 Err(error)=>{ let error=error.to_string(); let _=ready_tx.send(Err(error.clone())); return Err(error); }

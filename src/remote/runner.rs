@@ -248,7 +248,12 @@ fn save(path: &Path, value: &Value) -> Result<()> {
         .create_new(true)
         .open(path)
         .map_err(|e| e.to_string())?;
-    file.write_all(&serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?)
+    // Every run report states whether media threads actually ran realtime.
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.insert("media_realtime".into(), crate::realtime::report());
+    }
+    file.write_all(&serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     file.sync_all().map_err(|e| e.to_string())
 }

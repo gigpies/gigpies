@@ -445,6 +445,7 @@ impl Execution {
         let thread = std::thread::Builder::new()
             .name("gp-brain-delay".into())
             .spawn(move || {
+                crate::realtime::enter(crate::realtime::Role::Worker);
                 let _ = ready_tx.send(());
                 while !core.shared.stop.load(Ordering::Acquire) {
                     if core.stranded.is_some() {

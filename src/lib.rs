@@ -11,6 +11,7 @@ pub mod transport;
 
 /// Bounded source-frame host contracts; opening hardware is explicitly opt-in.
 pub mod host;
+pub mod realtime;
 
 /// Pure C-ROLE:1 intended assignments; native ownership is a later adapter.
 pub mod roles;
