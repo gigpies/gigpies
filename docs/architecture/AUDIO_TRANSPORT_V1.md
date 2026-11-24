@@ -1,6 +1,6 @@
 # Minimal dedicated-link audio transport blueprint
 
-**Source, legacy/four-aux FX, Brain duplex and analysis have isolated execution. Local T0–T2 software acceptance is complete; distributed T3 and physical qualification remain separate.**
+**Source, legacy/four-aux FX, Brain duplex and analysis have isolated execution. Local T0–T2 and distributed T3 software timing (5/30/56 s, two Pis, 2026-11-24) are accepted; T4 declined, QUIC retained. Physical qualification remains separate.**
 The single implementation/acceptance owner is
 [GP-H1](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-h1--physical-audio-qualification).
 This document defines the design; that card owns dependencies, milestones and

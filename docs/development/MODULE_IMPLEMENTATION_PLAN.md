@@ -41,7 +41,7 @@ not runtime modules ([components](../architecture/COMPONENTS.md)).
 
 | Session | Card | What it proves |
 |---|---|---|
-| Two-node transport timing | [GP-H1 T3](#gp-h1--physical-audio-qualification) | 5 s passed; 30 s fails on non-realtime stalls — realtime workers first (software) |
+| Two-node transport timing | [GP-H1 T3](#gp-h1--physical-audio-qualification) | **Accepted** 2026-11-24 (5/30/56 s); persist host settings on both Pis |
 | Stagebox audio rig | [GP-H1](#gp-h1--physical-audio-qualification) | Socket maps, UMC/ADAT clock, latency, sustained deadlines, REC/FX/PA on hardware |
 | Controllers and displays | [GP-H2](#gp-h2--physical-dual-console-operation) | Learned MiniLab profiles, LEDs, disconnect recovery, two desks at once |
 | Rehearsal with PA | [GP-PA-FEEDBACK](#gp-pa-feedback--one-notch-on-one-output) | Cut frequency, response time and false triggers with musicians |
@@ -211,22 +211,32 @@ closure, independent duplex service with both ASRC crossings
 
 | Step | State |
 |---|---|
-| T3 combined two-node timing: 5 s, then 30 s, then ≤60 s | **5 s PASSED, 30 s FAILED** (2026-11-24, see below) |
-| T4 alternative comparison, or explicitly declined after T3 | Open |
-| T5 security-preserving replacement, or keep QUIC and remove candidate | Open |
-| T6 one production path and concise handoff | Open |
+| T3 combined two-node timing 5 s → 30 s → 56 s | **ACCEPTED 2026-11-24** (software timing, synthetic audio) |
+| T4 alternative comparison | **Declined**: QUIC keeps ≥384 frames margin, twice the 192-frame GO; no replacement can show the required benefit |
+| T5 replacement or retain QUIC | **QUIC retained**; no candidate transport exists to remove |
+| T6 one production path | **Done**: authenticated QUIC datagrams with realtime workers (handoff below) |
 
-**T3 run, 2026-11-24** (both nodes at `9dfe26b`, operator-authorized, ledger
-task 0030). 5 s: 0 late/rejected wet, minimum wet margin 288 frames, no egress
-refusals, all 16 raw REC channels exact. 30 s, twice: still 0 late, but 1–3
-Stagebox source-egress refusals (4-block ring), 1–2 FX owner resets and wet margin
-dips to 144/96 frames, below the 192-frame GO threshold. Pi 5 was otherwise idle
-and unthrottled. Cause: few-millisecond stalls of non-realtime threads. Only the
-physical ALSA thread gets SCHED_FIFO; the synthetic source clock, egress encoder
-and network workers do not. **Next:** give those workers configured realtime
-priority (the `@audio` rtprio limit already exists), consider a deeper egress
-ring, then rerun 5 s → 30 s. The runner now reports `min_wet_margin_frames`,
-`wet_margin_below_192` and rejected-wet witnesses.
+**T3 result** (ledger tasks 0030–0031; both nodes at `fbdcc1e`, SHR REC
+`f927505`). Runs 5/30/56/56 s: 0 late or rejected wet packets, minimum wet margin
+432/384/384/432 frames against the 768-frame deadline, no source-egress refusals,
+all 16 raw REC channels bit-exact, FX without incomplete or stale blocks, both
+nodes unthrottled. The first attempts failed at 30 s (margin down to 48–144
+frames, egress refusals, FX resets). Three causes were found and fixed:
+
+1. Media workers ran at normal priority → opt-in `media_realtime_priority`
+   (source = N, network = N−2, workers = N−5; network above compute).
+2. SHR REC issued ~17,000 tiny writes a second → buffered take files.
+3. Realtime threads waited on page faults and page migration behind ext4 journal
+   commits → `mlockall(MCL_CURRENT|FUTURE|ONFAULT)` and
+   `vm.compact_unevictable_allowed=0`.
+
+**Production path handoff (T6).** Run Stagebox and Brain `gigpies-remote` with
+`media_realtime_priority` (70 used), an RLIMIT_RTPRIO ≥ that value and unlimited
+RLIMIT_MEMLOCK (`@audio` limits; for a service use `LimitRTPRIO`/`LimitMEMLOCK`),
+and `vm.compact_unevictable_allowed=0` set persistently. Pi 5 has the `@audio`
+limits; **Pi 4 still needs them**, and both Pis only have the sysctl until reboot
+(it was set at runtime for the test). Every run report shows these in
+`media_realtime`. This is software timing evidence, not physical audio acceptance.
 
 Keep 768-frame wet deadline and the 60 s synthetic cap; never subtract
 unsynchronized clocks. Proposed thresholds: ≥4 ms wet margin, ≥2 ms benefit for a

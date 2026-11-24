@@ -212,6 +212,23 @@ catch-up. Bounded SPSC authority queues connect network workers to controller
 service; fixed host ingress/receipt lanes then feed source media. Network workers
 neither render nor advance the source clock. This isolation is
 not a realtime scheduling or physical latency guarantee.
+
+**Optional realtime workers.** A config may set `"media_realtime_priority": N`
+(11–95; omitted = off). It is applied before the runtime starts: the source clock
+and duplex threads run SCHED_FIFO at N, network runtime threads at N−2 and
+encoder/FX/media workers at N−5. Network sits above compute because the Brain's
+QUIC receipt must not wait behind FX processing. The process needs an RLIMIT_RTPRIO
+of at least N (on the Pis, the `@audio` limit through a PAM login session); a
+thread that cannot switch stays at normal priority and is counted. Every run
+report carries `media_realtime` (`base_priority`, `threads_applied`,
+`threads_failed`, `last_errno`). Wet-return statistics include
+`min_wet_margin_frames`, `wet_margin_below_192`, the minimum-margin witness, the
+first low-margin source frames and rejected-packet witnesses.
+With realtime set, the runner also locks its memory
+(`mlockall(MCL_CURRENT|MCL_FUTURE|MCL_ONFAULT)`, needs RLIMIT_MEMLOCK) and reports
+`memory_locked` and the host's `vm.compact_unevictable_allowed`, which must be 0
+or kernel compaction can still migrate locked pages. GP-H1 T3 passed only with all
+three: realtime workers, locked memory and that sysctl.
 An orderly map retirement preserves queued structural completions while stopping
 Brain-media polling. A bounded FX run reserves its final return-budget interval
 inside the configured duration as a connection hold after production stops. This

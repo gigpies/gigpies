@@ -8,6 +8,11 @@
 - Shared panel 0.3.3 adds a read-only MIDI reader. Both desks accept a learned
   controller profile (`--controller-profile`); Desk imports the learned SHR-DAW
   MiniLab mapping (`--controller-import-daw`) and adds a read-only `--controller-learn`. Physical controller acceptance remains open.
+- Two-Pi transport timing (GP-H1 T3) is accepted for software: 5/30/56 s runs
+  with all four FX auxes, recording and analysis had no late wet packets and
+  at least 8 ms margin. Needed: opt-in realtime media workers
+  (`media_realtime_priority`), locked runner memory, buffered SHR REC writes and
+  `vm.compact_unevictable_allowed=0`. QUIC stays the production transport.
 - `scripts/owner_manifest.py` records owner-library manifests from clean
   committed checkouts, so owner-backed tests no longer depend on stale hashes.
 - The integration plan and development guide are condensed; their full history
