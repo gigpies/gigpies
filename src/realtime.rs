@@ -14,6 +14,8 @@ static BASE: AtomicI32 = AtomicI32::new(0);
 static APPLIED: AtomicU64 = AtomicU64::new(0);
 static FAILED: AtomicU64 = AtomicU64::new(0);
 static LAST_ERRNO: AtomicI32 = AtomicI32::new(0);
+/// 0 = not attempted, 1 = locked, otherwise -errno.
+static MEMORY_LOCK: AtomicI32 = AtomicI32::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -49,6 +51,22 @@ pub fn configure(base: Option<i32>) -> Result<(), String> {
     }
     BASE.store(base.unwrap_or(0), Ordering::Release);
     Ok(())
+}
+/// Lock current and future pages into RAM so realtime threads never wait on a
+/// page fault behind filesystem I/O (observed on a 2 GiB Pi 5 while recording:
+/// evicted code pages stalled the controller 10-20 ms). Needs RLIMIT_MEMLOCK.
+/// The outcome is reported, never fatal.
+pub fn lock_memory() {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: plain syscall with constant flags.
+        let code = if unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) } == 0 {
+            1
+        } else {
+            -std::io::Error::last_os_error().raw_os_error().unwrap_or(1)
+        };
+        MEMORY_LOCK.store(code, Ordering::Release);
+    }
 }
 /// The priority `role` would receive, or None when realtime is not configured.
 pub fn priority(role: Role) -> Option<i32> {
@@ -90,6 +108,17 @@ pub fn report() -> serde_json::Value {
         "threads_applied": APPLIED.load(Ordering::Relaxed),
         "threads_failed": FAILED.load(Ordering::Relaxed),
         "last_errno": match LAST_ERRNO.load(Ordering::Relaxed) { 0 => None, e => Some(e) },
+        "memory_locked": match MEMORY_LOCK.load(Ordering::Acquire) {
+            0 => serde_json::Value::Null,
+            1 => true.into(),
+            _ => false.into(),
+        },
+        // Linux compaction may migrate mlocked pages unless this is 0; realtime
+        // threads then wait on page migration (seen in GP-H1 T3).
+        "compact_unevictable_allowed": std::fs::read_to_string("/proc/sys/vm/compact_unevictable_allowed")
+            .ok()
+            .and_then(|v| v.trim().parse::<u8>().ok()),
+        "memory_lock_errno": match MEMORY_LOCK.load(Ordering::Acquire) { e if e < 0 => Some(-e), _ => None },
     })
 }
 

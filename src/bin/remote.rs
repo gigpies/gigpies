@@ -38,6 +38,9 @@ fn load() -> Result<(serde_json::Value, bool), String> {
         ),
     };
     gigpies::realtime::configure(priority)?;
+    if priority.is_some() {
+        gigpies::realtime::lock_memory();
+    }
     Ok((config, physical_authorized))
 }
 fn main() {
