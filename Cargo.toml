@@ -23,7 +23,7 @@ libc = "=0.2.191"
 quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["std", "ring"] }
 tokio = { version = "=1.54.1", features = ["rt", "macros", "time", "sync", "io-util"] }
-bytes = "=1.12.1"
+bytes = "=1.12.2"
 
 [dev-dependencies]
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "ring"] }
