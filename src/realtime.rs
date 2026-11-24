@@ -2,8 +2,10 @@
 //!
 //! Off by default. A runner that is explicitly configured with a base priority
 //! calls [`configure`] once, before it starts workers; each media thread then calls
-//! [`enter`] as its first action. Priorities are graded so the source clock always
-//! preempts encoders/FX workers, which preempt network I/O. A failure (for example
+//! [`enter`] as its first action. Priorities are graded: the source clock preempts
+//! everything; network I/O (mostly blocked in epoll) sits just below it so packet
+//! receipt is never delayed by FX/encoder computation, which runs lowest. The
+//! opposite order measurably delayed Brain wet returns in GP-H1 T3. A failure (for example
 //! no `RLIMIT_RTPRIO`) leaves that thread at normal priority and is counted, never
 //! hidden: callers include [`report`] in their run evidence.
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
@@ -19,15 +21,15 @@ pub enum Role {
     Source,
     /// Encoders, FX owners and media assembly workers.
     Worker,
-    /// QUIC/network runtime threads.
+    /// QUIC/network runtime threads (above workers, below the source clock).
     Network,
 }
 impl Role {
     fn offset(self) -> i32 {
         match self {
             Role::Source => 0,
+            Role::Network => 2,
             Role::Worker => 5,
-            Role::Network => 10,
         }
     }
 }
@@ -103,7 +105,7 @@ mod tests {
         configure(Some(70)).unwrap();
         assert_eq!(
             [Role::Source, Role::Worker, Role::Network].map(priority),
-            [Some(70), Some(65), Some(60)]
+            [Some(70), Some(65), Some(68)]
         );
         // Without RLIMIT_RTPRIO (normal test environments) the failure is counted.
         // Counters are process-wide, so parallel tests may add to them.
