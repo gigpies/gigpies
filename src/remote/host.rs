@@ -810,6 +810,11 @@ pub struct HostMediaStats {
     pub emitted_monitor_packets: u64,
     pub dropped_monitor_packets: u64,
     pub accepted_wet_packets: u64,
+    /// Smallest `output_frame - admission frame` over accepted wet packets: how
+    /// early the latest on-time packet arrived (block-start resolution).
+    pub min_wet_margin_frames: Option<u64>,
+    /// Accepted wet packets that arrived with less than the 192-frame (4 ms) margin.
+    pub wet_margin_below_192: u64,
     pub late_wet_packets: u64,
     pub first_late_wet: Option<LateWetWitness>,
     pub last_late_wet: Option<LateWetWitness>,
@@ -1143,6 +1148,15 @@ impl HostAuthority {
                 WetAdmission::Accepted => {
                     self.media_stats.accepted_wet_packets =
                         self.media_stats.accepted_wet_packets.saturating_add(1);
+                    let margin = packet.output_frame().saturating_sub(receipt.frame);
+                    self.media_stats.min_wet_margin_frames = Some(
+                        self.media_stats
+                            .min_wet_margin_frames
+                            .map_or(margin, |m| m.min(margin)),
+                    );
+                    if margin < 192 {
+                        self.media_stats.wet_margin_below_192 += 1;
+                    }
                     self.media_stats
                         .first_wet_source_frame
                         .get_or_insert(packet.source_frame());

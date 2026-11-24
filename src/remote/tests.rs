@@ -735,6 +735,9 @@ fn composed_host_noncontiguous_analysis_deadlines_loss_and_epoch() {
     host.test_drain_media_ingress(9);
     assert_eq!(host.media_stats().late_wet_packets, 2);
     assert_eq!(host.media_stats().accepted_wet_packets, 1);
+    // Margin is tracked only for accepted packets and never exceeds the deadline.
+    let margin = host.media_stats().min_wet_margin_frames.unwrap();
+    assert!(margin > 0 && margin <= 768, "{margin}");
     assert_eq!(host.media_stats().first_late_wet, Some(first));
     assert_eq!(
         host.media_stats().last_late_wet,
