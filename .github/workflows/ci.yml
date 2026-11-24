@@ -8,7 +8,7 @@ permissions:
   contents: read
 env:
   CARGO_INCREMENTAL: 0
-  CARGO_BUILD_JOBS: 1
+# Hosted runners have 4 vCPUs; the -j1 rule applies to the 2 GiB Pi only.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -38,11 +38,10 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 fmt --all -- --check
-      - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 check --locked -j1 ${{ matrix.features }}
-      - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 clippy --locked -j1 ${{ matrix.features }} --all-targets -- -D warnings
-      - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 test --locked -j1 ${{ matrix.features }} --all-targets
+      - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 clippy --locked ${{ matrix.features }} --all-targets -- -D warnings
+      - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 test --locked ${{ matrix.features }} --all-targets
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
-      - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 build --release --locked -j1 ${{ matrix.features }}
+      - run: flock -xn /home/shome/p/.gigpies-build.lock cargo +1.97.1 build --release --locked ${{ matrix.features }}
   automation:
     uses: gigpies/.github/.github/workflows/quality.yml@98f341243ff8913017ad77f557ff550a7cd614e8
   gate:

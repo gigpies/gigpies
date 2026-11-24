@@ -8,6 +8,10 @@ updates:
     groups:
       actions:
         patterns: ['*']
+    # The shared ci-alerts action is pinned to a gigpies commit, so every gigpies
+    # push looks like a new release. Bump it by hand when the action changes.
+    ignore:
+      - dependency-name: 'gigpies/gigpies*'
   - package-ecosystem: cargo
     directory: /
     schedule:
