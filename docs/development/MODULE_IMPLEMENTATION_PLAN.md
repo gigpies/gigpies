@@ -280,10 +280,13 @@ frames, egress refusals, FX resets). Three causes were found and fixed:
 **Production path handoff (T6).** Run Stagebox and Brain `gigpies-remote` with
 `media_realtime_priority` (70 used), an RLIMIT_RTPRIO ≥ that value and unlimited
 RLIMIT_MEMLOCK (`@audio` limits; for a service use `LimitRTPRIO`/`LimitMEMLOCK`),
-and `vm.compact_unevictable_allowed=0` set persistently. Pi 5 has the `@audio`
-limits; **Pi 4 still needs them**, and both Pis only have the sysctl until reboot
-(it was set at runtime for the test). Every run report shows these in
-`media_realtime`. This is software timing evidence, not physical audio acceptance.
+and `vm.compact_unevictable_allowed=0` set persistently. Done 2026-11-25 on both
+Pis: `@audio - rtprio 95` / `memlock unlimited` in
+`/etc/security/limits.d/95-shr-audio.conf` (Pi 4 added; Pi 5 already had it) and
+`/etc/sysctl.d/95-gigpies-media.conf`. The limits apply to PAM sessions (console,
+`su -`, OpenSSH, services with `LimitRTPRIO`/`LimitMEMLOCK`); **Tailscale SSH
+sessions bypass `pam_limits`** and get rtprio 0, so do not launch realtime runs
+directly from them. Every run report shows these in `media_realtime`. This is software timing evidence, not physical audio acceptance.
 
 Keep 768-frame wet deadline and the 60 s synthetic cap; never subtract
 unsynchronized clocks. Proposed thresholds: ≥4 ms wet margin, ≥2 ms benefit for a
