@@ -67,14 +67,17 @@ control. Budget is the 1000 µs period. p99 µs (share of period):
 | 64 × 7 | 575 (57%) | 1318 (132%) |
 
 Cost scales about linearly with inputs (≈9 µs per input on Pi 5, ≈24 µs on Pi 4,
-plus ≈0.2 µs on Pi 5 and ≈0.5 µs on Pi 4 per input per monitor). Pi 4 cannot render 48 inputs
-within the period even before the other source work; 32 is marginal. Single
-multi-millisecond maxima came from preemption of the non-realtime test thread.
-Topology admission is a static budget, not a measurement of the host: it admits
-48 and 64 inputs on either Pi. Its binding limit at high counts is the 1 MiB
-snapshot assembly (48 inputs: at most 11 monitors; 64: at most 7). An admitted
-topology the host cannot render shows as `late_blocks`, then closes on debt or
-xrun. Not physical or full-graph qualification.
+plus ≈0.2 µs on Pi 5 and ≈0.5 µs on Pi 4 per input per monitor). The product
+target is Pi 5 at up to about 24 inputs (main card ≤ 8 plus two 8-channel ADAT
+expansions): core DSP at 24 × 10 is ≈20% of the period, leaving the rest for
+metering, spectrum, PA/FX and transport, which still need measuring on the full
+graph. Pi 4 is a development node only, never a product host. The 32–64-input
+rows are headroom evidence, not targets. Single multi-millisecond maxima came from
+preemption of the non-realtime test thread. Topology admission is a static budget,
+not a measurement of the host; the 1 MiB snapshot assembly only binds well above
+the product range (48 inputs: at most 11 monitors). An admitted topology the host
+cannot render shows as `late_blocks`, then closes on debt or xrun. Not physical
+or full-graph qualification.
 
 ## Validation classes
 

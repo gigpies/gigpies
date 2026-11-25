@@ -30,8 +30,10 @@ The processing engine includes modular PA processing, alongside channel DSP,
 mixing, buses, recording and transport. Include the owning PA module when a task
 requires PA behavior; repository boundaries do not remove that product requirement.
 The reference UMC1820 + ADA8200 setup targets 16 analog inputs and 18 analog outputs
-at 48 kHz. Sixteen inputs is the minimum product target; 32 and 48 are growth
-targets, not ceilings or claims of current hardware qualification. The original
+at 48 kHz. Sixteen inputs is the minimum product target. The planned maximum
+(user, 2026-11-25) is about 24 inputs: main card up to 8 plus two 8-channel ADAT
+expansions; 32+ inputs are not a product target. The production host is Pi 5;
+Pi 4 is a development/test node only and will never run the product. The original
 output plan has flexible PA/monitor allocation, including six/eight PA outputs
 and future matrix arrangements; do not hard-code a product monitor count.
 Derive runtime dimensions from validated configuration and advertised capabilities.

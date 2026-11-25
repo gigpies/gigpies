@@ -292,8 +292,10 @@ Keep 768-frame wet deadline and the 60 s synthetic cap; never subtract
 unsynchronized clocks. Proposed thresholds: ≥4 ms wet margin, ≥2 ms benefit for a
 replacement.
 
-**Core DSP capacity (software, 2026-11-25):** worst-case strips at 48 × 11 use 44%
-of the 1 ms period on Pi 5 but 109% on Pi 4; admission does not yet check the host
+**Core DSP capacity (software, 2026-11-25):** worst-case strips at the product
+target (Pi 5, ≈24 inputs: main card ≤ 8 + two ADAT × 8) use ≈20% of the 1 ms
+period at 24 × 10; Pi 4 is development-only. Full-graph cost (metering, spectrum,
+PA/FX, transport) on Pi 5 at 24 inputs is the next capacity measurement
 ([evidence](../acceptance/MODULAR_ENGINE_ACCEPTANCE.md#capacity-reporting)).
 Overload now reports `late_blocks`/`max_debt_us` before the 100 ms debt closure.
 
