@@ -328,8 +328,9 @@ preserved COLRv0 appearance and observed all six 100-frame workloads at median
 Desk-pages run. This is a terminal backend choice: both applications still emit
 Ratatui cell updates. See the [dated evidence and limits](../archive/records/2026-10-11-gp-panel-proof.md).
 
-Current actual renders: [Desk channel](../assets/panel-desk-channel.png) and
-[local draft/focus](../assets/panel-desk-channel-draft.png). Rejected earlier
+Current actual renders: [Desk channel](../assets/panel-desk-channel.png),
+[local draft/focus](../assets/panel-desk-channel-draft.png) and
+[Desk mix](../assets/panel-desk-mix.png). Rejected earlier
 compositions and disposable protocol captures were removed after their findings
 were recorded; the source and repeatable commands remain.
 
@@ -410,6 +411,57 @@ Blue means a selected draft parameter; amber means a local unapplied draft.
 Explicit captions and values remain readable without colour. Unlit lenses remain
 visible. The new font requires `SHR_PANEL_FONT='SHR Panel Mono:0.3'`.
 
+
+## Desk Mix page
+
+![Mix page with twelve input strips, Main and monitor buses and the selected column](../assets/panel-desk-mix.png)
+
+Layout approved November 25, 2026. Actual production terminal capture (Rio
+`--cpu-terminal`, 24 px, 160×49) against a private 16-input, six-monitor software
+engine with deterministic levels; no physical audio or MIDI qualification.
+
+`shr-desk/src/mix_panel.rs` draws the regular FOH or monitor-scope Mix view with
+the shared plates. Any modal, exact editor, draft, review or other page keeps its
+existing presentation (`Frontend::mix_panel_visible`). Three plates:
+
+- **Inputs.** Twelve strips per display bank (`MIX_BANK`, the existing Mix/meter
+  banking; a presentation bound, not a capacity). Strips are filled from the
+  provider's input inventory; unused slots in the last bank show `—` and have no
+  target. Each strip: number and stable ID (green `▸` selection), a 16-segment
+  peak column (raw or pre-fader tap, shown in the margin) beside the owner gain
+  reduction filling downward, pan marker, owner fader target, dB value and
+  mute/hold lenses. In a monitor scope the fader shows that monitor's send and pan
+  is `—`.
+- **Buses.** Main pre-PA L/R columns and monitor bars in banks of twelve (the
+  existing meter-page bus bank). The browsed monitor is marked `▸`; the controlled
+  monitor scope is highlighted. Writer-grant lens and the status message.
+- **Selected.** Physical column 8, identical to the Channel page: pre-fader peak,
+  pan over level encoders opening the existing exact editors, mute and hold.
+
+Meter observations keep every state distinct: `CLIP` (held, red top segment),
+`SILENT`, `FLOOR`, `INVALID`, `STALE` and `—` (unavailable). Only a valid peak
+lights segments. Control staleness shows `—` for fader/pan values and unlit
+lenses; provider generation or topology changes clear meters and clip holds.
+
+Pads 1–8: Bank ◀/▶, Channel, Mute, Hold, Release, Mode and Scope; the Scope menu
+holds monitor browse, control selected monitor / FOH (reattachment and a new grant,
+unchanged), raw/pre-fader meters, bus bank, Sends and Back. Pads 9–16 match the
+Channel page. There is no shortcut strip. A strip press selects that input through
+the guarded keybed path; only a press on the already selected strip's fader opens
+the exact editor (decided at press time). Indicators are readouts. The controller
+binding is unchanged: rotaries 8/16 drive the selected target's pan/level.
+
+```sh
+/usr/bin/python3 scripts/preview_panel_providers.py desk --mix --cpu-terminal --suffix mix
+```
+
+It runs `target/release/examples/spectrum-source … mix` (sixteen inputs, six
+monitors, staggered levels with one silent and one −1 dBFS input; the private
+software engine is armed so processed, Main and monitor taps are observable) and
+Desk with `--dynamic --processing` and an injected software role. Build the
+example with `--release`; the debug build misses source deadlines at this size.
+The owner's default sends every input to monitor 1 at 0 dB, so that bus clips.
+Frontend tests: `shr-desk` `frontend::mix_panel_tests`.
 
 ## Channel cached materials and MiniLab columns
 

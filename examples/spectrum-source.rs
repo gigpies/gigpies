@@ -8,19 +8,22 @@ fn main() -> Result<(), String> {
     let a: Vec<_> = std::env::args().collect();
     if a.len() != 5 {
         return Err(
-            "spectrum-source PRIVATE_DIRECTORY SHOW_UUID EPOCH tones|sequence|hot|rta-sequence|gate"
+            "spectrum-source PRIVATE_DIRECTORY SHOW_UUID EPOCH tones|sequence|hot|rta-sequence|gate|mix"
                 .into(),
         );
     }
     let epoch = a[3].parse().map_err(|_| "epoch")?;
     if !matches!(
         a[4].as_str(),
-        "tones" | "sequence" | "hot" | "rta-sequence" | "gate"
+        "tones" | "sequence" | "hot" | "rta-sequence" | "gate" | "mix"
     ) {
         return Err("mode".into());
     }
     let t = if a[4] == "gate" {
         EngineTopology::software(16, 2, 0)?
+    } else if a[4] == "mix" {
+        // Mix-page preview: sixteen inputs and six monitors, a software fixture only.
+        EngineTopology::software(16, 6, 0)?
     } else {
         EngineTopology::legacy()
     };
@@ -33,6 +36,10 @@ fn main() -> Result<(), String> {
         Counter(epoch),
         t.clone(),
     )?;
+    if a[4] == "mix" {
+        // Private software engine only: arm it so processed/Main/monitor taps are observable.
+        owner.rearm()?;
+    }
     let start = Instant::now();
     let mut noise = 0x1234_5678u32;
     // Bounded deterministic software input for inspecting an actual broadband FFT.
@@ -71,12 +78,19 @@ fn main() -> Result<(), String> {
             for (i, input) in t.inputs.iter().enumerate() {
                 // Exact FFT-bin tones; distinct input identity and visible low/high components.
                 let k = if i == 0 { 85. } else { 8. + i as f64 * 37. };
-                capture[f * t.capture_channels + input.capture_slot] =
-                    if a[4] == "rta-sequence" && tick >= 6000 {
-                        broad
-                    } else {
-                        amplitude * (std::f64::consts::TAU * k * at / 4096.).sin()
+                capture[f * t.capture_channels + input.capture_slot] = if a[4] == "mix" {
+                    // Staggered deterministic levels: input 6 silent, input 3 near -1 dBFS.
+                    let peak = match i {
+                        2 => 0.891_250_938,
+                        5 => 0.,
+                        _ => 0.2 / (1. + (i % 7) as f64),
                     };
+                    peak * (std::f64::consts::TAU * k * at / 4096.).sin()
+                } else if a[4] == "rta-sequence" && tick >= 6000 {
+                    broad
+                } else {
+                    amplitude * (std::f64::consts::TAU * k * at / 4096.).sin()
+                };
             }
         }
         owner.tick_with_capture(

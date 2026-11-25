@@ -236,6 +236,9 @@ Contract and previews: [instrument panel](../reference/INSTRUMENT_PANEL.md).
 selected-Channel material panel, fullscreen EQ/RTA, Master gain strip, 10 Hz
 presentation; real-terminal captures ([evidence](../archive/records/2026-10-11-gp-panel-proof.md)).
 Package 0.3.3 adds the shared read-only MIDI reader used by GP-H2.
+Desk Mix page on the shared plates (approved 2026-11-25): topology-filled
+12-strip banks, measured meter states, FOH/monitor scopes, column-8 selected target,
+MIDI-first pads; frontend tests and `--mix` preview ([contract](../reference/INSTRUMENT_PANEL.md#desk-mix-page)).
 
 **Open — software:** page-by-page physical-control redesign of the remaining pages;
 SSH-path and reconnect cleanup checks; workload comparison with the old native renderer.
