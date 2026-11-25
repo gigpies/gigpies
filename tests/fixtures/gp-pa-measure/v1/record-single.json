@@ -1,0 +1,41 @@
+{
+  "contract": "GP-PA-MEASURE-CAPTURE",
+  "version": 1,
+  "id": "sweep-sub",
+  "outcome": "captured",
+  "restored": true,
+  "prior": {
+    "configuration_revision": "7",
+    "output_muted": [
+      false,
+      true
+    ]
+  },
+  "calibration": null,
+  "owner_spec": {
+    "amplitude": 0.015848931924611134,
+    "end_hz": 2000.0,
+    "start_hz": 20.0,
+    "sweep_samples": 32768,
+    "total_samples": 65536
+  },
+  "repeats": 1,
+  "capture": {
+    "id": "sweep-sub",
+    "source_epoch": "3",
+    "map_revision": "1",
+    "clock_domain": "stagebox-source",
+    "reference_id": "sweep-sub",
+    "reference_tap": "excitation",
+    "reference_offset_frames": "0",
+    "first_frame": "96000",
+    "sample_rate": 48000,
+    "output_index": 0,
+    "position_id": "foh-left",
+    "configuration_revision": "7",
+    "dropped_frames": "0",
+    "clipped_reference": false,
+    "clipped_mic": false,
+    "timing_verified": true
+  }
+}

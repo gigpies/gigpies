@@ -209,3 +209,59 @@ copy with mismatched calibration between positions for refusal checks. Keep gene
 files private, hash them into the startup catalog, and remove them after validation.
 The opt-in Desk `actual_keyboard_imported_sweep_review_to_muted_owner` driver expects
 catalog IDs `imported` and `refused` and uses the bounded provider above.
+
+## Physical capture session contract (GP-PA-MEASURE-CAPTURE:1)
+
+Status: **contract frozen, software only** (`src/measurement_session.rs`). Host
+acquisition, Desk sequencing and physical qualification are later GP-PA-MEASURE
+steps; nothing here opens a device, changes a route or plays audio.
+
+One session plays a known logarithmic sweep into **one** admitted PA output path
+and captures **one** reserved measurement-mic slot on the same Stagebox source-frame
+timeline. The reference is the generated excitation itself, aligned by source
+frame (`reference_tap` `excitation`, offset 0), so SHR PA receives common-origin
+evidence without a loopback cable.
+
+**Plan** (strict, duplicate-safe, integer-only JSON, ≤8 KiB, unknown fields refuse):
+
+| Field | Meaning and bounds |
+|---|---|
+| `contract`, `version` | `GP-PA-MEASURE-CAPTURE`, 1 |
+| `id`, `position_id` | 1–128 ASCII graphic bytes |
+| `basis` | `show_id`, `source_epoch`, `map_revision`, `graph_generation`, `configuration_revision` (nonzero counters); must equal the live owner state |
+| `path.output_index` | an output assigned in the admitted PA owner graph |
+| `mic.capture_slot` | a `topology.measurement_slots` entry, never a program input |
+| `mic.calibration` | null or `{provenance, sha256}` (lowercase hex); SHR PA applies the curve |
+| `excitation` | `kind` `log_sweep`; `start_hz` ≥20, `end_hz` ≤20000 and ≥4×start; `sweep_samples` 8192–32768; `total_samples` 32768 or 65536 with ≥4096 silent tail; `level_mdbfs` −60000..−30000 peak (default −42000); `repeats` 1 or 4 |
+| `confirm_audible` | must be `true`: the operator confirmed this output will be audible |
+
+**Admission** refuses with stable reasons: `busy` (another session or owner job),
+`stale_basis`, `speaker_path`, `mic_slot`, `mic_routed` (slot used by a program
+input) and `clock_domain` (the mic timeline is not `stagebox-source`; Brain local
+I/O cannot measure).
+
+**Generator.** `Excitation::sample` is SHR PA `SweepSpec::excitation` term for
+term (256-sample linear end fades, silent tail), filled into a preallocated buffer
+off the callback. Amplitude is 10^(level/20) — 0.001 to 0.0316 linear.
+
+**Session.** `Armed` (route saved) → `Playing` (excitation audible; mic frames
+must arrive contiguously from the start frame) → `Restoring` → `Done`. Any stop
+ramps the excitation out within 256 samples. Stops are: operator cancel; faults
+`lease_lost`, `disconnected`, `source_discontinuity` (gap or dropped frames),
+`device_epoch`, `basis_changed`, `mic_clipped` (|x| ≥ 0.999 or non-finite) and
+`deadline` (excitation length + 2 s). The prior route — configuration revision
+and every PA output's mute — is recorded at arm and **must** be confirmed restored
+before any result exists; a failed restore is its own `restore_failed` outcome.
+Late frames and faults while restoring change nothing.
+
+**Record.** Terminal `{contract, version, id, outcome, restored, prior,
+calibration, owner_spec, repeats, capture}`. Only a restored complete capture has
+`capture`: exactly SHR PA `CaptureMeta` with `clock_domain` `stagebox-source`,
+`timing_verified` true and zero dropped frames. Repeat *n* (0-based) starts at
+`first_frame + n × total_samples`, the shared timing `sweep_repeated` requires.
+`owner_spec` is the owner's own floating-point `SweepSpec`; the outer contract
+stays integer-only.
+
+**Corpus.** `tests/fixtures/gp-pa-measure/v1/` (producer, `tests/pa_measure_session.rs`);
+SHR PA keeps byte-identical records and generator samples and checks that `sweep`
+and `sweep_repeated` accept them (`tests/gigpies_capture.rs`).

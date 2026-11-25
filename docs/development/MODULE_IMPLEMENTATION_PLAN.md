@@ -30,7 +30,7 @@ not runtime modules ([components](../architecture/COMPONENTS.md)).
 
 | Task | State | Next action |
 |---|---|---|
-| [GP-PA-MEASURE](#gp-pa-measure--physical-measurement-workflow) | IN PROGRESS | Freeze the source-clock capture/excitation contract (step 1) |
+| [GP-PA-MEASURE](#gp-pa-measure--physical-measurement-workflow) | IN PROGRESS | Host acquisition driving the frozen capture session (step 2) |
 | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | SOFTWARE ACCEPTED | Listening with a real singer (qualification) |
 | [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | IN PROGRESS | Backing vocals and the rest of the band; wetness objective |
 | [GP-PANEL](#gp-panel--shared-physical-instrument-panel) | IN PROGRESS | Page-by-page physical-control redesign |
@@ -68,11 +68,15 @@ combined result.
   offline comparison of runs by microphone position ([acoustic bench](ACOUSTIC_BENCH.md)).
   Uncalibrated, single position — not absolute latency or GP20 timing.
 
+- Step 1 capture/excitation contract `GP-PA-MEASURE-CAPTURE:1` (2026-11-25,
+  `src/measurement_session.rs`, [reference](../reference/MEASUREMENT_PRODUCER.md#physical-capture-session-contract-gp-pa-measure-capture1)):
+  source-frame excitation reference, one admitted speaker path, reserved mic slot
+  never routed, calibration provenance, owner-bounded sweep level/length/tail,
+  cancel and fault stops, mandatory restore of the prior route, Stagebox clock only.
+  Producer corpus `tests/fixtures/gp-pa-measure/v1/`; SHR PA `sweep` and
+  `sweep_repeated` accept its records and reproduce its generator samples.
+
 **Open — software**
-1. Freeze the capture/excitation contract: one source-frame reference origin,
-   selected speaker path, reserved mic slot, calibration provenance, bounded level/
-   duration/tail, cancellation and fault handling, restoring the prior route.
-   Stagebox clock only; never route the setup mic to program or monitors.
 2. Host acquisition off the callback, with deterministic loopback tests for
    isolation, timing, cancellation, lease loss and stale results.
 3. Desk measure → review → apply muted → remeasure sequence, including reconnect.
@@ -80,8 +84,9 @@ combined result.
 **Open — qualification:** electrical timing/socket mapping (with GP-H1), then
 controlled speaker/mic trials at several positions with before/after sums.
 
-**Next:** step 1 contract. Reuse pre-fader FX send B with its fader at −60 dB for
-FX-path probes (not channel mute).
+**Next:** step 2 host acquisition driving the session off the callback. FX-path
+probes are not in v1; they keep using pre-fader FX send B with its fader at −60 dB
+(not channel mute).
 
 ## GP-PA-FEEDBACK — one notch on one output
 

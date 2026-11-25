@@ -89,6 +89,7 @@ pub mod master_eq_wire;
 
 #[cfg(target_os = "linux")]
 pub mod measurement_owner;
+pub mod measurement_session;
 pub mod measurement_wire;
 
 pub mod fx_wire;

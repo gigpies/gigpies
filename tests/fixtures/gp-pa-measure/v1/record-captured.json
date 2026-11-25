@@ -1,0 +1,44 @@
+{
+  "contract": "GP-PA-MEASURE-CAPTURE",
+  "version": 1,
+  "id": "sweep-foh-left",
+  "outcome": "captured",
+  "restored": true,
+  "prior": {
+    "configuration_revision": "7",
+    "output_muted": [
+      false,
+      true
+    ]
+  },
+  "calibration": {
+    "provenance": "measurement-mic-1",
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "owner_spec": {
+    "amplitude": 0.007943282347242814,
+    "end_hz": 16000.0,
+    "start_hz": 40.0,
+    "sweep_samples": 24576,
+    "total_samples": 32768
+  },
+  "repeats": 4,
+  "capture": {
+    "id": "sweep-foh-left",
+    "source_epoch": "3",
+    "map_revision": "1",
+    "clock_domain": "stagebox-source",
+    "reference_id": "sweep-foh-left",
+    "reference_tap": "excitation",
+    "reference_offset_frames": "0",
+    "first_frame": "96000",
+    "sample_rate": 48000,
+    "output_index": 1,
+    "position_id": "foh-left",
+    "configuration_revision": "7",
+    "dropped_frames": "0",
+    "clipped_reference": false,
+    "clipped_mic": false,
+    "timing_verified": true
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "contract": "GP-PA-MEASURE-CAPTURE",
+  "version": 1,
+  "id": "sweep-foh-left",
+  "position_id": "foh-left",
+  "basis": {
+    "show_id": "00000000-0000-0000-0000-000000000001",
+    "source_epoch": "3",
+    "map_revision": "1",
+    "graph_generation": "2",
+    "configuration_revision": "7"
+  },
+  "path": {
+    "output_index": 1
+  },
+  "mic": {
+    "capture_slot": 16,
+    "calibration": {
+      "provenance": "measurement-mic-1",
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  },
+  "excitation": {
+    "kind": "log_sweep",
+    "start_hz": 40,
+    "end_hz": 16000,
+    "sweep_samples": 24576,
+    "total_samples": 32768,
+    "level_mdbfs": -42000.0,
+    "repeats": 4
+  },
+  "confirm_audible": true
+}
