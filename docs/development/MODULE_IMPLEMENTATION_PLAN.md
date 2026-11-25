@@ -1,6 +1,6 @@
 # GigPies integration plan
 
-Updated 2026-11-24. This page owns every cross-module GigPies task: one card per
+Updated 2026-11-25. This page owns every cross-module GigPies task: one card per
 task, holding state, what is done, what is open and the next action. Module-only
 work lives in the [owning module plans](MODULE_IMPLEMENTATION_MAP.md).
 Dated execution logs, validation counts, hashes and failures up to 2026-11-24
@@ -31,7 +31,7 @@ not runtime modules ([components](../architecture/COMPONENTS.md)).
 | Task | State | Next action |
 |---|---|---|
 | [GP-PA-MEASURE](#gp-pa-measure--physical-measurement-workflow) | IN PROGRESS | Freeze the source-clock capture/excitation contract (step 1) |
-| [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | PLANNED | Implement the main-vocal soundcheck rule live |
+| [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) | SOFTWARE ACCEPTED | Listening with a real singer (qualification) |
 | [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | IN PROGRESS | Backing vocals and the rest of the band; wetness objective |
 | [GP-PANEL](#gp-panel--shared-physical-instrument-panel) | IN PROGRESS | Page-by-page physical-control redesign |
 | [GP-H2](#gp-h2--physical-dual-console-operation) | IN PROGRESS | Software done; learned SHR-DAW mapping imported; hardware checks remain |
@@ -46,7 +46,7 @@ not runtime modules ([components](../architecture/COMPONENTS.md)).
 | Controllers and displays | [GP-H2](#gp-h2--physical-dual-console-operation) | Learned MiniLab profiles, LEDs, disconnect recovery, two desks at once |
 | Rehearsal with PA | [GP-PA-FEEDBACK](#gp-pa-feedback--one-notch-on-one-output) | Cut frequency, response time and false triggers with musicians |
 | Acoustic measurement | [GP-PA-MEASURE](#gp-pa-measure--physical-measurement-workflow) | Synchronized reference/mic at representative positions |
-| Listening | [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing), [GP-GATE](#gp-gate--lightweight-channel-gates-and-tom-decay-control), [bass](#gp-auto-bass-low--observed-low-energy-and-definition) | Musical judgement on unseen material; gate cues on real drums |
+| Listening | [GP-AUTO](#gp-auto--live-soundcheck-and-bounded-assistance) vocal assist, [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing), [GP-GATE](#gp-gate--lightweight-channel-gates-and-tom-decay-control), [bass](#gp-auto-bass-low--observed-low-energy-and-definition) | Musical judgement on unseen material; gate cues on real drums |
 | Whole show | [GP-H3](#gp-h3--whole-show-qualification) | All owners together: load, thermals, failures, lighting output |
 
 ---
@@ -149,17 +149,54 @@ deliberately non-atomic with a durable before-send receipt; outputs stay disarme
 
 ## GP-AUTO — live soundcheck and bounded assistance
 
-**State:** PLANNED. Owner GigPies; Desk consumer.
-
-**Outcome:** use real measured sources (GP-METER, analysis) to propose bounded mix
-changes while the operator keeps control. Existing scope/lease machinery is reused.
+**State:** SOFTWARE ACCEPTED (2026-11-25) for the main-vocal rule. Owner GigPies;
+consumer SHR Desk. Contract: [vocal assist v6](../reference/CHANNEL_PROCESSING.md#vocal-assist-extension-v6).
 
 **Main-vocal rule (user, 2026-11-21):** measure the main vocal while the singer
 soundchecks and keep that level. The only automatic change on this mic is a
 level reduction when it peaks. Stage spill needs no classification or treatment.
 
-**Next:** implement that rule live: soundcheck observation window from GP-METER,
-peak-triggered bounded reduction, operator review and recovery.
+**Done**
+- Engine: `GP07-processing:6` `vocal_assist` stage after the compressor, with a
+  10 ms detector, threshold = measured reference + headroom, ∞:1 hold at the
+  threshold floored at a 12 dB-bounded max cut, attack/release and automatic
+  recovery; bit-exact below threshold; allocation-free (`gp07_alloc`). Readback
+  state, current/deepest cut and reduction events. Intent v3 persistence.
+- Soundcheck: `prepare_soundcheck` over GP-METER processed-tap windows with
+  stale/unavailable/clip/silence/duration/quiet refusals and provenance
+  (origin, evidence windows, rule ID, measurements); `vocal-prepare[-stream]`.
+- Recovery (`tests/vocal_assist.rs`): lease loss refuses edits while the engine
+  keeps the applied assist; retried IDs never reapply; operator EQ edit and
+  disable mid-reduction neither step nor reset; intent restore keeps settings
+  but starts at unity; older versions refused once configured.
+- Desk: Channel page Vocal assist mode on the shared instrument panel (keep,
+  headroom, max cut, attack, recovery, on/off; live CUT meter and state line);
+  V arms/stops a soundcheck from GP-METER, GigPies measures, C opens the
+  protected review of the measured settings, Z drafts the disabled assist into
+  review (Enter confirms). Context, epoch or meter identity loss discards a
+  take; nothing applies without review.
+- Corpus `tests/fixtures/vocal-assist/v1` (Desk copy byte-identical); real
+  GigPies process reproduces the producer document from Desk's job runner.
+
+**Decisions (2026-11-25, agent):** reference = p90 of singing RMS (loud singing
+the singer showed); headroom 3 dB and max cut 6 dB defaults, 12 dB hard bound;
+cut lives in the strip, never on the operator's fader; soundcheck requires the
+assist bypassed so the reference is unreduced; revert keeps the settings and
+disables them, and still goes through review; recording windows at the Desk
+observer rate (≤25 Hz).
+
+**Evidence:** recorded stems (opt-in `recorded_lead_vocal_soundcheck_and_assist`,
+statistics only): Complainiacs lead from 0 s → keep −19.0 dBFS, reducing 0.4 % of
+samples, p99 cut 0.9 dB, max 3.5 dB; Catbite lead from 60 s → keep −19.2 dBFS,
+1.2 %, p99 2.5 dB, max 5.1 dB. Catbite from 0 s (intro, mostly spill) → keep
+−26.3 dBFS and the cut pinned at 6 dB 26 % of the time: the soundcheck must
+contain show-level singing (documented limit).
+
+**Open — qualification:** listening with a real singer on the rig (Listening
+row): threshold/headroom feel, attack/recovery audibility, soundcheck procedure.
+
+**Next:** other sources and ensemble assistance stay in GP-AUTO-ENSEMBLE until a
+new live rule is decided.
 
 ## GP-REC — complete integrated recording workflow
 
@@ -342,8 +379,8 @@ pause/resume cues and section candidates. Rehearsal accuracy moves to GP-H3.
 
 ## Software-accepted cards
 
-GP-METER, GP-FX, GP-SHOW, GP-REC, GP-GATE, GP-AUTO-BASS-LOW, GP-AUTO-LUFS and
-GP-MUSIC-2 have no remaining software gate except where listed in their card.
+GP-METER, GP-FX, GP-SHOW, GP-REC, GP-GATE, GP-AUTO (main vocal), GP-AUTO-BASS-LOW,
+GP-AUTO-LUFS and GP-MUSIC-2 have no remaining software gate except where listed in their card.
 Earlier closed work: [GP-PA-SETUP](../archive/pa-setup-2026-10-29.md),
 [legacy GP-01..09](../archive/tracking-before-2026-10-09/MODULE_IMPLEMENTATION_PLAN.md).
 

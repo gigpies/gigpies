@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     #[serde(default, skip_serializing_if = "crate::gate::Config::is_default")]
     pub gate: crate::gate::Config,
+    /// GP-AUTO main-vocal assist after the compressor; processing v6.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::vocal_assist::Config::is_default"
+    )]
+    pub vocal_assist: crate::vocal_assist::Config,
     pub eq_bypass: bool,
     pub band1_hz: i32,
     pub band1_gain_mdb: i32,
@@ -40,6 +46,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             gate: crate::gate::Config::default(),
+            vocal_assist: crate::vocal_assist::Config::default(),
             eq_bypass: true,
             band1_hz: 120,
             band1_gain_mdb: 0,
@@ -70,6 +77,7 @@ impl Default for Config {
 impl Config {
     pub fn validate(&self) -> Result<()> {
         self.gate.validate()?;
+        self.vocal_assist.validate()?;
         for (v, lo, hi, step) in [
             (self.band1_hz, 20, 20000, 1),
             (self.band1_gain_mdb, -12000, 12000, 100),
@@ -103,6 +111,7 @@ pub struct Prepared {
     pub(crate) config: Config,
     filters: [Biquad; 4],
     gate: crate::gate::Prepared,
+    vocal_assist: crate::vocal_assist::Prepared,
     attack: f64,
     release: f64,
 }
@@ -153,6 +162,7 @@ impl Prepared {
         Ok(Self {
             config,
             gate: crate::gate::Prepared::new(config.gate, 48000)?,
+            vocal_assist: crate::vocal_assist::Prepared::new(config.vocal_assist, 48000)?,
             filters,
             attack: (-1. / (config.attack_us as f64 * 0.000001 * 48000.)).exp(),
             release: (-1. / (config.release_ms as f64 * 0.001 * 48000.)).exp(),
@@ -206,11 +216,19 @@ impl Branch {
         x
     }
 }
+/// Per-strip state bytes reserved by earlier producers whose immutable evidence is
+/// still read: 672 before the gate, 1144 with the gate and before the vocal assist.
+pub const HISTORICAL_STRIP_BYTES: [usize; 2] = [672, 1144];
+/// Current per-strip state bytes (admission reserves two per input).
+pub fn strip_bytes() -> usize {
+    std::mem::size_of::<Strip>()
+}
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Strip {
     old: Branch,
     target: Branch,
     gate: crate::gate::Gate,
+    vocal_assist: crate::vocal_assist::Assist,
     begin: u64,
     end: u64,
 }
@@ -221,6 +239,7 @@ impl Default for Strip {
             old: branch,
             target: branch,
             gate: crate::gate::Gate::new(branch.prepared.gate),
+            vocal_assist: crate::vocal_assist::Assist::new(branch.prepared.vocal_assist),
             begin: 0,
             end: 0,
         }
@@ -238,6 +257,20 @@ impl Strip {
         (frame >= self.end && !self.target.prepared.config.gate.is_default())
             .then(|| self.gate.observation())
     }
+    pub(crate) fn vocal_assist_source_observation(
+        &self,
+        frame: u64,
+    ) -> Option<crate::vocal_assist::SourceObservation> {
+        (frame >= self.end && !self.target.prepared.config.vocal_assist.is_default())
+            .then(|| self.vocal_assist.source_observation())
+    }
+    pub(crate) fn vocal_assist_observation(
+        &self,
+        frame: u64,
+    ) -> Option<crate::vocal_assist::Observation> {
+        (frame >= self.end && !self.target.prepared.config.vocal_assist.is_default())
+            .then(|| self.vocal_assist.observation())
+    }
     pub(crate) fn apply(&mut self, prepared: Prepared, frame: u64) {
         if self.target.prepared.config == prepared.config {
             return;
@@ -245,12 +278,19 @@ impl Strip {
         self.old = self.target;
         self.target = Branch::new(prepared);
         self.gate.apply(prepared.gate);
+        self.vocal_assist.apply(prepared.vocal_assist);
         self.target.reduction = self.old.reduction;
         self.begin = frame;
         self.end = frame + 240;
     }
     pub(crate) fn tick(&mut self, x: f64, frame: u64) -> f64 {
-        self.tick_inner(x, frame, true)
+        let y = self.tick_inner(x, frame, true);
+        if !y.is_finite() {
+            return y;
+        }
+        // One assist instance on the actual (possibly blended) strip output: an
+        // operator edit mid-reduction neither duplicates nor resets its history.
+        self.vocal_assist.tick(y)
     }
     fn tick_inner(&mut self, x: f64, frame: u64, gate_enabled: bool) -> f64 {
         let target = self.target.equalize(x);

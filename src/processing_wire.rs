@@ -1,4 +1,5 @@
-//! Strict GP07-processing:2 envelope, independent of legacy wire bytes.
+//! Strict GP07-processing:2..6 envelope, independent of legacy wire bytes.
+//! v5 adds the channel gate; v6 adds the GP-AUTO main-vocal assist.
 use crate::{
     channel_processing::Config,
     control_model::{Command, Request},
@@ -71,7 +72,7 @@ impl ProcessingRequest {
         RequestContext::request(&self.authority_request())
     }
     pub fn validate(&self) -> Result<()> {
-        if self.contract != CONTRACT || ![2, 3, 4, 5].contains(&self.version) {
+        if self.contract != CONTRACT || ![2, 3, 4, 5, 6].contains(&self.version) {
             return Err("version".into());
         }
         self.authority_request().encode()?;
@@ -83,6 +84,9 @@ impl ProcessingRequest {
             config.validate()?;
             if self.version < 5 && !config.gate.is_default() {
                 return Err("gate requires processing v5".into());
+            }
+            if self.version < 6 && !config.vocal_assist.is_default() {
+                return Err("vocal assist requires processing v6".into());
             }
         }
         Ok(())
@@ -105,8 +109,13 @@ impl ProcessingRequest {
                 "body",
             ],
         )?;
-        if v["contract"] != CONTRACT || !matches!(v["version"].as_u64(), Some(2..=5)) {
+        if v["contract"] != CONTRACT || !matches!(v["version"].as_u64(), Some(2..=6)) {
             return Err("version".into());
+        }
+        if v["version"].as_u64().is_some_and(|v| v < 6)
+            && v["body"]["config"].get("vocal_assist").is_some()
+        {
+            return Err("vocal assist requires processing v6".into());
         }
         if v["version"].as_u64().is_some_and(|v| v < 5) && v["body"]["config"].get("gate").is_some()
         {
@@ -133,7 +142,7 @@ impl UnsupportedRequest {
         Self::decode_for(bytes, 2)
     }
     pub fn decode_for(bytes: &[u8], supported_version: u32) -> Result<Option<Self>> {
-        if ![2, 3, 4, 5].contains(&supported_version) {
+        if ![2, 3, 4, 5, 6].contains(&supported_version) {
             return Err("provider version".into());
         }
         #[derive(Deserialize)]
@@ -193,7 +202,9 @@ impl UnsupportedRequest {
             command,
         };
         authority.encode()?;
-        if o.version == supported_version || (supported_version == 4 && o.version == 5) {
+        // Dynamic providers (v4) also implement the v5 gate and v6 vocal-assist extensions.
+        if o.version == supported_version || (supported_version == 4 && matches!(o.version, 5 | 6))
+        {
             return Ok(None);
         }
         Ok(Some(Self {
@@ -231,6 +242,8 @@ pub struct Channel {
     pub gain_reduction_mdb: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate: Option<crate::gate::Observation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocal_assist: Option<crate::vocal_assist::Observation>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -279,6 +292,12 @@ impl ProcessingSnapshot {
                 || (self.faulted && c.gate.is_some())
             {
                 return Err("gate observation".into());
+            }
+            if c.vocal_assist.is_some()
+                != (c.ready && !self.faulted && !c.target.vocal_assist.is_default())
+                || c.vocal_assist.is_some_and(|a| a.validate().is_err())
+            {
+                return Err("vocal assist observation".into());
             }
             c.current.validate()?;
             c.target.validate()?;
@@ -334,7 +353,7 @@ impl ProcessingReply {
         }
     }
     pub fn validate(&self) -> Result<()> {
-        if self.contract != CONTRACT || ![2, 3, 4, 5].contains(&self.version) {
+        if self.contract != CONTRACT || ![2, 3, 4, 5, 6].contains(&self.version) {
             return Err("version".into());
         }
         self.context.validate()?;
@@ -382,6 +401,15 @@ impl ProcessingReply {
                     })
                 {
                     return Err("gate requires processing v5".into());
+                }
+                if self.version < 6
+                    && s.channels.iter().any(|c| {
+                        !c.current.vocal_assist.is_default()
+                            || !c.target.vocal_assist.is_default()
+                            || c.vocal_assist.is_some()
+                    })
+                {
+                    return Err("vocal assist requires processing v6".into());
                 }
                 if s.monitor_tap
                     != if self.version >= 4 {
@@ -481,6 +509,9 @@ impl ProcessingReply {
                 ];
                 if c.get("gate").is_some() {
                     fields.push("gate");
+                }
+                if c.get("vocal_assist").is_some() {
+                    fields.push("vocal_assist");
                 }
                 keys(c, &fields)?;
             }

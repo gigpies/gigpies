@@ -556,12 +556,18 @@ fn fixture(name: &str, value: &impl serde::Serialize) {
             .as_u64()
             .unwrap();
         if old_bytes != current_bytes {
-            // Immutable pre-gate corpus used 672-byte strips; current strips are
-            // 1144 bytes. Admission reserves two strips per input. All other
-            // producer fields must still match the original bytes exactly.
+            // The immutable corpus reserved an earlier strip size. Admission reserves
+            // two strips per input; only an exact strip-size change is normalized and
+            // all other producer fields must still match the original bytes exactly.
             let inputs = expected["authority"]["inputs"].as_array().unwrap().len() as u64;
-            expected["resources"]["admission"]["estimated_bytes"] =
-                (old_bytes + inputs * 944).into();
+            let current = gigpies::channel_processing::strip_bytes() as u64;
+            if let Some(normalized) = gigpies::channel_processing::HISTORICAL_STRIP_BYTES
+                .iter()
+                .map(|&bytes| old_bytes + inputs * 2 * (current - bytes as u64))
+                .find(|&n| n == current_bytes)
+            {
+                expected["resources"]["admission"]["estimated_bytes"] = normalized.into();
+            }
         }
     }
     assert_eq!(

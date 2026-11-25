@@ -153,17 +153,19 @@ fn fixture(name: &str, value: &Value) {
         &std::fs::read(path).expect("explicitly generate producer atomic fixtures"),
     )
     .unwrap();
-    // Historical producer bytes retain their original 672-byte strip reservation.
-    // Only the exact additional gate storage is normalized; other drift still fails.
+    // Historical producer bytes retain an earlier strip reservation (pre-gate or
+    // gate-era). Only an exact strip-size change is normalized; other drift still fails.
     if let Some(snapshot) = saved.get_mut("raw")
         && let Some(n) = snapshot["topology"]["inputs"].as_array().map(Vec::len)
     {
-        let extra = n * (std::mem::size_of::<crate::channel_processing::Strip>() - 672) * 2;
         let field = &mut snapshot["resources"]["admission"]["estimated_bytes"];
         if let Some(old) = field.as_u64() {
             let actual = value["raw"]["resources"]["admission"]["estimated_bytes"].as_u64();
-            if actual == Some(old + extra as u64) {
-                *field = serde_json::json!(old + extra as u64);
+            for bytes in crate::channel_processing::HISTORICAL_STRIP_BYTES {
+                let extra = (n * (crate::channel_processing::strip_bytes() - bytes) * 2) as u64;
+                if actual == Some(old + extra) {
+                    *field = serde_json::json!(old + extra);
+                }
             }
         }
     }

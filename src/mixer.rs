@@ -421,6 +421,7 @@ pub(crate) struct SourceObservation {
         Option<i32>,
     )>,
     pub gates: Vec<Option<crate::gate::SourceObservation>>,
+    pub vocal_assists: Vec<Option<crate::vocal_assist::SourceObservation>>,
     pub sends: Vec<Vec<(crate::sends_wire::Tap, crate::sends_wire::Tap, u32)>>,
 }
 impl SourceObservation {
@@ -439,6 +440,7 @@ impl SourceObservation {
             targets: mixer.targets(),
             processing: mixer.processing_observations(),
             gates: vec![None; mixer.input_count()],
+            vocal_assists: vec![None; mixer.input_count()],
             sends: mixer.send_observations(),
         };
         mixer.observe_into(&mut value);
@@ -935,6 +937,18 @@ impl Mixer {
                 .and_then(|s| s.gate_observation(self.clock))
         }
     }
+    pub fn vocal_assist_observation(
+        &self,
+        input: usize,
+    ) -> Option<crate::vocal_assist::Observation> {
+        if self.fault {
+            None
+        } else {
+            self.processing
+                .get(input)
+                .and_then(|s| s.vocal_assist_observation(self.clock))
+        }
+    }
     pub fn processing_observations(
         &self,
     ) -> Vec<(
@@ -1080,6 +1094,11 @@ impl Mixer {
                 None
             } else {
                 self.processing[i].gate_source_observation(self.clock)
+            };
+            observation.vocal_assists[i] = if self.fault {
+                None
+            } else {
+                self.processing[i].vocal_assist_source_observation(self.clock)
             };
             for (j, send) in self.sends[i].iter().enumerate() {
                 let remaining = send.end.saturating_sub(self.clock) as u32;

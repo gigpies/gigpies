@@ -36,6 +36,7 @@ The agent selects tests by changed behavior and reports what ran and what was sk
 | Owner-artifact | `-- --ignored` with `GP05_MANIFEST` etc. | When the change touches PA/FX/REC integration or meters (see below) |
 | Long virtual-clock | `--release --test brain_bridge -- --ignored` | When the Brain bridge/ASRC or its assumptions change |
 | Historical / audition / exhaustive | Named `--ignored` tests, private media | Only when directly relevant or requested |
+| Recorded vocal assist | `GP_VOCAL_STEMS=/abs/stem.wav@start[:…] cargo test --release --test vocal_assist recorded -- --ignored --nocapture` (statistics only) | When the vocal-assist detector or soundcheck rule changes |
 | Two-node / physical | Lab runners, real devices | Only in a separately authorized, reserved session |
 
 Normal tests generate synthetic WAVs in temporary directories. They never open

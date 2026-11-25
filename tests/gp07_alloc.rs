@@ -32,6 +32,11 @@ fn public_process_has_no_heap_allocation_or_retirement() {
             detector_hz: 180,
             ..Default::default()
         },
+        vocal_assist: gigpies::vocal_assist::Config {
+            bypass: false,
+            reference_mdb: -30000,
+            ..Default::default()
+        },
         eq_bypass: false,
         band1_gain_mdb: -3000,
         band2_gain_mdb: 6000,
@@ -92,6 +97,11 @@ fn configurable_profiles_have_no_render_allocation_or_retirement() {
             gate: gigpies::gate::Config {
                 bypass: false,
                 detector_hz: 180,
+                ..Default::default()
+            },
+            vocal_assist: gigpies::vocal_assist::Config {
+                bypass: false,
+                reference_mdb: -30000,
                 ..Default::default()
             },
             eq_bypass: false,

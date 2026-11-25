@@ -173,14 +173,16 @@ impl RenderedSnapshot {
             let topology = self.topology.as_ref().ok_or("topology missing")?;
             let resources = self.resources.as_ref().ok_or("resources missing")?;
             let admission = topology.validate(resources.render_budget)?;
-            // Historical GP07 v2/v4 producers used 672 bytes per strip. Read their
-            // immutable evidence; runtime restore always admits the current state size.
-            let mut legacy_admission = admission.clone();
-            legacy_admission.estimated_bytes -= topology.inputs.len()
-                * (std::mem::size_of::<crate::channel_processing::Strip>() - 672)
-                * 2;
+            // Historical producers reserved smaller strips (see HISTORICAL_STRIP_BYTES).
+            // Read their immutable evidence; runtime restore always admits the current size.
+            let historical = crate::channel_processing::HISTORICAL_STRIP_BYTES.map(|bytes| {
+                let mut legacy = admission.clone();
+                legacy.estimated_bytes -=
+                    topology.inputs.len() * (crate::channel_processing::strip_bytes() - bytes) * 2;
+                legacy
+            });
             if resources.render_budget != crate::topology::ResourceBudget::default()
-                || (resources.admission != admission && resources.admission != legacy_admission)
+                || (resources.admission != admission && !historical.contains(&resources.admission))
                 || resources.snapshot_assembly_bytes != crate::snapshot_pages::ASSEMBLY_BYTES
                 || resources.live_writer_capacity != 4
                 || resources.reply_history_per_writer != 64
@@ -951,7 +953,7 @@ impl OfflineEngine {
                 .observed
                 .processing
                 .iter()
-                .any(|o| !o.1.gate.is_default())
+                .any(|o| !o.1.gate.is_default() || !o.1.vocal_assist.is_default())
             {
                 3
             } else {
@@ -993,7 +995,11 @@ impl OfflineEngine {
             || intent.processing.len() != intent.topology.inputs.len()
             || (intent.version == 1 && intent.send_taps.is_some())
             || (intent.version >= 2 && intent.send_taps.is_none())
-            || (intent.version < 3 && intent.processing.iter().any(|c| !c.gate.is_default()))
+            || (intent.version < 3
+                && intent
+                    .processing
+                    .iter()
+                    .any(|c| !c.gate.is_default() || !c.vocal_assist.is_default()))
         {
             return Err("intent version/shape".into());
         }
@@ -1410,6 +1416,7 @@ impl OfflineEngine {
                     ready: remaining == 0,
                     gain_reduction_mdb: gr,
                     gate: self.observed.gates[i].map(|g| g.readback()),
+                    vocal_assist: self.observed.vocal_assists[i].map(|a| a.readback()),
                 })
                 .collect(),
         })
@@ -1447,13 +1454,19 @@ impl OfflineEngine {
     ) -> Result<ProcessingReply> {
         r.validate()?;
         if (r.version != self.processing_version()
-            && !(self.processing_version() == 4 && r.version == 5))
+            && !(self.processing_version() == 4 && matches!(r.version, 5 | 6)))
             || (r.version < 5
                 && self
                     .observed
                     .processing
                     .iter()
                     .any(|o| !o.0.gate.is_default() || !o.1.gate.is_default()))
+            || (r.version < 6
+                && self
+                    .observed
+                    .processing
+                    .iter()
+                    .any(|o| !o.0.vocal_assist.is_default() || !o.1.vocal_assist.is_default()))
         {
             return Ok(ProcessingReply::new(
                 r,

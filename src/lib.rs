@@ -50,6 +50,8 @@ pub mod gate;
 pub mod gate_preparation;
 /// Strict GP07 processing extension.
 pub mod processing_wire;
+/// GP-AUTO main-vocal soundcheck level and bounded peak reduction.
+pub mod vocal_assist;
 
 pub mod topology;
 
