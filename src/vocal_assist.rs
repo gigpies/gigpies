@@ -2,7 +2,8 @@
 //!
 //! The rule (user, 2026-11-21): measure the main vocal while the singer soundchecks
 //! and keep that level. The only automatic change is a bounded level reduction when
-//! the vocal peaks above the measured level. No spill classification or treatment.
+//! the vocal peaks above the measured level. The soundcheck is a whole loud song and
+//! the whole take is measured: the kept level is its maximum.
 //!
 //! The sample loop has fixed storage and no allocation, locks, I/O, log or pow;
 //! coefficients and thresholds are prepared outside rendering.
@@ -31,7 +32,8 @@ pub struct Config {
     pub bypass: bool,
     /// Measured (or manually entered) short-term RMS level the singer is kept at.
     pub reference_mdb: i32,
-    /// Allowed rise above the reference before any reduction.
+    /// Allowed rise above the reference before any reduction (default 0: the
+    /// measured maximum is the kept level).
     pub headroom_mdb: u32,
     /// Largest automatic reduction, 0.1..12 dB.
     pub max_cut_mdb: u32,
@@ -47,7 +49,7 @@ impl Default for Config {
         Self {
             bypass: true,
             reference_mdb: -18000,
-            headroom_mdb: 3000,
+            headroom_mdb: 0,
             max_cut_mdb: 6000,
             attack_us: 5000,
             release_ms: 400,
@@ -285,18 +287,15 @@ impl Assist {
 // ---------------------------------------------------------------------------
 // Soundcheck observation window → derived reference with provenance.
 
-/// Most windows in one soundcheck (two minutes at the 25 Hz Desk observer rate).
-pub const MAX_WINDOWS: usize = 3000;
-/// Least active singing: six seconds at 25 Hz, three at the full 50 Hz window rate.
+/// Most windows in one soundcheck: a whole song of up to five minutes at the
+/// 25 Hz Desk observer rate.
+pub const MAX_WINDOWS: usize = 7500;
+/// Least non-silent windows: six seconds at 25 Hz, three at the full 50 Hz rate.
 pub const MIN_ACTIVE_WINDOWS: usize = 150;
-/// Windows below this RMS do not count as singing.
-pub const ACTIVE_FLOOR_MDB: i32 = -60000;
-/// A reference this low means the mic is not gain-staged for a vocal.
+/// A maximum this low means the mic is not gain-staged for a vocal.
 pub const QUIET_REFERENCE_MDB: i32 = -50000;
 /// GP-METER freshness bound.
 pub const STALE_AGE_MS: u32 = 250;
-/// Reference percentile over active windows: the loud singing the singer showed.
-pub const REFERENCE_PERCENTILE: f64 = 0.9;
 
 /// One GP-METER window of the vocal's pre-fader processed tap, as received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,13 +314,13 @@ pub struct Window {
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     Prepared,
-    /// Fewer than MIN_ACTIVE_WINDOWS of singing.
+    /// Fewer than MIN_ACTIVE_WINDOWS non-silent windows.
     TooShort,
     /// More than a fifth of windows were stale or unavailable.
     UnreliableMeter,
     /// Clipping during soundcheck: fix the input gain first.
     Clipped,
-    /// The loud singing level is below QUIET_REFERENCE_MDB.
+    /// The take's maximum level is below QUIET_REFERENCE_MDB.
     TooQuiet,
     /// Malformed evidence: empty, oversize, out-of-order or out-of-range windows.
     InvalidEvidence,
@@ -341,6 +340,8 @@ pub struct Measurements {
     pub rms_p50_mdbfs: i32,
     pub rms_p90_mdbfs: i32,
     pub rms_p99_mdbfs: i32,
+    /// Loudest 20 ms RMS of the whole take: the kept level.
+    pub rms_max_mdbfs: i32,
     pub peak_max_mdbfs: i32,
 }
 
@@ -394,7 +395,6 @@ pub fn prepare_soundcheck(windows: &[Window]) -> Proposal {
         .iter()
         .filter(|w| !w.silent)
         .filter_map(|w| w.rms_mdbfs)
-        .filter(|&v| v >= ACTIVE_FLOOR_MDB)
         .collect();
     rms.sort_unstable();
     let measurements = (!rms.is_empty()).then(|| Measurements {
@@ -407,8 +407,9 @@ pub fn prepare_soundcheck(windows: &[Window]) -> Proposal {
         last_sequence: windows[windows.len() - 1].sequence,
         rms_p10_mdbfs: percentile(&rms, 0.1),
         rms_p50_mdbfs: percentile(&rms, 0.5),
-        rms_p90_mdbfs: percentile(&rms, REFERENCE_PERCENTILE),
+        rms_p90_mdbfs: percentile(&rms, 0.9),
         rms_p99_mdbfs: percentile(&rms, 0.99),
+        rms_max_mdbfs: rms[rms.len() - 1],
         peak_max_mdbfs: usable
             .iter()
             .filter_map(|w| w.sample_peak_mdbfs)
@@ -424,8 +425,9 @@ pub fn prepare_soundcheck(windows: &[Window]) -> Proposal {
     let Some(m) = measurements.filter(|_| rms.len() >= MIN_ACTIVE_WINDOWS) else {
         return refuse(Reason::TooShort, measurements);
     };
+    // The whole loud-song take is measured; its maximum is the kept level.
     // Round to the 0.1 dB wire step, never above the measured level.
-    let reference = m.rms_p90_mdbfs.div_euclid(100) * 100;
+    let reference = m.rms_max_mdbfs.div_euclid(100) * 100;
     if reference < QUIET_REFERENCE_MDB {
         return refuse(Reason::TooQuiet, Some(m));
     }
@@ -433,7 +435,6 @@ pub fn prepare_soundcheck(windows: &[Window]) -> Proposal {
     let config = Config {
         bypass: false,
         reference_mdb: reference,
-        headroom_mdb: defaults.headroom_mdb.min(reference.unsigned_abs()),
         origin: Origin::Soundcheck,
         evidence_windows: m.active,
         ..defaults
@@ -450,7 +451,7 @@ pub fn prepare_soundcheck(windows: &[Window]) -> Proposal {
 // Desk control process: one bounded request on stdin, one document on stdout.
 
 pub const REQUEST_VERSION: u32 = 1;
-pub const REQUEST_BYTES: usize = 512 * 1024;
+pub const REQUEST_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -567,23 +568,23 @@ mod tests {
 
     #[test]
     fn keeps_soundcheck_level_and_reduces_only_peaks() {
-        // Reference −20 dBFS RMS, +3 dB headroom → threshold −17 dBFS RMS.
+        // Soundcheck maximum −20 dBFS RMS, no headroom → threshold −20 dBFS RMS.
         let mut a = Assist::new(Prepared::new(enabled(-20000), RATE).unwrap());
-        // A sine at −20 dBFS RMS (peak 0.1414) is the soundcheck level: untouched.
-        let at_level = 0.1 * 2f64.sqrt();
+        // Ordinary singing 3 dB under the soundcheck maximum: untouched.
+        let at_level = 0.1 * 2f64.sqrt() * 10f64.powf(-3. / 20.);
         for x in sine(at_level, 48000, 0) {
             a.tick(x);
         }
         assert_eq!(a.linear_gain(), 1.);
         assert_eq!(a.state, State::Idle);
-        // +9 dB peak: held near the threshold, i.e. about a 6 dB cut (= max cut).
+        // 6 dB above the maximum: held near the threshold, i.e. a 6 dB cut (= max cut).
         for x in sine(at_level * 10f64.powf(9. / 20.), 24000, 48000) {
             a.tick(x);
         }
         assert_eq!(a.state, State::Reducing);
         let cut = -db(a.linear_gain());
         assert!((5.5..=6.0 + 1e-9).contains(&cut), "cut {cut}");
-        // +4 dB: about a 1 dB cut, bounded and proportional.
+        // 1 dB above the maximum: about a 1 dB cut, bounded and proportional.
         let mut b = Assist::new(Prepared::new(enabled(-20000), RATE).unwrap());
         for x in sine(at_level * 10f64.powf(4. / 20.), 48000, 0) {
             b.tick(x);
@@ -720,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn soundcheck_derives_reference_from_loud_singing() {
+    fn soundcheck_keeps_the_maximum_of_the_whole_take() {
         let mut w = singing(300);
         // Silence between phrases is ignored, not averaged in.
         for x in w.iter_mut().step_by(10) {
@@ -735,11 +736,13 @@ mod tests {
         assert_eq!(p.reason, Reason::Prepared);
         let m = p.measurements.unwrap();
         assert_eq!((m.windows, m.silent, m.active), (300, 30, 270));
+        // The whole take is measured; the kept level is its maximum.
         assert_eq!(
             p.config.reference_mdb,
-            m.rms_p90_mdbfs.div_euclid(100) * 100
+            m.rms_max_mdbfs.div_euclid(100) * 100
         );
-        assert!(p.config.reference_mdb > m.rms_p50_mdbfs);
+        assert_eq!(m.rms_max_mdbfs, -20100);
+        assert_eq!(p.config.headroom_mdb, 0);
         assert!(!p.config.bypass);
         assert_eq!(p.config.origin, Origin::Soundcheck);
         assert_eq!(p.config.evidence_windows, 270);

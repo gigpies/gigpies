@@ -139,7 +139,8 @@ fn peak(samples: &[f64]) -> f64 {
 #[test]
 fn v6_readback_reduces_only_peaks_and_recovers_automatically() {
     let mut e = engine();
-    let at_level = 0.1 * 2f64.sqrt(); // −20 dBFS RMS
+    // Ordinary singing 3 dB under the −20 dBFS soundcheck maximum.
+    let at_level = 0.1 * 2f64.sqrt() * 10f64.powf(-3. / 20.);
     let config = Config {
         vocal_assist: assist(-20000),
         ..Config::default()
@@ -151,7 +152,7 @@ fn v6_readback_reduces_only_peaks_and_recovers_automatically() {
     assert_eq!(c.vocal_assist.unwrap().state, State::Idle);
     assert!(s.channels[1].vocal_assist.is_none());
 
-    // At the soundchecked level: untouched, identical to a bypassed reference engine.
+    // Below the soundcheck maximum: untouched, identical to an engine without assist.
     let mut reference = engine();
     let kept = pump(&mut e, 48000, 0, at_level, 3);
     let plain = pump(&mut reference, 48000, 0, at_level, 3);
@@ -164,7 +165,7 @@ fn v6_readback_reduces_only_peaks_and_recovers_automatically() {
         0
     );
 
-    // +9 dB peak: Main follows the bounded 6 dB cut.
+    // 6 dB above the maximum: Main follows the bounded 6 dB cut.
     let loud = pump(&mut e, 24000, 48000, at_level * 10f64.powf(9. / 20.), 5);
     let loud_plain = pump(
         &mut reference,
@@ -180,7 +181,7 @@ fn v6_readback_reduces_only_peaks_and_recovers_automatically() {
     assert!((5000..=6000).contains(&o.reduction_mdb), "{o:?}");
     assert_eq!(o.onsets, Counter(1));
 
-    // Back at level: recovers to exact unity without any operator action.
+    // Back below the maximum: recovers to exact unity without any operator action.
     pump(&mut e, 48000 * 6, 72000, at_level, 7);
     let o = snapshot(&mut e, 8).channels[0].vocal_assist.unwrap();
     assert_eq!((o.state, o.reduction_mdb), (State::Idle, 0));
@@ -430,16 +431,14 @@ fn write_producer_fixture_v1() {
 }
 
 /// Opt-in recorded check, statistics only (no PCM written):
-/// `GP_VOCAL_STEMS="/abs/lead1.wav@0:/abs/lead2.wav@60" cargo test --release --test vocal_assist recorded -- --ignored --nocapture`.
-/// Thirty seconds of singing from `@start` seconds stand in for the soundcheck; the
-/// assist then runs over the complete stem with the derived settings.
+/// `GP_VOCAL_STEMS="/abs/lead1.wav:/abs/lead2.wav" cargo test --release --test vocal_assist recorded -- --ignored --nocapture`.
+/// Each stem is a loud song used as the soundcheck: the whole take is measured, then
+/// the assist runs over the same song with the derived settings.
 #[test]
 #[ignore = "needs local private recordings; set GP_VOCAL_STEMS"]
 fn recorded_lead_vocal_soundcheck_and_assist() {
     let stems = std::env::var("GP_VOCAL_STEMS").expect("GP_VOCAL_STEMS");
-    for stem in stems.split(':') {
-        let (path, start) = stem.rsplit_once('@').unwrap_or((stem, "0"));
-        let start: usize = start.parse().unwrap();
+    for path in stems.split(':') {
         let mut reader = hound::WavReader::open(path).unwrap();
         let spec = reader.spec();
         let scale = match spec.sample_format {
@@ -461,7 +460,6 @@ fn recorded_lead_vocal_soundcheck_and_assist() {
         let window = rate / 50;
         let mdb = |x: f64| ((20000. * x.max(1e-6).log10()).round() as i32).clamp(-120000, 0);
         let windows: Vec<vocal_assist::Window> = mono
-            [(start * rate).min(mono.len())..((start + 30) * rate).min(mono.len())]
             .chunks_exact(window)
             .enumerate()
             .filter(|(i, _)| i % 2 == 0) // the Desk observer samples at most 25 Hz
@@ -479,10 +477,7 @@ fn recorded_lead_vocal_soundcheck_and_assist() {
             })
             .collect();
         let proposal = vocal_assist::prepare_soundcheck(&windows);
-        println!(
-            "{path} @{start}s: {:?} {:?}",
-            proposal.reason, proposal.measurements
-        );
+        println!("{path}: {:?} {:?}", proposal.reason, proposal.measurements);
         if proposal.reason != vocal_assist::Reason::Prepared {
             continue;
         }

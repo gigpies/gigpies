@@ -130,8 +130,8 @@ No audition songs, post-render tuning or reference-song targets are used.
 
 GP-AUTO main-vocal rule (user, 2026-11-21): measure the main vocal while the
 singer soundchecks and keep that level; the only automatic change is a bounded
-level reduction when it peaks. No spill classification or treatment.
-Implementation: `src/vocal_assist.rs`; card [GP-AUTO](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-auto--live-soundcheck-and-bounded-assistance).
+level reduction when it peaks. The soundcheck is a whole loud song and the whole
+take is measured; its maximum is the kept level. Implementation: `src/vocal_assist.rs`; card [GP-AUTO](../development/MODULE_IMPLEMENTATION_PLAN.md#gp-auto--live-soundcheck-and-bounded-assistance).
 
 Dynamic providers accept `GP07-processing:6` as well as v4/v5; Desk's dynamic
 session probes v6. The optional `vocal_assist` config object defaults to bypass
@@ -144,12 +144,12 @@ gate does); older intent with assist settings is refused.
 |---|---|
 | bypass | boolean, default true |
 | reference_mdb | −60000..0 step 100: short-term RMS level the singer is kept at |
-| headroom_mdb | 0..12000 step 100 (default 3000): rise allowed before any cut; reference + headroom ≤ 0 |
+| headroom_mdb | 0..12000 step 100 (default 0): rise allowed above the kept level before any cut; reference + headroom ≤ 0 |
 | max_cut_mdb | 100..12000 step 100 (default 6000): largest automatic cut |
 | attack_us | 100..200000 step 100 (default 5000) |
 | release_ms | 10..5000 (default 400): automatic recovery |
 | origin | `manual` or `soundcheck` |
-| evidence_windows | active soundcheck windows; 0 exactly when manual, ≤3000 |
+| evidence_windows | non-silent soundcheck windows; 0 exactly when manual, ≤7500 |
 
 Signal: after the compressor and makeup, on the actual (possibly crossfading)
 strip output, before shared mute, fader, pan and every processed tap. Raw REC,
@@ -172,28 +172,26 @@ and configured): `state` (`bypassed`, `idle`, `reducing`, `recovering`),
 ending at full recovery) since the current settings were applied.
 
 **Soundcheck.** `vocal_assist::prepare_soundcheck` turns GP-METER windows of the
-vocal's processed tap into the kept level. Desk records each newly received
-window (sequence, RMS, sample peak, silent, clip count, receipt age) while the
-assist is bypassed; GigPies does all analysis. Rules: 1..3000 strictly increasing
-windows; windows older than 250 ms are stale and null levels unavailable, and more
-than a fifth of either refuses `unreliable_meter`; any clip refuses `clipped`;
-silent windows and RMS below −60 dBFS are not singing; fewer than 150 singing
-windows refuses `too_short`. The reference is the 90th percentile of singing RMS,
-rounded down to 0.1 dB; below −50 dBFS refuses `too_quiet`. A prepared proposal is
-enabled with origin `soundcheck`; every refusal returns the bypassed default.
+vocal's processed tap over a whole loud song into the kept level. Desk records each
+newly received window (sequence, RMS, sample peak, silent, clip count, receipt age)
+while the assist is bypassed; GigPies does all analysis. Rules: 1..7500 strictly
+increasing windows (a five-minute song at the 25 Hz Desk observer rate); windows
+older than 250 ms are stale and null levels unavailable, and more than a fifth of
+either refuses `unreliable_meter`; any clip refuses `clipped`; fewer than 150
+non-silent windows refuses `too_short`. The reference is the maximum 20 ms RMS of
+the whole take, rounded down to 0.1 dB; below −50 dBFS refuses `too_quiet`. A
+prepared proposal is enabled with origin `soundcheck` and 0 dB headroom, so
+cutting starts at the song maximum; every refusal returns the bypassed default.
 `gigpies vocal-prepare <request.json> <new-proposal.json>` and
-`gigpies vocal-prepare-stream` (one ≤512 KiB request on stdin, one `document` or
+`gigpies vocal-prepare-stream` (one ≤1 MiB request on stdin, one `document` or
 `error` line on stdout) accept `version: 1`, `show_id`, `epoch`, `input`, `tap`
 (must be `input-NN:processed`) and `windows`. The document carries the identity,
 rule `gp-auto-main-vocal-2026-11-21`, proposal, reason and measurements
-(counts, sequence span, RMS p10/p50/p90/p99, peak maximum). Producer corpus:
-`tests/fixtures/vocal-assist/v1`.
+(counts, sequence span, RMS p10/p50/p90/p99/maximum, peak maximum). Producer
+corpus: `tests/fixtures/vocal-assist/v1`.
 
-Limits: the soundcheck must contain show-level singing. A passage that is mostly
-intro or stage spill yields a low reference and frequent maximum cuts (seen on a
-recorded intro); the operator sees the percentiles in review and repeats the
-soundcheck. Software and recorded-stem checks only; listening with a real singer
-and the physical rig remain open.
+Software and recorded-stem checks only; listening with a real singer and the
+physical rig remain open.
 
 ## Signal and state
 

@@ -154,7 +154,8 @@ consumer SHR Desk. Contract: [vocal assist v6](../reference/CHANNEL_PROCESSING.m
 
 **Main-vocal rule (user, 2026-11-21):** measure the main vocal while the singer
 soundchecks and keep that level. The only automatic change on this mic is a
-level reduction when it peaks. Stage spill needs no classification or treatment.
+level reduction when it peaks. The soundcheck is a whole loud song; the whole
+take is measured and its maximum is the kept level.
 
 **Done**
 - Engine: `GP07-processing:6` `vocal_assist` stage after the compressor, with a
@@ -171,26 +172,24 @@ level reduction when it peaks. Stage spill needs no classification or treatment.
   but starts at unity; older versions refused once configured.
 - Desk: Channel page Vocal assist mode on the shared instrument panel (keep,
   headroom, max cut, attack, recovery, on/off; live CUT meter and state line);
-  V arms/stops a soundcheck from GP-METER, GigPies measures, C opens the
+  V arms/stops a whole-song soundcheck from GP-METER, GigPies measures, C opens the
   protected review of the measured settings, Z drafts the disabled assist into
   review (Enter confirms). Context, epoch or meter identity loss discards a
   take; nothing applies without review.
 - Corpus `tests/fixtures/vocal-assist/v1` (Desk copy byte-identical); real
   GigPies process reproduces the producer document from Desk's job runner.
 
-**Decisions (2026-11-25, agent):** reference = p90 of singing RMS (loud singing
-the singer showed); headroom 3 dB and max cut 6 dB defaults, 12 dB hard bound;
+**Decisions:** kept level = maximum 20 ms RMS of the whole loud-song take
+(user); headroom 0 dB and max cut 6 dB defaults, 12 dB hard bound (agent);
 cut lives in the strip, never on the operator's fader; soundcheck requires the
-assist bypassed so the reference is unreduced; revert keeps the settings and
-disables them, and still goes through review; recording windows at the Desk
-observer rate (≤25 Hz).
+assist bypassed so the take is unreduced; revert keeps the settings and disables
+them, and still goes through review; windows at the Desk observer rate (≤25 Hz,
+up to five minutes).
 
 **Evidence:** recorded stems (opt-in `recorded_lead_vocal_soundcheck_and_assist`,
-statistics only): Complainiacs lead from 0 s → keep −19.0 dBFS, reducing 0.4 % of
-samples, p99 cut 0.9 dB, max 3.5 dB; Catbite lead from 60 s → keep −19.2 dBFS,
-1.2 %, p99 2.5 dB, max 5.1 dB. Catbite from 0 s (intro, mostly spill) → keep
-−26.3 dBFS and the cut pinned at 6 dB 26 % of the time: the soundcheck must
-contain show-level singing (documented limit).
+statistics only), each whole song as the soundcheck and then played through the
+assist: Complainiacs lead → keep −13.0 dBFS, reducing <0.1 % of samples, max cut
+0.5 dB; Catbite lead → keep −12.0 dBFS, <0.1 %, max 1.0 dB.
 
 **Open — qualification:** listening with a real singer on the rig (Listening
 row): threshold/headroom feel, attack/recovery audibility, soundcheck procedure.
