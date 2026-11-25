@@ -64,6 +64,74 @@ fn runner_frame_zero_startup_uses_time_after_control_preparation() {
     assert!(report.blocks >= 4);
 }
 
+/// Armed 8-input software provider behind the production host, at frame zero.
+fn armed_host(name: &str) -> (Directory, HostAuthority) {
+    let directory = Directory(
+        std::env::temp_dir().join(format!("gp-source-overload-{name}-{}", std::process::id())),
+    );
+    std::fs::create_dir(&directory.0).unwrap();
+    std::fs::set_permissions(&directory.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut provider = LocalAudio::bind_configured(
+        &directory.0,
+        "overload.sock",
+        SHOW,
+        Counter(9),
+        EngineTopology::software(8, 2, 0).unwrap(),
+    )
+    .unwrap();
+    provider.rearm().unwrap();
+    let host = HostAuthority::new(provider, 1).unwrap();
+    (directory, host)
+}
+
+#[test]
+fn source_overload_below_the_debt_bound_is_counted_and_caught_up() {
+    let (_directory, mut host) = armed_host("catch-up");
+    let source = ProviderSource::start(&mut host, 0, 1, 5000, None).unwrap();
+    await_blocks(&source, 20);
+    host.provider_mut()
+        .stall_source_worker(Duration::from_millis(30))
+        .unwrap();
+    let after = source.status.blocks();
+    await_blocks(&source, after + 60);
+    assert!(
+        !source.stopped(),
+        "a 30 ms overrun must not close the source"
+    );
+    source.status.close();
+    let report = source.finish(&mut host).unwrap();
+    assert_eq!(report.fault, None);
+    // Late blocks were rendered back to back on the same timeline: none skipped.
+    assert_eq!(report.next_frame, report.first_frame + report.blocks * 48);
+    assert!(report.late_blocks > 0, "{report:?}");
+    assert!(
+        (25_000..100_000).contains(&report.max_debt_us),
+        "max debt {} us",
+        report.max_debt_us
+    );
+}
+
+#[test]
+fn source_overload_past_the_debt_bound_closes_and_requires_rearm() {
+    let (_directory, mut host) = armed_host("close");
+    let source = ProviderSource::start(&mut host, 0, 1, 5000, None).unwrap();
+    await_blocks(&source, 20);
+    host.provider_mut()
+        .stall_source_worker(Duration::from_millis(150))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !source.stopped() {
+        assert!(Instant::now() < deadline, "overloaded source did not close");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let report = source.finish(&mut host).unwrap();
+    assert_eq!(report.fault, Some("source scheduling debt exceeded100ms"));
+    assert!(report.max_debt_us > 100_000, "{report:?}");
+    assert_eq!(report.next_frame, report.first_frame + report.blocks * 48);
+    // Closure is latched: no silent resume; recovery needs the structural path.
+    assert!(host.provider_mut().rearm().is_err());
+}
+
 #[test]
 fn runner_autonomous_epoch_reconstruction_fences_old_handles_and_requires_rearm() {
     let directory = Directory(

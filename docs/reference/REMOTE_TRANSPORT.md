@@ -213,6 +213,14 @@ service; fixed host ingress/receipt lanes then feed source media. Network worker
 neither render nor advance the source clock. This isolation is
 not a realtime scheduling or physical latency guarantee.
 
+**Source overload.** Without a device the source clock renders one 48-frame
+block per period and catches up after a late block on the same timeline (no
+frames skipped). The run report's `source_report` counts `late_blocks` (started
+more than one period late) and `max_debt_us`, so overload below the bound is
+visible. More than 100 ms of debt closes the source with `source scheduling debt
+exceeded100ms`; closure is latched and a plain rearm is refused. Device-clocked
+sources stop on xrun instead.
+
 **Optional realtime workers.** A config may set `"media_realtime_priority": N`
 (11–95; omitted = off). It is applied before the runtime starts: the source clock
 and duplex threads run SCHED_FIFO at N, network runtime threads at N−2 and

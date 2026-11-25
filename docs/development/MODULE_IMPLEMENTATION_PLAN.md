@@ -292,6 +292,11 @@ Keep 768-frame wet deadline and the 60 s synthetic cap; never subtract
 unsynchronized clocks. Proposed thresholds: ≥4 ms wet margin, ≥2 ms benefit for a
 replacement.
 
+**Core DSP capacity (software, 2026-11-25):** worst-case strips at 48 × 11 use 44%
+of the 1 ms period on Pi 5 but 109% on Pi 4; admission does not yet check the host
+([evidence](../acceptance/MODULAR_ENGINE_ACCEPTANCE.md#capacity-reporting)).
+Overload now reports `late_blocks`/`max_debt_us` before the 100 ms debt closure.
+
 **Rig checks:** Stagebox/Brain inventory and socket maps, UMC1820/ADAT clock
 relationship, duplex drift, electrical latency, safe fault/rearm, sustained
 deadlines, and the open AudioBox right-return/timing discontinuities (H8).

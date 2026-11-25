@@ -2701,6 +2701,13 @@ impl LocalAudio {
     pub(crate) fn enable_persistent_source(&mut self) {
         self.persistent_source = true;
     }
+    /// Test-only overrun model: occupy the source worker thread for `stall`,
+    /// exactly as one render that takes that long would.
+    #[cfg(all(test, feature = "hardware-host"))]
+    pub(crate) fn stall_source_worker(&mut self, stall: std::time::Duration) -> Result<()> {
+        self.graph_command_retained(stall, |_, d| std::thread::sleep(*d))
+            .map(|_| ())
+    }
     #[cfg(feature = "hardware-host")]
     pub(crate) fn source_executor_for<T: Send + 'static>(
         &mut self,

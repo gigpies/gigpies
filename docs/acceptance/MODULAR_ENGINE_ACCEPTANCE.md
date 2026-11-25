@@ -50,6 +50,32 @@ show. GPA1 protocol channel indices and datagram MTU are transport bounds.
 Software correctness at 48 inputs is required; hardware deadline capacity remains
 unqualified until measured on the actual configured graph.
 
+**Core DSP cost per 48-frame block — 2026-11-25.** Opt-in `tests/source_capacity.rs`
+(release, one non-realtime thread): every strip with gate, four EQ bands,
+compressor and vocal assist engaged on a −12 dBFS signal. Core mixer only:
+strips, sends and buses; no metering, spectrum, PA/FX modules, transport or
+control. Budget is the 1000 µs period. p99 µs (share of period):
+
+| Inputs × monitors | Pi 5 | Pi 4 |
+|---|---|---|
+| 16 × 10 | 131 (13%) | 357 (36%) |
+| 16 × 16 | 151 (15%) | 405 (41%) |
+| 24 × 10 | 203 (20%) | 531 (53%) |
+| 32 × 10 | 272 (27%) | 728 (73%) |
+| 32 × 16 | 315 (32%) | 842 (84%) |
+| 48 × 11 | 437 (44%) | 1090 (109%) |
+| 64 × 7 | 575 (57%) | 1318 (132%) |
+
+Cost scales about linearly with inputs (≈9 µs per input on Pi 5, ≈24 µs on Pi 4,
+plus ≈0.2 µs on Pi 5 and ≈0.5 µs on Pi 4 per input per monitor). Pi 4 cannot render 48 inputs
+within the period even before the other source work; 32 is marginal. Single
+multi-millisecond maxima came from preemption of the non-realtime test thread.
+Topology admission is a static budget, not a measurement of the host: it admits
+48 and 64 inputs on either Pi. Its binding limit at high counts is the 1 MiB
+snapshot assembly (48 inputs: at most 11 monitors; 64: at most 7). An admitted
+topology the host cannot render shows as `late_blocks`, then closes on debt or
+xrun. Not physical or full-graph qualification.
+
 ## Validation classes
 
 Focused production regressions run during implementation. Complete normal suites

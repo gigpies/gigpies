@@ -171,6 +171,11 @@ pub struct SourceClockReport {
     pub output_window_frames: u64,
     pub output_windows: Vec<SourceOutputWindow>,
     pub output_windows_overflow_blocks: u64,
+    /// Synthetic clock only: blocks that started more than one period after
+    /// their scheduled time (rendered late, then caught up).
+    pub late_blocks: u64,
+    /// Synthetic clock only: largest observed lag behind the block schedule.
+    pub max_debt_us: u64,
     #[serde(skip)]
     output_windows_used: usize,
 }
@@ -286,6 +291,8 @@ impl SourceClock {
                 egress_drops: 0,
                 nonzero_wet_samples: 0,
                 rendered_wet_energy: 0.,
+                late_blocks: 0,
+                max_debt_us: 0,
                 output_window_frames: 4800,
                 output_windows: prepare_windows(
                     limit,
@@ -440,6 +447,15 @@ impl SourceClock {
         let next = *state.next.get_or_insert(now);
         if state.device.is_none() && state.acoustic.is_none() && now < next {
             return next.duration_since(now).min(Duration::from_millis(1));
+        }
+        if state.device.is_none() && state.acoustic.is_none() {
+            // Overload below the closure bound stays visible instead of silent catch-up.
+            let debt = now.saturating_duration_since(next);
+            let debt_us = u64::try_from(debt.as_micros()).unwrap_or(u64::MAX);
+            state.report.max_debt_us = state.report.max_debt_us.max(debt_us);
+            if debt > state.period {
+                state.report.late_blocks += 1;
+            }
         }
         if state.device.is_none()
             && state.acoustic.is_none()
