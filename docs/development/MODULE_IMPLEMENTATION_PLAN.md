@@ -35,7 +35,6 @@ not runtime modules ([components](../architecture/COMPONENTS.md)).
 | [GP-AUTO-ENSEMBLE](#gp-auto-ensemble--observation-led-whole-band-automixing) | IN PROGRESS | Backing vocals and the rest of the band; wetness objective |
 | [GP-PANEL](#gp-panel--shared-physical-instrument-panel) | IN PROGRESS | Page-by-page physical-control redesign |
 | [GP-H2](#gp-h2--physical-dual-console-operation) | IN PROGRESS | Software done; learned SHR-DAW mapping imported; hardware checks remain |
-| [GP-METER](#gp-meter--measured-audio-on-the-real-desk) | SOFTWARE ACCEPTED | Desk frontend coverage for remaining states (P3) |
 
 ### Qualification sessions (need explicit authorization)
 
@@ -111,7 +110,12 @@ are distinct states. Main is pre-PA: not a physical output, true-peak or SPL met
 - P2 delivery: private Unix and mutual-TLS QUIC reads that never touch leases,
   revisions or held proofs; revocation fails closed; epoch recovery, slow readers
   and repeated reads cannot refresh, splice or block (`tests/metering.rs`).
-- P3 Desk: independent codec/cache/observer, F11 meters, CPU-native scene checks.
+- P3 Desk: independent codec/cache/observer, F11 meters, CPU-native scene checks;
+  frontend coverage (2026-11-25, Desk `src/frontend/meter_tests.rs`) of clip (red,
+  raw and processed), silence (no bar), stale meters and stale control (dimmed),
+  invalid (amber), every unavailable reason, GR aged independently of meters,
+  provider-generation/topology loss clearing meters and clip hold, and meter
+  browsing that never sends control, holds or disturbs held state and drafts.
 - P4: actual LocalAudio at 16/17/32/48 inputs with independent Desk/native driver;
   **owner-backed** check with hash-verified PA/FX/REC libraries — Main pre-PA equals
   an independent mixer + independent FX instance, PA output equals an independent
@@ -119,8 +123,7 @@ are distinct states. Main is pre-PA: not a physical output, true-peak or SPL met
   shr-fx `555b8f9`, shr-rec `3a1ca10`; the existing `modular_owners` and
   `brain_owners` drivers also pass with that manifest.
 
-**Open — software:** extend Desk frontend tests for every bank/bus with GR,
-clip/silence/stale/invalid, context loss and held-action isolation (P3 list).
+**Open:** none in software. Physical meters on the rig are part of GP-H1.
 
 **Run owner-backed checks:** see [owner-artifact tests](DEVELOPMENT.md#owner-artifact-tests).
 
@@ -281,7 +284,8 @@ replacement.
 **Rig checks:** Stagebox/Brain inventory and socket maps, UMC1820/ADAT clock
 relationship, duplex drift, electrical latency, safe fault/rearm, sustained
 deadlines, and the open AudioBox right-return/timing discontinuities (H8).
-Also carries the physical gates of GP-FX, GP-SHOW and GP-REC.
+Also carries the physical gates of GP-FX, GP-SHOW, GP-REC and GP-METER (measured
+levels against known electrical signals on the rig).
 
 ## GP-H2 — physical dual-console operation
 
